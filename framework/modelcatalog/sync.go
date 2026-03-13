@@ -104,7 +104,6 @@ func (mc *ModelCatalog) syncPricing(ctx context.Context) error {
 
 		return nil
 	})
-
 	if err != nil {
 		return fmt.Errorf("failed to sync pricing data to database: %w", err)
 	}
@@ -352,6 +351,9 @@ func (mc *ModelCatalog) syncModelParameters(ctx context.Context) error {
 			return fmt.Errorf("model-parameters-sync: failed to sync model parameters to database: %w", err)
 		}
 	}
+
+	// Update in-memory cache and rebuild supported outputs index
+	mc.buildSupportedOutputsIndex(paramsData)
 
 	// Update last sync time if config store is available
 	if mc.configStore != nil {
