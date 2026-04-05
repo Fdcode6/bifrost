@@ -1,2 +1,3 @@
 - feat: add model alias support
 - refactor: standardize extra fields handling for all providers
+- fix: converts developer role to system role for bedrock, gemini and vertex providers.

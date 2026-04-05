@@ -362,8 +362,8 @@ func convertMessages(bifrostMessages []schemas.ChatMessage) ([]BedrockMessage, [
 	for i := 0; i < len(bifrostMessages); i++ {
 		msg := bifrostMessages[i]
 		switch msg.Role {
-		case schemas.ChatMessageRoleSystem:
-			// Convert system message
+		case schemas.ChatMessageRoleSystem, schemas.ChatMessageRoleDeveloper:
+			// Convert system or developer message (Bedrock does not support developer role, treat as system)
 			systemMsgs, err := convertSystemMessages(msg)
 			if err != nil {
 				return nil, nil, fmt.Errorf("failed to convert system message: %w", err)
