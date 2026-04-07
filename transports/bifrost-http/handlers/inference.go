@@ -542,12 +542,9 @@ func parseFallbacks(fallbackStrings []string) ([]schemas.Fallback, error) {
 	return fallbacks, nil
 }
 
-func effectiveStream(bodyStream *bool, bifrostCtx *schemas.BifrostContext) bool {
+func effectiveStream(bodyStream *bool) bool {
 	if bodyStream != nil {
 		return *bodyStream
-	}
-	if v, ok := bifrostCtx.Value(schemas.BifrostContextKeyPromptStreamRequest).(bool); ok && v {
-		return true
 	}
 	return false
 }
@@ -971,7 +968,7 @@ func (h *CompletionHandler) chatCompletion(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
-	if effectiveStream(req.Stream, bifrostCtx) {
+	if effectiveStream(req.Stream) {
 		h.handleStreamingChatCompletion(ctx, bifrostChatReq, bifrostCtx, cancel)
 		return
 	}
@@ -1066,7 +1063,7 @@ func (h *CompletionHandler) responses(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if effectiveStream(req.Stream, bifrostCtx) {
+	if effectiveStream(req.Stream) {
 		h.handleStreamingResponses(ctx, bifrostResponsesReq, bifrostCtx, cancel)
 		return
 	}

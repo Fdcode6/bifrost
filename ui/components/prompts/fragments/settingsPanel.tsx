@@ -1,20 +1,20 @@
 import { ComboboxSelect } from "@/components/ui/combobox";
+import ModelParameters from "@/components/ui/custom/modelParameters";
 import { Label } from "@/components/ui/label";
+import { ModelMultiselect } from "@/components/ui/modelMultiselect";
 import { ScrollArea } from "@/components/ui/scrollArea";
 import { Separator } from "@/components/ui/separator";
-import ModelParameters from "@/components/ui/custom/modelParameters";
-import { ModelParams } from "@/lib/types/prompts";
-import { getProviderLabel } from "@/lib/constants/logs";
-import { useGetAllKeysQuery, useGetProvidersQuery } from "@/lib/store/apis/providersApi";
-import { useGetVirtualKeysQuery } from "@/lib/store";
-import { useCallback, useMemo } from "react";
-import { ModelProviderName } from "@/lib/types/config";
-import { ModelMultiselect } from "@/components/ui/modelMultiselect";
 import { Skeleton } from "@/components/ui/skeleton";
-import { usePromptContext } from "../context";
-import { VariablesTableView } from "../components/variablesTableView";
-import { ApiKeySelectorView } from "../components/apiKeySelectorView";
+import { getProviderLabel } from "@/lib/constants/logs";
+import { useGetVirtualKeysQuery } from "@/lib/store";
+import { useGetAllKeysQuery, useGetProvidersQuery } from "@/lib/store/apis/providersApi";
+import { ModelProviderName } from "@/lib/types/config";
+import { ModelParams } from "@/lib/types/prompts";
 import PromptDeploymentView from "@enterprise/components/prompt-deployments/promptDeploymentView";
+import { useCallback, useMemo } from "react";
+import { ApiKeySelectorView } from "../components/apiKeySelectorView";
+import { VariablesTableView } from "../components/variablesTableView";
+import { usePromptContext } from "../context";
 
 export function SettingsPanel() {
 	const {
