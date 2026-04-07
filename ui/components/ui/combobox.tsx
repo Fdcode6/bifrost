@@ -1,5 +1,3 @@
-"use client";
-
 import { Command as CommandPrimitive } from "cmdk";
 import { CheckIcon, ChevronDownIcon, XIcon } from "lucide-react";
 import * as React from "react";
@@ -141,7 +139,7 @@ function ComboboxInput({
 				role="combobox"
 				disabled={disabled}
 				className={cn(
-					"active:scale-none h-8 w-full justify-between !bg-transparent font-normal",
+					"h-8 w-full justify-between !bg-transparent font-normal active:scale-none",
 					!value && "text-muted-foreground",
 					className,
 				)}
@@ -249,7 +247,7 @@ function ComboboxItem({
 		<CommandPrimitive.Item
 			data-slot="combobox-item"
 			className={cn(
-				"data-[selected=true]:bg-accent data-[selected=true]:text-accent-foreground outline-hidden relative flex w-full cursor-default select-none items-center gap-2 rounded-sm py-1.5 pl-2 pr-8 text-sm data-[disabled=true]:pointer-events-none data-[disabled=true]:opacity-50",
+				"data-[selected=true]:bg-accent data-[selected=true]:text-accent-foreground relative flex w-full cursor-default items-center gap-2 rounded-sm py-1.5 pr-8 pl-2 text-sm outline-hidden select-none data-[disabled=true]:pointer-events-none data-[disabled=true]:opacity-50",
 				className,
 			)}
 			value={itemValue}
@@ -357,7 +355,7 @@ function ComboboxSelect(props: ComboboxSelectProps) {
 						aria-expanded={open}
 						disabled={disabled}
 						className={cn(
-							"active:scale-none h-8 w-full justify-between !bg-transparent font-normal",
+							"h-8 w-full justify-between !bg-transparent font-normal active:scale-none",
 							selectedValues.length === 0 && "text-muted-foreground",
 							className,
 						)}
@@ -412,7 +410,7 @@ function ComboboxSelect(props: ComboboxSelectProps) {
 									<CommandPrimitive.Item
 										key={option.value}
 										value={option.value}
-										className="data-[selected=true]:bg-accent data-[selected=true]:text-accent-foreground outline-hidden relative flex w-full cursor-default select-none items-center gap-2 rounded-sm py-1.5 pl-2 pr-8 text-sm"
+										className="data-[selected=true]:bg-accent data-[selected=true]:text-accent-foreground relative flex w-full cursor-default items-center gap-2 rounded-sm py-1.5 pr-8 pl-2 text-sm outline-hidden select-none"
 										onSelect={() => {
 											const next = isSelected ? selectedValues.filter((v) => v !== option.value) : [...selectedValues, option.value];
 											props.onValueChange?.(next);
@@ -453,7 +451,7 @@ function ComboboxSelect(props: ComboboxSelectProps) {
 					aria-expanded={open}
 					disabled={disabled}
 					className={cn(
-						"active:scale-none h-8 w-full justify-between !bg-transparent font-normal",
+						"h-8 w-full justify-between !bg-transparent font-normal active:scale-none",
 						!selectedLabel && "text-muted-foreground",
 						className,
 					)}
@@ -502,7 +500,7 @@ function ComboboxSelect(props: ComboboxSelectProps) {
 							<CommandPrimitive.Item
 								key={option.value}
 								value={option.value}
-								className="data-[selected=true]:bg-accent data-[selected=true]:text-accent-foreground outline-hidden relative flex w-full cursor-default select-none items-center gap-2 rounded-sm py-1.5 pl-2 pr-8 text-sm"
+								className="data-[selected=true]:bg-accent data-[selected=true]:text-accent-foreground relative flex w-full cursor-default items-center gap-2 rounded-sm py-1.5 pr-8 pl-2 text-sm outline-hidden select-none"
 								onSelect={() => {
 									props.onValueChange?.(option.value);
 									setOpen(false);
