@@ -48,6 +48,7 @@ import PluginLogsView from "../views/pluginLogsView";
 import SpeechView from "../views/speechView";
 import TranscriptionView from "../views/transcriptionView";
 import VideoView from "../views/videoView";
+import Link from "next/link";
 
 const formatJsonSafe = (str: string | undefined): string => {
 	try {
@@ -85,7 +86,14 @@ interface LogDetailViewProps {
 	onFilterByParentRequestId?: (parentRequestId: string) => void;
 }
 
-export function LogDetailView({ log, loading = false, handleDelete, onClose, headerAction, onFilterByParentRequestId }: LogDetailViewProps) {
+export function LogDetailView({
+	log,
+	loading = false,
+	handleDelete,
+	onClose,
+	headerAction,
+	onFilterByParentRequestId,
+}: LogDetailViewProps) {
 	const { copy: copyRequestId } = useCopyToClipboard({ successMessage: "Request ID copied" });
 	const { copy: copyBody } = useCopyToClipboard({
 		successMessage: "Request body copied to clipboard",
@@ -127,14 +135,14 @@ export function LogDetailView({ log, loading = false, handleDelete, onClose, hea
 	) : (
 		<>
 			<div className="flex flex-row items-center px-0">
-				<div className="flex w-full items-center justify-between overflow-x-hidden gap-3">
+				<div className="flex w-full items-center justify-between gap-3 overflow-x-hidden">
 					<div className="flex items-center gap-3">
 						{headerAction}
 						<div className="flex w-fit items-center gap-2 overflow-x-hidden font-medium">
 							{log.id && (
 								<p className="text-md max-w-full truncate">
 									Request ID:{" "}
-									<code className="font-normal cursor-pointer" onClick={() => copyRequestId(log.id)}>
+									<code className="cursor-pointer font-normal" onClick={() => copyRequestId(log.id)}>
 										{log.id}
 									</code>
 								</p>
@@ -166,10 +174,7 @@ export function LogDetailView({ log, loading = false, handleDelete, onClose, hea
 									</Button>
 								</DropdownMenuTrigger>
 								<DropdownMenuContent align="end">
-									<DropdownMenuItem
-										onClick={() => copyRequestBody(log, copyBody)}
-										data-testid="logdetails-copy-request-body-button"
-									>
+									<DropdownMenuItem onClick={() => copyRequestBody(log, copyBody)} data-testid="logdetails-copy-request-body-button">
 										<Clipboard className="h-4 w-4" />
 										Copy request body
 									</DropdownMenuItem>
@@ -185,9 +190,7 @@ export function LogDetailView({ log, loading = false, handleDelete, onClose, hea
 							<AlertDialogContent>
 								<AlertDialogHeader>
 									<AlertDialogTitle>Are you sure you want to delete this log?</AlertDialogTitle>
-									<AlertDialogDescription>
-										This action cannot be undone. This will permanently delete the log entry.
-									</AlertDialogDescription>
+									<AlertDialogDescription>This action cannot be undone. This will permanently delete the log entry.</AlertDialogDescription>
 								</AlertDialogHeader>
 								<AlertDialogFooter>
 									<AlertDialogCancel data-testid="logdetails-delete-cancel-button">Cancel</AlertDialogCancel>
@@ -214,7 +217,9 @@ export function LogDetailView({ log, loading = false, handleDelete, onClose, hea
 						<LogEntryDetailsView
 							className="w-full"
 							label="End Timestamp"
-							value={moment(log.timestamp).add(log.latency || 0, "ms").format("YYYY-MM-DD HH:mm:ss A")}
+							value={moment(log.timestamp)
+								.add(log.latency || 0, "ms")
+								.format("YYYY-MM-DD HH:mm:ss A")}
 						/>
 						<LogEntryDetailsView
 							className="w-full"
@@ -238,14 +243,14 @@ export function LogDetailView({ log, loading = false, handleDelete, onClose, hea
 							}
 						/>
 						{!isContainer && <LogEntryDetailsView className="w-full" label="Model" value={log.model} />}
-						{!isContainer && log.alias && (
-							<LogEntryDetailsView className="w-full" label="Alias" value={log.alias} />
-						)}
+						{!isContainer && log.alias && <LogEntryDetailsView className="w-full" label="Alias" value={log.alias} />}
 						<LogEntryDetailsView
 							className="w-full"
 							label="Type"
 							value={
-								<div className={`${RequestTypeColors[log.object as keyof typeof RequestTypeColors] ?? "bg-gray-100 text-gray-800"} rounded-sm px-3 py-1`}>
+								<div
+									className={`${RequestTypeColors[log.object as keyof typeof RequestTypeColors] ?? "bg-gray-100 text-gray-800"} rounded-sm px-3 py-1`}
+								>
 									{RequestTypeLabels[log.object as keyof typeof RequestTypeLabels] ?? log.object ?? "unknown"}
 								</div>
 							}
@@ -259,7 +264,7 @@ export function LogDetailView({ log, loading = false, handleDelete, onClose, hea
 										<Tooltip>
 											<TooltipTrigger asChild>
 												<code
-													className="text-primary hover:text-primary/80 block min-w-0 cursor-pointer break-all font-normal underline-offset-2 hover:underline"
+													className="text-primary hover:text-primary/80 block min-w-0 cursor-pointer font-normal break-all underline-offset-2 hover:underline"
 													onClick={() => onFilterByParentRequestId(log.parent_request_id as string)}
 												>
 													{log.parent_request_id}
@@ -268,13 +273,76 @@ export function LogDetailView({ log, loading = false, handleDelete, onClose, hea
 											<TooltipContent sideOffset={6}>Filter this session</TooltipContent>
 										</Tooltip>
 									) : (
-										<code className="block min-w-0 break-all font-normal">{log.parent_request_id}</code>
+										<code className="block min-w-0 font-normal break-all">{log.parent_request_id}</code>
 									)
 								}
 							/>
 						)}
 						{log.selected_key && <LogEntryDetailsView className="w-full" label="Selected Key" value={log.selected_key.name} />}
-						{log.number_of_retries > 0 && <LogEntryDetailsView className="w-full" label="Number of Retries" value={log.number_of_retries} />}
+						{log.number_of_retries > 0 && (
+							<LogEntryDetailsView className="w-full" label="Number of Retries" value={log.number_of_retries} />
+						)}
+						{log.team_id && (
+							<LogEntryDetailsView
+								className="w-full"
+								label="Team"
+								value={
+									<Link
+										href={`/workspace/logs?team_ids=${encodeURIComponent(log.team_id)}`}
+										className="text-blue-600 hover:underline dark:text-blue-400"
+										data-testid="logdetails-team-link"
+									>
+										{log.team_name || log.team_id}
+									</Link>
+								}
+							/>
+						)}
+						{log.customer_id && (
+							<LogEntryDetailsView
+								className="w-full"
+								label="Customer"
+								value={
+									<Link
+										href={`/workspace/logs?customer_ids=${encodeURIComponent(log.customer_id)}`}
+										className="text-blue-600 hover:underline dark:text-blue-400"
+										data-testid="logdetails-customer-link"
+									>
+										{log.customer_name || log.customer_id}
+									</Link>
+								}
+							/>
+						)}
+						{log.business_unit_id && (
+							<LogEntryDetailsView
+								className="w-full"
+								label="Business Unit"
+								value={
+									<Link
+										href={`/workspace/logs?business_unit_ids=${encodeURIComponent(log.business_unit_id)}`}
+										className="text-blue-600 hover:underline dark:text-blue-400"
+										data-testid="logdetails-business-unit-link"
+									>
+										{log.business_unit_name || log.business_unit_id}
+									</Link>
+								}
+							/>
+						)}
+						{log.user_id && (
+							<LogEntryDetailsView
+								className="w-full"
+								label="User"
+								value={
+									<Link
+										href={`/workspace/logs?user_ids=${encodeURIComponent(log.user_id)}`}
+										className="text-blue-600 hover:underline dark:text-blue-400"
+										data-testid="logdetails-user-link"
+									>
+										{log.user_id}
+									</Link>
+								}
+							/>
+						)}
+
 						{log.fallback_index > 0 && <LogEntryDetailsView className="w-full" label="Fallback Index" value={log.fallback_index} />}
 						{log.virtual_key && <LogEntryDetailsView className="w-full" label="Virtual Key" value={log.virtual_key.name} />}
 						{log.routing_engines_used && log.routing_engines_used.length > 0 && (
@@ -302,8 +370,12 @@ export function LogDetailView({ log, loading = false, handleDelete, onClose, hea
 
 						{(log.params as any)?.audio && (
 							<>
-								{(log.params as any).audio.format && <LogEntryDetailsView className="w-full" label="Audio Format" value={(log.params as any).audio.format} />}
-								{(log.params as any).audio.voice && <LogEntryDetailsView className="w-full" label="Audio Voice" value={(log.params as any).audio.voice} />}
+								{(log.params as any).audio.format && (
+									<LogEntryDetailsView className="w-full" label="Audio Format" value={(log.params as any).audio.format} />
+								)}
+								{(log.params as any).audio.voice && (
+									<LogEntryDetailsView className="w-full" label="Audio Voice" value={(log.params as any).audio.voice} />
+								)}
 							</>
 						)}
 
@@ -311,7 +383,9 @@ export function LogDetailView({ log, loading = false, handleDelete, onClose, hea
 							<>
 								{passthroughParams.method && <LogEntryDetailsView className="w-full" label="Method" value={passthroughParams.method} />}
 								{passthroughParams.path && <LogEntryDetailsView className="w-full" label="Path" value={passthroughParams.path} />}
-								{passthroughParams.raw_query && <LogEntryDetailsView className="w-full" label="Query" value={passthroughParams.raw_query} />}
+								{passthroughParams.raw_query && (
+									<LogEntryDetailsView className="w-full" label="Query" value={passthroughParams.raw_query} />
+								)}
 								{(passthroughParams.status_code ?? 0) !== 0 && (
 									<LogEntryDetailsView className="w-full" label="Status Code" value={passthroughParams.status_code} />
 								)}
@@ -338,33 +412,65 @@ export function LogDetailView({ log, loading = false, handleDelete, onClose, hea
 								<LogEntryDetailsView className="w-full" label="Input Tokens" value={log.token_usage?.prompt_tokens || "-"} />
 								<LogEntryDetailsView className="w-full" label="Output Tokens" value={log.token_usage?.completion_tokens || "-"} />
 								<LogEntryDetailsView className="w-full" label="Total Tokens" value={log.token_usage?.total_tokens || "-"} />
-								<LogEntryDetailsView className="w-full" label="Cost" value={log.cost != null ? `$${parseFloat(log.cost.toFixed(6))}` : "-"} />
+								<LogEntryDetailsView
+									className="w-full"
+									label="Cost"
+									value={log.cost != null ? `$${parseFloat(log.cost.toFixed(6))}` : "-"}
+								/>
 								{log.token_usage?.prompt_tokens_details && (
 									<>
 										{log.token_usage.prompt_tokens_details.cached_read_tokens && (
-											<LogEntryDetailsView className="w-full" label="Cache Read Tokens" value={log.token_usage.prompt_tokens_details.cached_read_tokens ?? 0} />
+											<LogEntryDetailsView
+												className="w-full"
+												label="Cache Read Tokens"
+												value={log.token_usage.prompt_tokens_details.cached_read_tokens ?? 0}
+											/>
 										)}
 										{log.token_usage.prompt_tokens_details.cached_write_tokens && (
-											<LogEntryDetailsView className="w-full" label="Cache Write Tokens" value={log.token_usage.prompt_tokens_details.cached_write_tokens ?? 0} />
+											<LogEntryDetailsView
+												className="w-full"
+												label="Cache Write Tokens"
+												value={log.token_usage.prompt_tokens_details.cached_write_tokens ?? 0}
+											/>
 										)}
 										{log.token_usage.prompt_tokens_details.audio_tokens && (
-											<LogEntryDetailsView className="w-full" label="Input Audio Tokens" value={log.token_usage.prompt_tokens_details.audio_tokens || "-"} />
+											<LogEntryDetailsView
+												className="w-full"
+												label="Input Audio Tokens"
+												value={log.token_usage.prompt_tokens_details.audio_tokens || "-"}
+											/>
 										)}
 									</>
 								)}
 								{log.token_usage?.completion_tokens_details && (
 									<>
 										{log.token_usage.completion_tokens_details.reasoning_tokens && (
-											<LogEntryDetailsView className="w-full" label="Reasoning Tokens" value={log.token_usage.completion_tokens_details.reasoning_tokens || "-"} />
+											<LogEntryDetailsView
+												className="w-full"
+												label="Reasoning Tokens"
+												value={log.token_usage.completion_tokens_details.reasoning_tokens || "-"}
+											/>
 										)}
 										{log.token_usage.completion_tokens_details.audio_tokens && (
-											<LogEntryDetailsView className="w-full" label="Output Audio Tokens" value={log.token_usage.completion_tokens_details.audio_tokens || "-"} />
+											<LogEntryDetailsView
+												className="w-full"
+												label="Output Audio Tokens"
+												value={log.token_usage.completion_tokens_details.audio_tokens || "-"}
+											/>
 										)}
 										{log.token_usage.completion_tokens_details.accepted_prediction_tokens && (
-											<LogEntryDetailsView className="w-full" label="Accepted Prediction Tokens" value={log.token_usage.completion_tokens_details.accepted_prediction_tokens || "-"} />
+											<LogEntryDetailsView
+												className="w-full"
+												label="Accepted Prediction Tokens"
+												value={log.token_usage.completion_tokens_details.accepted_prediction_tokens || "-"}
+											/>
 										)}
 										{log.token_usage.completion_tokens_details.rejected_prediction_tokens && (
-											<LogEntryDetailsView className="w-full" label="Rejected Prediction Tokens" value={log.token_usage.completion_tokens_details.rejected_prediction_tokens || "-"} />
+											<LogEntryDetailsView
+												className="w-full"
+												label="Rejected Prediction Tokens"
+												value={log.token_usage.completion_tokens_details.rejected_prediction_tokens || "-"}
+											/>
 										)}
 									</>
 								)}
@@ -415,9 +521,7 @@ export function LogDetailView({ log, loading = false, handleDelete, onClose, hea
 													}
 												/>
 											)}
-											{reasoning.max_tokens && (
-												<LogEntryDetailsView className="w-full" label="Max Tokens" value={reasoning.max_tokens} />
-											)}
+											{reasoning.max_tokens && <LogEntryDetailsView className="w-full" label="Max Tokens" value={reasoning.max_tokens} />}
 										</div>
 									</div>
 								</>
@@ -460,7 +564,11 @@ export function LogDetailView({ log, loading = false, handleDelete, onClose, hea
 															<LogEntryDetailsView className="w-full" label="Threshold" value={log.cache_debug.threshold || "-"} />
 														)}
 														{log.cache_debug.similarity && (
-															<LogEntryDetailsView className="w-full" label="Similarity Score" value={log.cache_debug.similarity?.toFixed(2) || "-"} />
+															<LogEntryDetailsView
+																className="w-full"
+																label="Similarity Score"
+																value={log.cache_debug.similarity?.toFixed(2) || "-"}
+															/>
 														)}
 														{log.cache_debug.input_tokens && (
 															<LogEntryDetailsView className="w-full" label="Embedding Input Tokens" value={log.cache_debug.input_tokens} />
@@ -521,7 +629,16 @@ export function LogDetailView({ log, loading = false, handleDelete, onClose, hea
 			{log.plugin_logs && <PluginLogsView pluginLogs={log.plugin_logs} />}
 			{toolsParameter && (
 				<CollapsibleBox title={`Tools (${log.params?.tools?.length || 0})`} onCopy={() => toolsParameter}>
-					<CodeEditor className="z-0 w-full" shouldAdjustInitialHeight={true} maxHeight={450} wrap={true} code={toolsParameter} lang="json" readonly={true} options={{ scrollBeyondLastLine: false, lineNumbers: "off", alwaysConsumeMouseWheel: false }} />
+					<CodeEditor
+						className="z-0 w-full"
+						shouldAdjustInitialHeight={true}
+						maxHeight={450}
+						wrap={true}
+						code={toolsParameter}
+						lang="json"
+						readonly={true}
+						options={{ scrollBeyondLastLine: false, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
+					/>
 				</CollapsibleBox>
 			)}
 			{log.params?.instructions && (
@@ -531,14 +648,17 @@ export function LogDetailView({ log, loading = false, handleDelete, onClose, hea
 					</div>
 				</CollapsibleBox>
 			)}
-			{(log.speech_input || log.speech_output) && <SpeechView speechInput={log.speech_input} speechOutput={log.speech_output} isStreaming={log.stream} />}
-			{(log.transcription_input || log.transcription_output) && (
-				<TranscriptionView transcriptionInput={log.transcription_input} transcriptionOutput={log.transcription_output} isStreaming={log.stream} />
+			{(log.speech_input || log.speech_output) && (
+				<SpeechView speechInput={log.speech_input} speechOutput={log.speech_output} isStreaming={log.stream} />
 			)}
-			{(log.image_generation_input ||
-				log.image_edit_input ||
-				log.image_variation_input ||
-				log.image_generation_output) && (
+			{(log.transcription_input || log.transcription_output) && (
+				<TranscriptionView
+					transcriptionInput={log.transcription_input}
+					transcriptionOutput={log.transcription_output}
+					isStreaming={log.stream}
+				/>
+			)}
+			{(log.image_generation_input || log.image_edit_input || log.image_variation_input || log.image_generation_output) && (
 				<ImageView
 					imageInput={log.image_generation_input}
 					imageEditInput={log.image_edit_input}
@@ -548,34 +668,59 @@ export function LogDetailView({ log, loading = false, handleDelete, onClose, hea
 				/>
 			)}
 			{(log.video_generation_input || videoOutput || videoListOutput) && (
-				<VideoView videoInput={log.video_generation_input} videoOutput={videoOutput} videoListOutput={videoListOutput} requestType={log.object} />
+				<VideoView
+					videoInput={log.video_generation_input}
+					videoOutput={videoOutput}
+					videoListOutput={videoListOutput}
+					requestType={log.object}
+				/>
 			)}
 			{log.list_models_output && (
-				<CollapsibleBox title={`List Models Output (${log.list_models_output.length})`} onCopy={() => JSON.stringify(log.list_models_output, null, 2)}>
-					<CodeEditor className="z-0 w-full" shouldAdjustInitialHeight={true} maxHeight={450} wrap={true} code={JSON.stringify(log.list_models_output, null, 2)} lang="json" readonly={true} options={{ scrollBeyondLastLine: false, lineNumbers: "off", alwaysConsumeMouseWheel: false }} />
+				<CollapsibleBox
+					title={`List Models Output (${log.list_models_output.length})`}
+					onCopy={() => JSON.stringify(log.list_models_output, null, 2)}
+				>
+					<CodeEditor
+						className="z-0 w-full"
+						shouldAdjustInitialHeight={true}
+						maxHeight={450}
+						wrap={true}
+						code={JSON.stringify(log.list_models_output, null, 2)}
+						lang="json"
+						readonly={true}
+						options={{ scrollBeyondLastLine: false, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
+					/>
 				</CollapsibleBox>
 			)}
-			{isPassthrough &&
-				passthroughRequestBody && (
-					<CollapsibleBox
-						title="Request Body"
-						onCopy={() => {
+			{isPassthrough && passthroughRequestBody && (
+				<CollapsibleBox
+					title="Request Body"
+					onCopy={() => {
+						try {
+							return JSON.stringify(JSON.parse(passthroughRequestBody || ""), null, 2);
+						} catch {
+							return passthroughRequestBody || "";
+						}
+					}}
+				>
+					<CodeEditor
+						className="z-0 w-full"
+						shouldAdjustInitialHeight={true}
+						maxHeight={450}
+						wrap={true}
+						code={(() => {
 							try {
 								return JSON.stringify(JSON.parse(passthroughRequestBody || ""), null, 2);
 							} catch {
 								return passthroughRequestBody || "";
 							}
-						}}
-					>
-						<CodeEditor className="z-0 w-full" shouldAdjustInitialHeight={true} maxHeight={450} wrap={true} code={(() => {
-							try {
-								return JSON.stringify(JSON.parse(passthroughRequestBody || ""), null, 2);
-							} catch {
-								return passthroughRequestBody || "";
-							}
-						})()} lang="json" readonly={true} options={{ scrollBeyondLastLine: false, lineNumbers: "off", alwaysConsumeMouseWheel: false }} />
-					</CollapsibleBox>
-				)}
+						})()}
+						lang="json"
+						readonly={true}
+						options={{ scrollBeyondLastLine: false, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
+					/>
+				</CollapsibleBox>
+			)}
 			{log.input_history && log.input_history.length > 1 && (
 				<>
 					<div className="mt-4 w-full text-left text-sm font-medium">Conversation History</div>
@@ -635,23 +780,46 @@ export function LogDetailView({ log, loading = false, handleDelete, onClose, hea
 								}
 							}}
 						>
-							<CodeEditor className="z-0 w-full" shouldAdjustInitialHeight={true} maxHeight={450} wrap={true} code={(() => {
-								try {
-									return JSON.stringify(JSON.parse(passthroughResponseBody || ""), null, 2);
-								} catch {
-									return passthroughResponseBody || "";
-								}
-							})()} lang="json" readonly={true} options={{ scrollBeyondLastLine: false, lineNumbers: "off", alwaysConsumeMouseWheel: false }} />
+							<CodeEditor
+								className="z-0 w-full"
+								shouldAdjustInitialHeight={true}
+								maxHeight={450}
+								wrap={true}
+								code={(() => {
+									try {
+										return JSON.stringify(JSON.parse(passthroughResponseBody || ""), null, 2);
+									} catch {
+										return passthroughResponseBody || "";
+									}
+								})()}
+								lang="json"
+								readonly={true}
+								options={{ scrollBeyondLastLine: false, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
+							/>
 						</CollapsibleBox>
 					)}
 					{rawRequest && (
 						<>
 							<div className="mt-4 w-full text-left text-sm font-medium">
 								Raw Request sent to <span className="font-medium capitalize">{log.provider}</span>
-								{log.is_large_payload_request && <span className="ml-2 text-xs font-normal text-amber-600 dark:text-amber-400">(truncated preview)</span>}
+								{log.is_large_payload_request && (
+									<span className="ml-2 text-xs font-normal text-amber-600 dark:text-amber-400">(truncated preview)</span>
+								)}
 							</div>
-							<CollapsibleBox title={log.is_large_payload_request ? "Raw Request (Truncated)" : "Raw Request"} onCopy={() => formatJsonSafe(rawRequest)}>
-								<CodeEditor className="z-0 w-full" shouldAdjustInitialHeight={true} maxHeight={450} wrap={true} code={formatJsonSafe(rawRequest)} lang="json" readonly={true} options={{ scrollBeyondLastLine: false, lineNumbers: "off", alwaysConsumeMouseWheel: false }} />
+							<CollapsibleBox
+								title={log.is_large_payload_request ? "Raw Request (Truncated)" : "Raw Request"}
+								onCopy={() => formatJsonSafe(rawRequest)}
+							>
+								<CodeEditor
+									className="z-0 w-full"
+									shouldAdjustInitialHeight={true}
+									maxHeight={450}
+									wrap={true}
+									code={formatJsonSafe(rawRequest)}
+									lang="json"
+									readonly={true}
+									options={{ scrollBeyondLastLine: false, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
+								/>
 							</CollapsibleBox>
 						</>
 					)}
@@ -659,10 +827,24 @@ export function LogDetailView({ log, loading = false, handleDelete, onClose, hea
 						<>
 							<div className="mt-4 w-full text-left text-sm font-medium">
 								Raw Response from <span className="font-medium capitalize">{log.provider}</span>
-								{log.is_large_payload_response && <span className="ml-2 text-xs font-normal text-amber-600 dark:text-amber-400">(truncated preview)</span>}
+								{log.is_large_payload_response && (
+									<span className="ml-2 text-xs font-normal text-amber-600 dark:text-amber-400">(truncated preview)</span>
+								)}
 							</div>
-							<CollapsibleBox title={log.is_large_payload_response ? "Raw Response (Truncated)" : "Raw Response"} onCopy={() => formatJsonSafe(rawResponse)}>
-								<CodeEditor className="z-0 w-full" shouldAdjustInitialHeight={true} maxHeight={450} wrap={true} code={formatJsonSafe(rawResponse)} lang="json" readonly={true} options={{ scrollBeyondLastLine: false, lineNumbers: "off", alwaysConsumeMouseWheel: false }} />
+							<CollapsibleBox
+								title={log.is_large_payload_response ? "Raw Response (Truncated)" : "Raw Response"}
+								onCopy={() => formatJsonSafe(rawResponse)}
+							>
+								<CodeEditor
+									className="z-0 w-full"
+									shouldAdjustInitialHeight={true}
+									maxHeight={450}
+									wrap={true}
+									code={formatJsonSafe(rawResponse)}
+									lang="json"
+									readonly={true}
+									options={{ scrollBeyondLastLine: false, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
+								/>
 							</CollapsibleBox>
 						</>
 					)}
@@ -752,7 +934,10 @@ const copyRequestBody = async (log: LogEntry, copy: (text: string) => Promise<vo
 				return message.content;
 			}
 			if (Array.isArray(message.content)) {
-				return message.content.filter((block: any) => block && block.type === "text" && block.text).map((block: any) => block.text).join("\n");
+				return message.content
+					.filter((block: any) => block && block.type === "text" && block.text)
+					.map((block: any) => block.text)
+					.join("\n");
 			}
 			return "";
 		};
