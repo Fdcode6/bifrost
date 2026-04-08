@@ -564,13 +564,14 @@ export const betaHeadersFormSchema = z.object({
 
 export type BetaHeadersFormSchema = z.infer<typeof betaHeadersFormSchema>;
 
-// OTEL Configuration Schema
-export const otelConfigSchema = z
+// OTEL Profile Configuration Schema (per-collector configuration)
+export const otelProfileConfigSchema = z
 	.object({
+		enabled: z.boolean().default(true),
 		service_name: z.string().optional(),
 		collector_url: z.string().default(""),
 		trace_type: z
-			.enum(["otel", "genai_extension", "vercel", "arize_otel"], {
+			.enum(["otel", "genai_extension", "vercel"], {
 				message: "Please select a trace type",
 			})
 			.default("otel"),
@@ -663,6 +664,11 @@ export const otelConfigSchema = z
 		}
 	});
 
+// OTEL Configuration Schema (wraps one or more collector profiles)
+export const otelConfigSchema = z.object({
+	profiles: z.array(otelProfileConfigSchema).min(1, "At least one profile is required"),
+});
+
 // OTEL form schema for the OtelFormFragment
 export const otelFormSchema = z
 	.object({
@@ -671,14 +677,16 @@ export const otelFormSchema = z
 	})
 	.superRefine((data, ctx) => {
 		if (data.enabled) {
-			const collectorUrl = (data.otel_config.collector_url || "").trim();
-			if (!collectorUrl) {
-				ctx.addIssue({
-					code: "custom",
-					path: ["otel_config", "collector_url"],
-					message: "Collector address is required",
-				});
-			}
+			data.otel_config.profiles.forEach((profile, i) => {
+				const collectorUrl = (profile.collector_url || "").trim();
+				if (!collectorUrl) {
+					ctx.addIssue({
+						code: "custom",
+						path: ["otel_config", "profiles", i, "collector_url"],
+						message: "Collector address is required",
+					});
+				}
+			});
 		}
 	});
 
@@ -944,6 +952,7 @@ export type NetworkFormConfigSchema = z.infer<typeof networkFormConfigSchema>;
 export type ProxyFormConfigSchema = z.infer<typeof proxyFormConfigSchema>;
 export type NetworkAndProxyFormSchema = z.infer<typeof networkAndProxyFormSchema>;
 export type ProxyOnlyFormSchema = z.infer<typeof proxyOnlyFormSchema>;
+export type OtelProfileConfigSchema = z.infer<typeof otelProfileConfigSchema>;
 export type OtelConfigSchema = z.infer<typeof otelConfigSchema>;
 export type OtelFormSchema = z.infer<typeof otelFormSchema>;
 export type MaximConfigSchema = z.infer<typeof maximConfigSchema>;
