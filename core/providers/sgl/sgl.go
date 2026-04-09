@@ -67,6 +67,9 @@ func (provider *SGLProvider) GetProviderKey() schemas.ModelProvider {
 // listModelsByKey performs a list models request for a single SGL key,
 // resolving the per-key URL so each backend is queried individually.
 func (provider *SGLProvider) listModelsByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	if key.SGLKeyConfig == nil || key.SGLKeyConfig.URL.GetValue() == "" {
+		return nil, providerUtils.NewConfigurationError("sgl key config URL is required")
+	}
 	return openai.ListModelsByKey(
 		ctx,
 		provider.client,

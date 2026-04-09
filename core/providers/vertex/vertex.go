@@ -114,7 +114,10 @@ const cloudPlatformScope = "https://www.googleapis.com/auth/cloud-platform"
 // It uses the JWT config if auth credentials are provided.
 // It returns an error if the token source creation fails.
 func getAuthTokenSource(key schemas.Key) (oauth2.TokenSource, error) {
-	authCredentials := key.VertexKeyConfig.AuthCredentials
+	var authCredentials schemas.EnvVar
+	if key.VertexKeyConfig != nil {
+		authCredentials = key.VertexKeyConfig.AuthCredentials
+	}
 	var tokenSource oauth2.TokenSource
 	if authCredentials.GetValue() == "" {
 		creds, err := google.FindDefaultCredentials(context.Background(), cloudPlatformScope)
@@ -173,7 +176,10 @@ func (provider *VertexProvider) GetProviderKey() schemas.ModelProvider {
 // 1. If deployments or allowedModels are configured, return those (no API call needed)
 // 2. Otherwise, fetch from the publishers.models.list API endpoint (Model Garden)
 func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
-	region := key.VertexKeyConfig.Region.GetValue()
+	var region string
+	if key.VertexKeyConfig != nil {
+		region = key.VertexKeyConfig.Region.GetValue()
+	}
 	if region == "" {
 		return nil, providerUtils.NewConfigurationError("region is not set in key config")
 	}
@@ -255,7 +261,9 @@ func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 			// Handle error response
 			if resp.StatusCode() != fasthttp.StatusOK {
 				if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
-					removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
+					if key.VertexKeyConfig != nil {
+						removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
+					}
 				}
 
 				// Non-Google publishers may not be available in all regions;

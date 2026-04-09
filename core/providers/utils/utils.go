@@ -2402,6 +2402,19 @@ func HandleMultipleListModelsRequests(
 		wg.Add(1)
 		go func(k schemas.Key) {
 			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					results <- schemas.ListModelsByKeyResult{
+						Err: &schemas.BifrostError{
+							IsBifrostError: true,
+							Error: &schemas.ErrorField{
+								Message: fmt.Sprintf("panic in listModelsByKey for key %s: %v", k.ID, r),
+							},
+						},
+						KeyID: k.ID,
+					}
+				}
+			}()
 			resp, bifrostErr := listModelsByKey(ctx, k, request)
 			results <- schemas.ListModelsByKeyResult{Response: resp, Err: bifrostErr, KeyID: k.ID}
 		}(key)

@@ -655,7 +655,7 @@ func (provider *BedrockProvider) listModelsByKey(ctx *schemas.BifrostContext, ke
 	providerName := provider.GetProviderKey()
 	config := key.BedrockKeyConfig
 	region := DefaultBedrockRegion
-	if config.Region != nil && config.Region.GetValue() != "" {
+	if config != nil && config.Region != nil && config.Region.GetValue() != "" {
 		region = config.Region.GetValue()
 	}
 
@@ -697,10 +697,14 @@ func (provider *BedrockProvider) listModelsByKey(ctx *schemas.BifrostContext, ke
 	// If Value is set, use API Key authentication - else use IAM role authentication
 	if key.Value.GetValue() != "" {
 		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", key.Value.GetValue()))
-	} else {
-		// Sign the request using either explicit credentials or IAM role authentication
-
+	} else if config != nil {
+		// Sign the request using explicit credentials or IAM role authentication
 		if err := signAWSRequest(ctx, req, config.AccessKey, config.SecretKey, config.SessionToken, config.RoleARN, config.ExternalID, config.RoleSessionName, region, bedrockSigningService); err != nil {
+			return nil, err
+		}
+	} else {
+		// No config and no API key — inherited auth via default credential chain
+		if err := signAWSRequest(ctx, req, schemas.EnvVar{}, schemas.EnvVar{}, nil, nil, nil, nil, region, bedrockSigningService); err != nil {
 			return nil, err
 		}
 	}

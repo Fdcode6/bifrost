@@ -66,6 +66,9 @@ func (provider *OllamaProvider) GetProviderKey() schemas.ModelProvider {
 
 // listModelsByKey performs a list models request for a single Ollama key.
 func (provider *OllamaProvider) listModelsByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	if key.OllamaKeyConfig == nil || key.OllamaKeyConfig.URL.GetValue() == "" {
+		return nil, providerUtils.NewConfigurationError("ollama key config URL is required")
+	}
 	return openai.ListModelsByKey(
 		ctx,
 		provider.client,
