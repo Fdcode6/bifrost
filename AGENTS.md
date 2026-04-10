@@ -105,7 +105,7 @@ bifrost/
 │   ├── maxim/                     # Maxim observability
 │   └── compat/                    # LiteLLM SDK compatibility (HTTP transport)
 │
-├── ui/                            # Next.js web interface
+├── ui/                            # React + vite web interface
 │   ├── app/workspace/             # Feature pages (20+ workspace sections)
 │   ├── components/                # Shared React components
 │   └── lib/                       # Constants, utilities, types
@@ -648,3 +648,259 @@ Systematically address unresolved PR review comments. Uses GraphQL to get unreso
 - **Converter functions**: Pure — no side effects, no logging, no HTTP.
 - **Pool names**: Descriptive string passed to `pool.New()` (e.g., `"channel-message"`, `"response-stream"`).
 - **Context keys**: Use `BifrostContextKey` type. Custom plugins should define their own key types to avoid collisions.
+
+# Frontend Code Guidelines & Patterns
+
+This document defines the standards, structure, and best practices for writing frontend code in this project.
+
+---
+
+## Tech Stack
+
+- **React** (with Vite)
+- **TypeScript**
+- **@tanstack/react-router** (type-safe routing)
+- **Tailwind CSS v4**
+- **Radix UI** (primitives)
+- **Shadcn UI** (component system)
+
+---
+
+## Folder Structure
+
+```
+
+/ui
+├── app                # Routes & pages
+├── components        # Shared components
+│   └── ui            # Core design system components
+├── hooks             # Custom React hooks
+├── lib               # Utilities, helpers, shared logic
+└── app/enterprise    # Enterprise-specific code (via symlink)
+
+```
+
+### Rules
+
+- All frontend code must live inside `/ui`
+- Routes and pages → `ui/app`
+- Shared/reusable components → `ui/components`
+- Core UI primitives → `ui/components/ui`
+- Utilities and libraries → `ui/lib`
+- Custom hooks → `ui/hooks`
+
+---
+
+## Libraries & Usage
+
+### Core Libraries
+
+- `react` → UI library
+- `typescript` → Type safety
+- `tailwindcss` → Styling
+- `@tanstack/react-router` → Routing
+
+### UI & Visualization
+
+- `@radix-ui/react-*` → UI primitives
+- `shadcn/ui` → Component system
+- `recharts` → Charts
+- `monaco-editor` → Code editor
+
+### Utilities
+
+- `date-fns` → Date/time formatting
+- `nuqs` → Query param state management
+
+### Tooling
+
+- `prettier` → Code formatting
+- `vitest` → Testing
+
+---
+
+## Routing Convention
+
+For every new route:
+
+```
+
+ui/app/<route-name>/
+├── layout.tsx   # Route definition using createFileRoute
+├── page.tsx     # Page content
+└── views/       # Optional: route-specific components
+
+```
+
+### Rules
+
+- Folder name must match route name
+- Always use `createFileRoute` in `layout.tsx`
+- `page.tsx` should only handle composition (not heavy logic)
+- Route-specific components go inside `views/`
+
+---
+
+## Component Guidelines
+
+### Reusability First
+
+- Always check if similar components/functions already exist
+- Prefer extending or refactoring existing code over duplication
+- Only create new components if reuse is not feasible
+
+---
+
+### Component Placement
+
+- Shared → `ui/components`
+- Route-specific → `views/` inside route folder
+
+---
+
+### JSX & Rendering
+
+- Avoid deeply nested conditional rendering
+- Break complex UI into smaller components
+- Keep components readable and maintainable
+
+---
+
+### Lists & Keys
+
+- Always use **stable, unique keys**
+- Never use array index as key (unless unavoidable)
+
+---
+
+## React Best Practices
+
+- Avoid unnecessary or unstable dependencies in hooks
+- Prevent infinite loops in `useEffect`
+- Keep dependency arrays accurate and minimal
+- Prefer derived state over duplicated state
+
+---
+
+## State Management
+
+### Priority Order
+
+1. Query Params (`nuqs`) → for persistent/shareable state
+2. Local State → for UI-only state
+3. Redux → only when truly necessary
+
+---
+
+### Query Params (`nuqs`)
+
+- Use for state that should persist across refresh/navigation
+- Use proper parsers like `parseAsString` or `parseAsInteger`
+- Do NOT mix query param state with local/redux state
+- Follow a single consistent pattern across the codebase
+
+---
+
+### Redux
+
+- Use only when global/shared state is required
+- Avoid unnecessary slices
+- Prefer simpler alternatives when possible
+
+---
+
+### RTK Query (`@reduxjs/toolkit/query`)
+
+- Use for API calls and caching
+- Use **granular tags** for cache invalidation
+- Avoid invalidating entire datasets unnecessarily
+- Implement **optimistic updates** where applicable
+
+---
+
+## Forms
+
+We use:
+
+- `react-hook-form`
+- `zod v4` (for schema validation)
+
+### Rules
+
+- Always define a Zod schema
+- Include meaningful validation messages
+- Prefer **inline field errors** (not toast notifications)
+- Use `refine` / `superRefine` for complex validation
+- Store schemas in: `ui/lib/types/schemas.ts`
+
+---
+
+## Tables
+
+- Use `@tanstack/react-table` **only for large/complex datasets**
+- For simple tables → build custom lightweight components
+- Prioritize performance over abstraction
+
+---
+
+## ⚡ Performance Guidelines
+
+- Lazy load heavy or rarely-used libraries
+- Avoid unnecessary re-renders
+- Split large components into smaller ones
+- Keep bundle size minimal
+
+---
+
+## Dependency Rules
+
+- Do NOT add new dependencies unless absolutely necessary
+- Always pin exact versions (no `^` or `~`)
+- Prefer existing libraries in the codebase
+
+---
+
+## TypeScript Guidelines
+
+- Avoid using `any` unless absolutely unavoidable
+- Prefer strict typing and inference
+- Define reusable types in shared locations
+
+---
+
+## Code Quality & Formatting
+
+After writing code:
+
+```bash
+cd ui && npm run format
+````
+
+Then verify build:
+
+```bash
+cd ui && npm run build
+```
+
+* Code must pass formatting and build checks
+* Follow consistent naming and structure conventions
+
+---
+
+## Anti-Patterns to Avoid
+
+* Duplicate components without considering reuse
+* Mixing multiple state management approaches unnecessarily
+* Overusing Redux
+* Using unstable hook dependencies
+* Adding heavy libraries for simple use cases
+* Poorly structured or deeply nested JSX
+
+---
+
+## Summary
+
+* Prioritize **reusability, performance, and consistency**
+* Follow **strict folder structure and routing conventions**
+* Use **the right tool for the right problem**
+* Keep code **simple, predictable, and maintainable**
