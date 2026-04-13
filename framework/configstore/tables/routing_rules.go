@@ -9,6 +9,30 @@ import (
 	"gorm.io/gorm"
 )
 
+// HealthPolicy defines failure-threshold / cooldown parameters for grouped health routing
+type HealthPolicy struct {
+	FailureThreshold     int `json:"failure_threshold"`      // failures within window before cooldown (default: 2)
+	FailureWindowSeconds int `json:"failure_window_seconds"` // sliding window in seconds (default: 30)
+	CooldownSeconds      int `json:"cooldown_seconds"`       // cooldown duration in seconds (default: 30)
+	ConsecutiveFailures  int `json:"consecutive_failures"`   // consecutive failures (ignoring time) before cooldown; 0 = use failure_threshold (default: 0)
+}
+
+// RouteGroupTarget is a single weighted target inside a route group.
+// Grouped health routing requires provider and model to be explicit.
+type RouteGroupTarget struct {
+	Provider *string `json:"provider,omitempty"`
+	Model    *string `json:"model,omitempty"`
+	KeyID    *string `json:"key_id,omitempty"`
+	Weight   float64 `json:"weight"`
+}
+
+// RouteGroup is an ordered group of targets with its own retry budget
+type RouteGroup struct {
+	Name       string             `json:"name"`
+	RetryLimit int                `json:"retry_limit"` // extra attempts on other targets after the first attempt; total attempts = 1 + retry_limit
+	Targets    []RouteGroupTarget `json:"targets"`
+}
+
 // TableRoutingRule represents a routing rule in the database
 type TableRoutingRule struct {
 	ID            string `gorm:"primaryKey;type:varchar(255)" json:"id"`
@@ -26,6 +50,13 @@ type TableRoutingRule struct {
 
 	Query       *string        `gorm:"type:text" json:"-"`
 	ParsedQuery map[string]any `gorm:"-" json:"query,omitempty"`
+
+	// Grouped health routing (new — all optional, backward-compatible)
+	GroupedRoutingEnabled bool          `gorm:"not null;default:false" json:"grouped_routing_enabled"`
+	HealthPolicyJSON      *string       `gorm:"type:text;column:health_policy" json:"-"`
+	ParsedHealthPolicy    *HealthPolicy `gorm:"-" json:"health_policy,omitempty"`
+	RouteGroupsJSON       *string       `gorm:"type:text;column:route_groups" json:"-"`
+	ParsedRouteGroups     []RouteGroup  `gorm:"-" json:"route_groups,omitempty"`
 
 	// Scope: where this rule applies
 	Scope   string  `gorm:"type:varchar(50);not null;uniqueIndex:idx_routing_rule_scope_name" json:"scope"` // "global" | "team" | "customer" | "virtual_key"
@@ -62,6 +93,24 @@ func (r *TableRoutingRule) BeforeSave(tx *gorm.DB) error {
 	} else {
 		r.Query = nil
 	}
+	if r.ParsedHealthPolicy != nil {
+		data, err := sonic.Marshal(r.ParsedHealthPolicy)
+		if err != nil {
+			return err
+		}
+		r.HealthPolicyJSON = bifrost.Ptr(string(data))
+	} else {
+		r.HealthPolicyJSON = nil
+	}
+	if len(r.ParsedRouteGroups) > 0 {
+		data, err := sonic.Marshal(r.ParsedRouteGroups)
+		if err != nil {
+			return err
+		}
+		r.RouteGroupsJSON = bifrost.Ptr(string(data))
+	} else {
+		r.RouteGroupsJSON = nil
+	}
 	return nil
 }
 
@@ -74,6 +123,18 @@ func (r *TableRoutingRule) AfterFind(tx *gorm.DB) error {
 	}
 	if r.Query != nil && strings.TrimSpace(*r.Query) != "" {
 		if err := sonic.Unmarshal([]byte(*r.Query), &r.ParsedQuery); err != nil {
+			return err
+		}
+	}
+	if r.HealthPolicyJSON != nil && strings.TrimSpace(*r.HealthPolicyJSON) != "" {
+		var hp HealthPolicy
+		if err := sonic.Unmarshal([]byte(*r.HealthPolicyJSON), &hp); err != nil {
+			return err
+		}
+		r.ParsedHealthPolicy = &hp
+	}
+	if r.RouteGroupsJSON != nil && strings.TrimSpace(*r.RouteGroupsJSON) != "" {
+		if err := sonic.Unmarshal([]byte(*r.RouteGroupsJSON), &r.ParsedRouteGroups); err != nil {
 			return err
 		}
 	}
