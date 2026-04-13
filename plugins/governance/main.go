@@ -33,6 +33,12 @@ const (
 	governanceIsCacheReadContextKey schemas.BifrostContextKey = "bf-governance-is-cache-read"
 	governanceIsBatchContextKey     schemas.BifrostContextKey = "bf-governance-is-batch"
 
+	// Grouped health routing context keys — set by HTTPTransportPreHook, read by PreLLMHook/PostLLMHook
+	groupedRoutingActiveContextKey      schemas.BifrostContextKey = "bf-grouped-routing-active"        // bool: true when this request was routed by grouped routing
+	groupedRoutingFallbackKeyIDsCtxKey  schemas.BifrostContextKey = "bf-grouped-routing-fb-key-ids"    // []string: key_id for each fallback target (1:1 with fallbacks)
+	groupedRoutingRuleIDContextKey      schemas.BifrostContextKey = "bf-grouped-routing-rule-id"       // string: matched grouped routing rule id
+	groupedRoutingPinnedKeyIDContextKey schemas.BifrostContextKey = "bf-grouped-routing-pinned-key-id" // string: key_id pinned for current attempt (for PostLLMHook health tracking)
+
 	VirtualKeyPrefix = "sk-bf-"
 )
 
@@ -57,6 +63,7 @@ type BaseGovernancePlugin interface {
 	PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.BifrostMCPResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostMCPResponse, *schemas.BifrostError, error)
 	Cleanup() error
 	GetGovernanceStore() GovernanceStore
+	GetHealthTracker() *HealthTracker
 }
 
 // GovernancePlugin implements the main governance plugin with hierarchical budget system
@@ -67,10 +74,11 @@ type GovernancePlugin struct {
 	cleanupOnce sync.Once      // Ensure cleanup happens only once
 
 	// Core components with clear separation of concerns
-	store    GovernanceStore // Pure data access layer
-	resolver *BudgetResolver // Pure decision engine for hierarchical governance
-	tracker  *UsageTracker   // Business logic owner (updates, resets, persistence)
-	engine   *RoutingEngine  // Routing engine for dynamic routing
+	store         GovernanceStore // Pure data access layer
+	resolver      *BudgetResolver // Pure decision engine for hierarchical governance
+	tracker       *UsageTracker   // Business logic owner (updates, resets, persistence)
+	engine        *RoutingEngine  // Routing engine for dynamic routing
+	healthTracker *HealthTracker  // Health state tracker for grouped routing
 
 	// Dependencies
 	configStore  configstore.ConfigStore
@@ -195,8 +203,11 @@ func Init(
 		}
 	}
 
-	// 5. Routing engine (dynamically routing requests based on routing rules)
-	engine, err := NewRoutingEngine(governanceStore, logger)
+	// 5. Health tracker for grouped routing targets
+	healthTracker := NewHealthTracker()
+
+	// 6. Routing engine (dynamically routing requests based on routing rules)
+	engine, err := NewRoutingEngine(governanceStore, logger, healthTracker)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize routing engine: %w", err)
 	}
@@ -209,6 +220,7 @@ func Init(
 		resolver:        resolver,
 		tracker:         tracker,
 		engine:          engine,
+		healthTracker:   healthTracker,
 		configStore:     configStore,
 		modelCatalog:    modelCatalog,
 		mcpCatalog:      mcpCatalog,
@@ -265,7 +277,8 @@ func InitFromStore(
 	}
 	resolver := NewBudgetResolver(governanceStore, modelCatalog, logger)
 	tracker := NewUsageTracker(ctx, governanceStore, resolver, configStore, logger)
-	engine, err := NewRoutingEngine(governanceStore, logger)
+	healthTracker := NewHealthTracker()
+	engine, err := NewRoutingEngine(governanceStore, logger, healthTracker)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize routing engine: %w", err)
 	}
@@ -294,6 +307,7 @@ func InitFromStore(
 		resolver:        resolver,
 		tracker:         tracker,
 		engine:          engine,
+		healthTracker:   healthTracker,
 		configStore:     configStore,
 		modelCatalog:    modelCatalog,
 		mcpCatalog:      mcpCatalog,
@@ -832,6 +846,18 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 			ctx.SetValue(schemas.BifrostContextKeyAPIKeyID, decision.KeyID)
 		}
 
+		// Store grouped routing context for fallback key_id restoration (PreLLMHook)
+		// and scoped health tracking (PostLLMHook)
+		if decision.IsGroupedRouting {
+			ctx.SetValue(groupedRoutingActiveContextKey, true)
+			ctx.SetValue(groupedRoutingRuleIDContextKey, decision.MatchedRuleID)
+			ctx.SetValue(groupedRoutingPinnedKeyIDContextKey, decision.KeyID)
+			ctx.SetValue(schemas.BifrostContextKeyDisableProviderRetries, true)
+			if len(decision.FallbackKeyIDs) > 0 {
+				ctx.SetValue(groupedRoutingFallbackKeyIDsCtxKey, decision.FallbackKeyIDs)
+			}
+		}
+
 		p.logger.Debug("[Governance] Applied routing decision: provider=%s, model=%s, keyID=%s, fallbacks=%v", decision.Provider, decision.Model, decision.KeyID, decision.Fallbacks)
 	}
 
@@ -1031,6 +1057,26 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 	if bifrost.GetBoolFromContext(ctx, schemas.BifrostContextKeySkipKeySelection) {
 		return req, nil, nil
 	}
+
+	// Restore key_id for grouped routing fallbacks.
+	// clearCtxForFallback clears BifrostContextKeyAPIKeyID between fallback attempts,
+	// so we re-pin the key_id from the fallback plan stored in context by HTTPTransportPreHook.
+	if isGrouped, _ := ctx.Value(groupedRoutingActiveContextKey).(bool); isGrouped {
+		fallbackIndex, _ := ctx.Value(schemas.BifrostContextKeyFallbackIndex).(int)
+		if fallbackIndex > 0 {
+			if keyIDs, ok := ctx.Value(groupedRoutingFallbackKeyIDsCtxKey).([]string); ok {
+				if idx := fallbackIndex - 1; idx < len(keyIDs) {
+					keyID := keyIDs[idx]
+					if keyID != "" {
+						ctx.SetValue(schemas.BifrostContextKeyAPIKeyID, keyID)
+					}
+					// Update pinned key_id for PostLLMHook health tracking
+					ctx.SetValue(groupedRoutingPinnedKeyIDContextKey, keyID)
+				}
+			}
+		}
+	}
+
 	// Validate required headers are present
 	if headerErr := p.validateRequiredHeaders(ctx); headerErr != nil {
 		return req, &schemas.LLMPluginShortCircuit{Error: headerErr}, nil
@@ -1077,6 +1123,26 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 
 	// Extract request type, provider, and model
 	requestType, provider, model := bifrost.GetResponseFields(result, err)
+
+	// Record health only for grouped routing requests — prevents unrelated traffic from
+	// polluting health buckets. Use the pinned key_id (not SelectedKeyID) so the health
+	// key matches the configured route group target identity.
+	if isGrouped, _ := ctx.Value(groupedRoutingActiveContextKey).(bool); isGrouped && provider != "" && model != "" {
+		ruleID, _ := ctx.Value(groupedRoutingRuleIDContextKey).(string)
+		pinnedKeyID, _ := ctx.Value(groupedRoutingPinnedKeyIDContextKey).(string)
+		if ruleID != "" {
+			targetKey := TargetKey(string(provider), model, pinnedKeyID)
+			if err != nil {
+				failureMsg := "unknown error"
+				if err.Error != nil {
+					failureMsg = err.Error.Message
+				}
+				p.healthTracker.RecordFailureForRule(ruleID, targetKey, failureMsg, time.Now())
+			} else {
+				p.healthTracker.RecordSuccessForRule(ruleID, targetKey)
+			}
+		}
+	}
 
 	// Extract governance information
 	virtualKey := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
@@ -1328,6 +1394,11 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, provi
 // GetGovernanceStore returns the governance store
 func (p *GovernancePlugin) GetGovernanceStore() GovernanceStore {
 	return p.store
+}
+
+// GetHealthTracker returns the health tracker for grouped routing targets
+func (p *GovernancePlugin) GetHealthTracker() *HealthTracker {
+	return p.healthTracker
 }
 
 // GenerateVirtualKey is a helper function

@@ -988,7 +988,12 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	}
 	governancePlugin, _ := lib.FindPluginAs[schemas.LLMPlugin](s.Config, governancePluginName)
 	if governancePlugin != nil {
-		governanceHandler, err = handlers.NewGovernanceHandler(callbacks, s.Config.ConfigStore)
+		// Extract health tracker from governance plugin if available
+		var healthTracker *governance.HealthTracker
+		if gp, ok := governancePlugin.(governance.BaseGovernancePlugin); ok {
+			healthTracker = gp.GetHealthTracker()
+		}
+		governanceHandler, err = handlers.NewGovernanceHandler(callbacks, s.Config.ConfigStore, healthTracker)
 		if err != nil {
 			return fmt.Errorf("failed to initialize governance handler: %v", err)
 		}

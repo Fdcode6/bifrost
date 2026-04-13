@@ -4740,8 +4740,12 @@ func executeRequestWithRetries[T any](
 	var result T
 	var bifrostError *schemas.BifrostError
 	var attempts int
+	effectiveMaxRetries := config.NetworkConfig.MaxRetries
+	if disableProviderRetries, _ := ctx.Value(schemas.BifrostContextKeyDisableProviderRetries).(bool); disableProviderRetries {
+		effectiveMaxRetries = 0
+	}
 
-	for attempts = 0; attempts <= config.NetworkConfig.MaxRetries; attempts++ {
+	for attempts = 0; attempts <= effectiveMaxRetries; attempts++ {
 		ctx.SetValue(schemas.BifrostContextKeyNumberOfRetries, attempts)
 		if attempts > 0 {
 			// Log retry attempt
@@ -4754,7 +4758,7 @@ func executeRequestWithRetries[T any](
 					retryMsg += ", type=" + *bifrostError.Type
 				}
 			}
-			logger.Debug("retrying request (attempt %d/%d) for model %s: %s", attempts, config.NetworkConfig.MaxRetries, model, retryMsg)
+			logger.Debug("retrying request (attempt %d/%d) for model %s: %s", attempts, effectiveMaxRetries, model, retryMsg)
 
 			// Calculate and apply backoff
 			backoff := calculateBackoff(attempts-1, config)

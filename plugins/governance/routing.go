@@ -36,8 +36,10 @@ type RoutingDecision struct {
 	Model           string   // Model to use (or empty to use original)
 	KeyID           string   // Optional: pin a specific API key by UUID ("" = no pin)
 	Fallbacks       []string // Fallback chain: ["provider/model", ...]
+	FallbackKeyIDs  []string // Key IDs for each fallback target (1:1 with Fallbacks, "" = no pin)
 	MatchedRuleID   string   // ID of the rule that matched
 	MatchedRuleName string   // Name of the rule that matched
+	IsGroupedRouting bool    // True when this decision was built by grouped health routing
 }
 
 // RoutingContext holds all data needed for routing rule evaluation
@@ -54,12 +56,13 @@ type RoutingContext struct {
 }
 
 type RoutingEngine struct {
-	store  GovernanceStore
-	logger schemas.Logger
+	store         GovernanceStore
+	logger        schemas.Logger
+	healthTracker *HealthTracker
 }
 
 // NewRoutingEngine creates a new RoutingEngine
-func NewRoutingEngine(store GovernanceStore, logger schemas.Logger) (*RoutingEngine, error) {
+func NewRoutingEngine(store GovernanceStore, logger schemas.Logger, healthTracker *HealthTracker) (*RoutingEngine, error) {
 	if store == nil {
 		return nil, fmt.Errorf("store cannot be nil")
 	}
@@ -69,8 +72,9 @@ func NewRoutingEngine(store GovernanceStore, logger schemas.Logger) (*RoutingEng
 	}
 
 	return &RoutingEngine{
-		store:  store,
-		logger: logger,
+		store:         store,
+		logger:        logger,
+		healthTracker: healthTracker,
 	}, nil
 }
 
@@ -141,6 +145,20 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 
 			// If rule matched, select a target probabilistically and return routing decision
 			if matched {
+				// Check if grouped routing is enabled for this rule
+				if rule.GroupedRoutingEnabled && len(rule.ParsedRouteGroups) > 0 {
+					decision := re.buildGroupedRoutingDecision(ctx, rule, routingCtx)
+					if decision == nil {
+						// All groups exhausted / no available targets — skip this rule
+						ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule,
+							fmt.Sprintf("Rule '%s' [%s] → matched (grouped routing), but all targets unavailable, skipping", rule.Name, rule.CelExpression))
+						continue
+					}
+					ctx.SetValue(schemas.BifrostContextKeyGovernanceRoutingRuleID, rule.ID)
+					ctx.SetValue(schemas.BifrostContextKeyGovernanceRoutingRuleName, rule.Name)
+					return decision, nil
+				}
+
 				target, ok := selectWeightedTarget(rule.Targets)
 				if !ok {
 					re.logger.Debug("[RoutingEngine] Rule %s matched but has no valid targets (empty list or all-negative weights), skipping — note: all-zero weights use uniform selection and would not reach here", rule.Name)
@@ -186,6 +204,11 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 	// No rule matched - return nil decision (caller should use default routing)
 	re.logger.Debug("[RoutingEngine] No routing rule matched, using default routing")
 	return nil, nil
+}
+
+// buildGroupedRoutingDecision delegates to the package-level builder with the engine's HealthTracker
+func (re *RoutingEngine) buildGroupedRoutingDecision(ctx *schemas.BifrostContext, rule *configstoreTables.TableRoutingRule, routingCtx *RoutingContext) *RoutingDecision {
+	return buildGroupedRoutingDecision(ctx, rule, routingCtx, re.healthTracker, re.logger)
 }
 
 // selectWeightedTarget picks one target from the slice using weighted random selection.

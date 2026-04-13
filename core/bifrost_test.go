@@ -162,6 +162,39 @@ func TestExecuteRequestWithRetries_RetryLimits(t *testing.T) {
 			t.Errorf("Expected rate limit error, got %s", err.Error.Message)
 		}
 	})
+
+	t.Run("GroupedRoutingDisablesProviderRetries", func(t *testing.T) {
+		groupedCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		groupedCtx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+		groupedCtx.SetValue(schemas.BifrostContextKeyDisableProviderRetries, true)
+
+		callCount := 0
+		handler := func() (string, *schemas.BifrostError) {
+			callCount++
+			return "", createBifrostError("rate limit exceeded", Ptr(429), nil, false)
+		}
+
+		result, err := executeRequestWithRetries(
+			groupedCtx,
+			config,
+			handler,
+			schemas.ChatCompletionRequest,
+			schemas.OpenAI,
+			"gpt-4",
+			nil,
+			logger,
+		)
+
+		if callCount != 1 {
+			t.Errorf("Expected 1 call when grouped routing disables provider retries, got %d", callCount)
+		}
+		if result != "" {
+			t.Errorf("Expected empty result, got %s", result)
+		}
+		if err == nil {
+			t.Fatal("Expected error when grouped routing disables provider retries")
+		}
+	})
 }
 
 // Test executeRequestWithRetries - non-retryable errors

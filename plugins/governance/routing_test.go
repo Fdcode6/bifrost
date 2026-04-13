@@ -194,7 +194,7 @@ func TestEvaluateRoutingRules_NilContext(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
 	require.NoError(t, err)
 
-	engine, err := NewRoutingEngine(store, NewMockLogger())
+	engine, err := NewRoutingEngine(store, NewMockLogger(), NewHealthTracker())
 	require.NoError(t, err)
 
 	_, err = engine.EvaluateRoutingRules(schemas.NewBifrostContext(context.Background(), time.Now()), nil)
@@ -207,7 +207,7 @@ func TestEvaluateRoutingRules_NoRulesMatch(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
 	require.NoError(t, err)
 
-	engine, err := NewRoutingEngine(store, NewMockLogger())
+	engine, err := NewRoutingEngine(store, NewMockLogger(), NewHealthTracker())
 	require.NoError(t, err)
 
 	ctx := &RoutingContext{
@@ -228,7 +228,7 @@ func TestEvaluateRoutingRules_GlobalRuleMatches(t *testing.T) {
 	require.NoError(t, err)
 	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
-	engine, err := NewRoutingEngine(store, NewMockLogger())
+	engine, err := NewRoutingEngine(store, NewMockLogger(), NewHealthTracker())
 	require.NoError(t, err)
 
 	// Create a global routing rule
@@ -279,7 +279,7 @@ func TestEvaluateRoutingRules_MultiTargetDeterministicWithPinnedKey(t *testing.T
 	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
 	require.NoError(t, err)
 
-	engine, err := NewRoutingEngine(store, NewMockLogger())
+	engine, err := NewRoutingEngine(store, NewMockLogger(), NewHealthTracker())
 	require.NoError(t, err)
 
 	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
@@ -348,7 +348,7 @@ func TestEvaluateRoutingRules_ScopePrecedence(t *testing.T) {
 	require.NoError(t, err)
 	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
-	engine, err := NewRoutingEngine(store, NewMockLogger())
+	engine, err := NewRoutingEngine(store, NewMockLogger(), NewHealthTracker())
 	require.NoError(t, err)
 
 	// Create global rule
@@ -412,7 +412,7 @@ func TestEvaluateRoutingRules_PriorityOrdering(t *testing.T) {
 	require.NoError(t, err)
 	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
-	engine, err := NewRoutingEngine(store, NewMockLogger())
+	engine, err := NewRoutingEngine(store, NewMockLogger(), NewHealthTracker())
 	require.NoError(t, err)
 
 	// Low precedence rule (evaluated second): higher priority number
@@ -485,7 +485,7 @@ func TestResolveRoutingWithFallback_RuleMatches(t *testing.T) {
 		QueryParams: map[string]string{},
 	}
 
-	engine, err := NewRoutingEngine(store, NewMockLogger())
+	engine, err := NewRoutingEngine(store, NewMockLogger(), NewHealthTracker())
 	require.NoError(t, err)
 
 	decision, err := resolveRoutingWithFallback(bgCtx, ctx, engine)
@@ -508,7 +508,7 @@ func TestResolveRoutingWithFallback_NoMatch(t *testing.T) {
 		QueryParams: map[string]string{},
 	}
 
-	engine, err := NewRoutingEngine(store, NewMockLogger())
+	engine, err := NewRoutingEngine(store, NewMockLogger(), NewHealthTracker())
 	require.NoError(t, err)
 
 	decision, err := resolveRoutingWithFallback(schemas.NewBifrostContext(context.Background(), time.Now()), ctx, engine)
@@ -527,7 +527,7 @@ func TestEvaluateRoutingRules_DisabledRulesIgnored(t *testing.T) {
 	require.NoError(t, err)
 	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
-	engine, err := NewRoutingEngine(store, NewMockLogger())
+	engine, err := NewRoutingEngine(store, NewMockLogger(), NewHealthTracker())
 	require.NoError(t, err)
 
 	// Create disabled rule
@@ -579,7 +579,7 @@ func TestEvaluateRoutingRules_ComplexExpression(t *testing.T) {
 	require.NoError(t, err)
 	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
-	engine, err := NewRoutingEngine(store, NewMockLogger())
+	engine, err := NewRoutingEngine(store, NewMockLogger(), NewHealthTracker())
 	require.NoError(t, err)
 
 	rule := &configstoreTables.TableRoutingRule{
@@ -623,7 +623,7 @@ func TestEvaluateRoutingRules_NilVirtualKey(t *testing.T) {
 	require.NoError(t, err)
 	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
-	engine, err := NewRoutingEngine(store, NewMockLogger())
+	engine, err := NewRoutingEngine(store, NewMockLogger(), NewHealthTracker())
 	require.NoError(t, err)
 
 	rule := &configstoreTables.TableRoutingRule{
@@ -659,7 +659,7 @@ func TestEvaluateRoutingRules_MissingHeaderGracefully(t *testing.T) {
 	require.NoError(t, err)
 	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
-	engine, err := NewRoutingEngine(store, NewMockLogger())
+	engine, err := NewRoutingEngine(store, NewMockLogger(), NewHealthTracker())
 	require.NoError(t, err)
 
 	// Create a rule that checks for a header that may not be present
@@ -865,6 +865,55 @@ func TestCompileAndCacheProgram_RateLimitExpression(t *testing.T) {
 	program, err := store.GetRoutingProgram(rule)
 	require.NoError(t, err)
 	assert.NotNil(t, program)
+}
+
+func TestBuildGroupedRoutingDecision_DoesNotShareCooldownAcrossRules(t *testing.T) {
+	healthTracker := NewHealthTracker()
+	now := time.Now()
+	targetKey := TargetKey("openai", "gpt-4.1", "relay-a")
+	healthTracker.RecordFailureForRule("rule-a", targetKey, "502", now)
+	healthTracker.RecordFailureForRule("rule-a", targetKey, "503", now.Add(time.Second))
+
+	routingCtx := &RoutingContext{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4.1",
+	}
+	target := configstoreTables.RouteGroupTarget{
+		Provider: bifrost.Ptr("openai"),
+		Model:    bifrost.Ptr("gpt-4.1"),
+		KeyID:    bifrost.Ptr("relay-a"),
+		Weight:   1,
+	}
+	policy := &configstoreTables.HealthPolicy{
+		FailureThreshold:     2,
+		FailureWindowSeconds: 30,
+		CooldownSeconds:      30,
+	}
+
+	ctxA := schemas.NewBifrostContext(context.Background(), time.Now())
+	decisionA := buildGroupedRoutingDecision(ctxA, &configstoreTables.TableRoutingRule{
+		ID:                 "rule-a",
+		Name:               "Rule A",
+		ParsedHealthPolicy: policy,
+		ParsedRouteGroups: []configstoreTables.RouteGroup{
+			{Name: "primary", RetryLimit: 0, Targets: []configstoreTables.RouteGroupTarget{target}},
+		},
+	}, routingCtx, healthTracker, NewMockLogger())
+	assert.Nil(t, decisionA, "rule-a should see its own target in cooldown")
+
+	ctxB := schemas.NewBifrostContext(context.Background(), time.Now())
+	decisionB := buildGroupedRoutingDecision(ctxB, &configstoreTables.TableRoutingRule{
+		ID:                 "rule-b",
+		Name:               "Rule B",
+		ParsedHealthPolicy: policy,
+		ParsedRouteGroups: []configstoreTables.RouteGroup{
+			{Name: "primary", RetryLimit: 0, Targets: []configstoreTables.RouteGroupTarget{target}},
+		},
+	}, routingCtx, healthTracker, NewMockLogger())
+	require.NotNil(t, decisionB, "rule-b should not inherit cooldown from rule-a")
+	assert.Equal(t, "openai", decisionB.Provider)
+	assert.Equal(t, "gpt-4.1", decisionB.Model)
+	assert.Equal(t, "relay-a", decisionB.KeyID)
 }
 
 // TestCompileAndCacheProgram_BudgetExpression tests compiling budget expression
