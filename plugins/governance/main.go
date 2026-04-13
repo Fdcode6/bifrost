@@ -35,7 +35,6 @@ const (
 
 	// Grouped health routing context keys — set by HTTPTransportPreHook, read by PreLLMHook/PostLLMHook
 	groupedRoutingActiveContextKey      schemas.BifrostContextKey = "bf-grouped-routing-active"        // bool: true when this request was routed by grouped routing
-	groupedRoutingFallbackKeyIDsCtxKey  schemas.BifrostContextKey = "bf-grouped-routing-fb-key-ids"    // []string: key_id for each fallback target (1:1 with fallbacks)
 	groupedRoutingRuleIDContextKey      schemas.BifrostContextKey = "bf-grouped-routing-rule-id"       // string: matched grouped routing rule id
 	groupedRoutingPinnedKeyIDContextKey schemas.BifrostContextKey = "bf-grouped-routing-pinned-key-id" // string: key_id pinned for current attempt (for PostLLMHook health tracking)
 
@@ -854,7 +853,7 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 			ctx.SetValue(groupedRoutingPinnedKeyIDContextKey, decision.KeyID)
 			ctx.SetValue(schemas.BifrostContextKeyDisableProviderRetries, true)
 			if len(decision.FallbackKeyIDs) > 0 {
-				ctx.SetValue(groupedRoutingFallbackKeyIDsCtxKey, decision.FallbackKeyIDs)
+				ctx.SetValue(schemas.BifrostContextKeyFallbackKeyIDs, decision.FallbackKeyIDs)
 			}
 		}
 
@@ -1058,20 +1057,16 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 		return req, nil, nil
 	}
 
-	// Restore key_id for grouped routing fallbacks.
-	// clearCtxForFallback clears BifrostContextKeyAPIKeyID between fallback attempts,
-	// so we re-pin the key_id from the fallback plan stored in context by HTTPTransportPreHook.
+	// Keep the grouped routing health pin aligned with the current fallback attempt.
+	// The actual APIKeyID pin is restored by the core fallback loop because plugin
+	// pre-hooks cannot write reserved context keys while BlockRestrictedWrites is active.
 	if isGrouped, _ := ctx.Value(groupedRoutingActiveContextKey).(bool); isGrouped {
 		fallbackIndex, _ := ctx.Value(schemas.BifrostContextKeyFallbackIndex).(int)
 		if fallbackIndex > 0 {
-			if keyIDs, ok := ctx.Value(groupedRoutingFallbackKeyIDsCtxKey).([]string); ok {
+			ctx.SetValue(groupedRoutingPinnedKeyIDContextKey, "")
+			if keyIDs, ok := ctx.Value(schemas.BifrostContextKeyFallbackKeyIDs).([]string); ok {
 				if idx := fallbackIndex - 1; idx < len(keyIDs) {
-					keyID := keyIDs[idx]
-					if keyID != "" {
-						ctx.SetValue(schemas.BifrostContextKeyAPIKeyID, keyID)
-					}
-					// Update pinned key_id for PostLLMHook health tracking
-					ctx.SetValue(groupedRoutingPinnedKeyIDContextKey, keyID)
+					ctx.SetValue(groupedRoutingPinnedKeyIDContextKey, keyIDs[idx])
 				}
 			}
 		}

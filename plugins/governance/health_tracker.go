@@ -136,44 +136,7 @@ func (ht *HealthTracker) IsInCooldown(key string, policy *configstoreTables.Heal
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// If explicitly in cooldown, check if expired
-	if !s.cooldownUntil.IsZero() {
-		if now.After(s.cooldownUntil) {
-			// cooldown expired — auto-recover
-			s.cooldownUntil = time.Time{}
-			s.failures = s.failures[:0]
-			s.consecutiveFailures = 0
-			return false
-		}
-		return true
-	}
-
-	// Prune failures outside window
-	windowStart := now.Add(-time.Duration(policy.FailureWindowSeconds) * time.Second)
-	pruned := s.failures[:0]
-	for _, t := range s.failures {
-		if t.After(windowStart) {
-			pruned = append(pruned, t)
-		}
-	}
-	s.failures = pruned
-
-	// Dual-trigger check:
-	// 1. Window trigger: N failures within the sliding window (handles burst failures)
-	// 2. Consecutive trigger: N consecutive failures regardless of time (handles slow-drip failures)
-	windowTriggered := len(s.failures) >= policy.FailureThreshold
-
-	consecThreshold := policy.ConsecutiveFailures
-	if consecThreshold <= 0 {
-		consecThreshold = policy.FailureThreshold // default: same as window threshold
-	}
-	consecutiveTriggered := s.consecutiveFailures >= consecThreshold
-
-	if windowTriggered || consecutiveTriggered {
-		s.cooldownUntil = now.Add(time.Duration(policy.CooldownSeconds) * time.Second)
-		return true
-	}
-	return false
+	return evaluateCooldownLocked(s, policy, now)
 }
 
 // IsInCooldownForRule evaluates cooldown for a target scoped to a specific routing rule.
@@ -218,23 +181,7 @@ func (ht *HealthTracker) getTargetStatus(stateKey, displayKey string, policy *co
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Check cooldown expiry
-	if !s.cooldownUntil.IsZero() && now.After(s.cooldownUntil) {
-		// cooldown expired — auto-recover
-		s.cooldownUntil = time.Time{}
-		s.failures = s.failures[:0]
-		s.consecutiveFailures = 0
-	}
-
-	// Prune old failures outside window
-	windowStart := now.Add(-time.Duration(policy.FailureWindowSeconds) * time.Second)
-	pruned := s.failures[:0]
-	for _, t := range s.failures {
-		if t.After(windowStart) {
-			pruned = append(pruned, t)
-		}
-	}
-	s.failures = pruned
+	inCooldown := evaluateCooldownLocked(s, policy, now)
 
 	snap := TargetHealthSnapshot{
 		Key:                 displayKey,
@@ -242,29 +189,12 @@ func (ht *HealthTracker) getTargetStatus(stateKey, displayKey string, policy *co
 		ConsecutiveFailures: s.consecutiveFailures,
 	}
 
-	if !s.cooldownUntil.IsZero() && now.Before(s.cooldownUntil) {
-		// Already in cooldown
+	if inCooldown && !s.cooldownUntil.IsZero() {
 		snap.Status = "cooldown"
 		cu := s.cooldownUntil.UTC().Format(time.RFC3339)
 		snap.CooldownUntil = &cu
 	} else {
-		// Evaluate thresholds — same logic as IsInCooldown
-		windowTriggered := len(s.failures) >= policy.FailureThreshold
-		consecThreshold := policy.ConsecutiveFailures
-		if consecThreshold <= 0 {
-			consecThreshold = policy.FailureThreshold
-		}
-		consecutiveTriggered := s.consecutiveFailures >= consecThreshold
-
-		if windowTriggered || consecutiveTriggered {
-			// Threshold met — trigger cooldown (consistent with routing behavior)
-			s.cooldownUntil = now.Add(time.Duration(policy.CooldownSeconds) * time.Second)
-			snap.Status = "cooldown"
-			cu := s.cooldownUntil.UTC().Format(time.RFC3339)
-			snap.CooldownUntil = &cu
-		} else {
-			snap.Status = "available"
-		}
+		snap.Status = "available"
 	}
 
 	if !s.lastFailureTime.IsZero() {
@@ -274,6 +204,52 @@ func (ht *HealthTracker) getTargetStatus(stateKey, displayKey string, policy *co
 	}
 
 	return snap
+}
+
+func evaluateCooldownLocked(s *TargetHealthState, policy *configstoreTables.HealthPolicy, now time.Time) bool {
+	if !s.cooldownUntil.IsZero() {
+		if !now.Before(s.cooldownUntil) {
+			resetCooldownLocked(s)
+			return false
+		}
+		return true
+	}
+
+	windowStart := now.Add(-time.Duration(policy.FailureWindowSeconds) * time.Second)
+	pruned := s.failures[:0]
+	for _, t := range s.failures {
+		if t.After(windowStart) {
+			pruned = append(pruned, t)
+		}
+	}
+	s.failures = pruned
+
+	windowTriggered := len(s.failures) >= policy.FailureThreshold
+	consecThreshold := policy.ConsecutiveFailures
+	if consecThreshold <= 0 {
+		consecThreshold = policy.FailureThreshold
+	}
+	consecutiveTriggered := s.consecutiveFailures >= consecThreshold
+	if !windowTriggered && !consecutiveTriggered {
+		return false
+	}
+
+	cooldownStart := s.lastFailureTime
+	if cooldownStart.IsZero() {
+		cooldownStart = now
+	}
+	s.cooldownUntil = cooldownStart.Add(time.Duration(policy.CooldownSeconds) * time.Second)
+	if !now.Before(s.cooldownUntil) {
+		resetCooldownLocked(s)
+		return false
+	}
+	return true
+}
+
+func resetCooldownLocked(s *TargetHealthState) {
+	s.cooldownUntil = time.Time{}
+	s.failures = s.failures[:0]
+	s.consecutiveFailures = 0
 }
 
 // GetAllStatuses returns snapshots for all tracked targets

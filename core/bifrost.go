@@ -4143,6 +4143,7 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 		bifrost.logger.Debug(fmt.Sprintf("trying fallback provider %s with model %s", fallback.Provider, fallback.Model))
 		ctx.SetValue(schemas.BifrostContextKeyFallbackRequestID, uuid.New().String())
 		clearCtxForFallback(ctx)
+		restoreFallbackAPIKeyIDFromContext(ctx)
 
 		// Start span for fallback attempt
 		tracer := bifrost.getTracer()
@@ -4257,6 +4258,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 		ctx.SetValue(schemas.BifrostContextKeyFallbackIndex, i+1)
 		ctx.SetValue(schemas.BifrostContextKeyFallbackRequestID, uuid.New().String())
 		clearCtxForFallback(ctx)
+		restoreFallbackAPIKeyIDFromContext(ctx)
 
 		// Start span for fallback attempt
 		tracer := bifrost.getTracer()

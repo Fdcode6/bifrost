@@ -233,3 +233,25 @@ func TestHealthTracker_GetTargetStatus_AvailableBelowThreshold(t *testing.T) {
 	assert.Equal(t, "available", snap.Status, "below threshold should be available")
 	assert.Equal(t, 1, snap.FailureCount)
 }
+
+func TestHealthTracker_LazyCooldownUsesLastFailureTime(t *testing.T) {
+	ht := NewHealthTracker()
+	policy := &configstoreTables.HealthPolicy{
+		FailureThreshold:     2,
+		FailureWindowSeconds: 30,
+		CooldownSeconds:      30,
+		ConsecutiveFailures:  2,
+	}
+	now := time.Now()
+
+	ht.RecordFailure("relay:gpt-4.1:key-a", "502", now)
+	ht.RecordFailure("relay:gpt-4.1:key-a", "502", now.Add(1*time.Second))
+
+	// No evaluation happened when the threshold was crossed. A late evaluation after the
+	// cooldown window should not start a brand-new cooldown from "now".
+	assert.False(t, ht.IsInCooldown("relay:gpt-4.1:key-a", policy, now.Add(32*time.Second)))
+
+	snap := ht.GetTargetStatus("relay:gpt-4.1:key-a", policy, now.Add(32*time.Second))
+	assert.Equal(t, "available", snap.Status)
+	assert.Equal(t, 0, snap.ConsecutiveFailures)
+}

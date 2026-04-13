@@ -232,6 +232,38 @@ func clearCtxForFallback(ctx *schemas.BifrostContext) {
 	ctx.ClearValue(schemas.BifrostContextKeyAPIKeyName)
 }
 
+// restoreFallbackAPIKeyIDFromContext restores the explicit key pin for the current
+// fallback attempt. Grouped routing prepares this fallback key_id plan before the
+// core fallback loop starts because plugin pre-hooks cannot write reserved context keys.
+func restoreFallbackAPIKeyIDFromContext(ctx *schemas.BifrostContext) {
+	if ctx == nil {
+		return
+	}
+
+	fallbackIndex, _ := ctx.Value(schemas.BifrostContextKeyFallbackIndex).(int)
+	if fallbackIndex <= 0 {
+		return
+	}
+
+	keyIDs, ok := ctx.Value(schemas.BifrostContextKeyFallbackKeyIDs).([]string)
+	if !ok {
+		return
+	}
+
+	idx := fallbackIndex - 1
+	if idx < 0 || idx >= len(keyIDs) {
+		return
+	}
+
+	keyID := strings.TrimSpace(keyIDs[idx])
+	if keyID == "" {
+		ctx.ClearValue(schemas.BifrostContextKeyAPIKeyID)
+		return
+	}
+
+	ctx.SetValue(schemas.BifrostContextKeyAPIKeyID, keyID)
+}
+
 var supportedBaseProvidersSet = func() map[schemas.ModelProvider]struct{} {
 	m := make(map[schemas.ModelProvider]struct{}, len(schemas.SupportedBaseProviders))
 	for _, p := range schemas.SupportedBaseProviders {
