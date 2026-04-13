@@ -3,7 +3,7 @@
  * Handles all API communication for routing rules CRUD operations
  */
 
-import { RoutingRule, GetRoutingRulesResponse, GetRoutingRulesParams, CreateRoutingRuleRequest, UpdateRoutingRuleRequest } from "@/lib/types/routingRules";
+import { RoutingRule, GetRoutingRulesResponse, GetRoutingRulesParams, CreateRoutingRuleRequest, UpdateRoutingRuleRequest, HealthStatusResponse } from "@/lib/types/routingRules";
 import { baseApi } from "./baseApi";
 
 export const routingRulesApi = baseApi.injectEndpoints({
@@ -121,6 +121,11 @@ export const routingRulesApi = baseApi.injectEndpoints({
 				} catch {}
 			},
 		}),
+
+		// Get health status for grouped routing targets, grouped by rule with actual policies
+		getHealthStatus: builder.query<HealthStatusResponse, void>({
+			query: () => "/governance/health-status",
+		}),
 	}),
 });
 
@@ -131,4 +136,5 @@ export const {
 	useUpdateRoutingRuleMutation,
 	useDeleteRoutingRuleMutation,
 	useLazyGetRoutingRulesQuery,
+	useGetHealthStatusQuery,
 } = routingRulesApi;

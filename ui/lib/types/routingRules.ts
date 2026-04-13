@@ -12,6 +12,48 @@ export interface RoutingTarget {
 	weight: number;
 }
 
+export interface HealthPolicy {
+	failure_threshold: number;
+	failure_window_seconds: number;
+	cooldown_seconds: number;
+	consecutive_failures?: number;
+}
+
+export interface RouteGroupTarget {
+	provider: string;
+	model: string;
+	key_id?: string;
+	weight: number;
+}
+
+export interface RouteGroup {
+	name: string;
+	retry_limit: number;
+	targets: RouteGroupTarget[];
+}
+
+export interface HealthSnapshot {
+	key: string;
+	status: "available" | "cooldown";
+	failure_count: number;
+	consecutive_failures: number;
+	cooldown_until?: string;
+	last_failure_time?: string;
+	last_failure_msg?: string;
+}
+
+export interface RuleHealthStatus {
+	rule_id: string;
+	rule_name: string;
+	policy: HealthPolicy;
+	targets: HealthSnapshot[];
+}
+
+export interface HealthStatusResponse {
+	rules: RuleHealthStatus[];
+	count: number;
+}
+
 export interface RoutingRule {
 	id: string;
 	name: string;
@@ -24,6 +66,9 @@ export interface RoutingRule {
 	priority: number;
 	enabled: boolean;
 	query?: RuleGroupType;
+	grouped_routing_enabled?: boolean;
+	health_policy?: HealthPolicy;
+	route_groups?: RouteGroup[];
 	created_at: string;
 	updated_at: string;
 }
@@ -39,6 +84,9 @@ export interface CreateRoutingRuleRequest {
 	priority: number;
 	enabled?: boolean;
 	query?: RuleGroupType;
+	grouped_routing_enabled?: boolean;
+	health_policy?: HealthPolicy;
+	route_groups?: RouteGroup[];
 }
 
 /** Partial update: only sent fields are applied; allows clearing fields by sending "" or []. */
@@ -69,6 +117,12 @@ export interface RoutingTargetFormData {
 	weight: number;
 }
 
+export interface RouteGroupFormData {
+	name: string;
+	retry_limit: number;
+	targets: RoutingTargetFormData[];
+}
+
 export interface RoutingRuleFormData {
 	id?: string;
 	name: string;
@@ -82,6 +136,9 @@ export interface RoutingRuleFormData {
 	enabled: boolean;
 	query?: RuleGroupType;
 	isDirty?: boolean;
+	grouped_routing_enabled: boolean;
+	health_policy: HealthPolicy;
+	route_groups: RouteGroupFormData[];
 }
 
 export enum RoutingRuleScope {
@@ -105,6 +162,19 @@ export const DEFAULT_ROUTING_TARGET: RoutingTargetFormData = {
 	weight: 1,
 };
 
+export const DEFAULT_HEALTH_POLICY: HealthPolicy = {
+	failure_threshold: 2,
+	failure_window_seconds: 30,
+	cooldown_seconds: 30,
+	consecutive_failures: 2,
+};
+
+export const DEFAULT_ROUTE_GROUP: RouteGroupFormData = {
+	name: "",
+	retry_limit: 0,
+	targets: [{ provider: "", model: "", key_id: "", weight: 1 }],
+};
+
 export const DEFAULT_ROUTING_RULE_FORM_DATA: RoutingRuleFormData = {
 	name: "",
 	description: "",
@@ -116,4 +186,7 @@ export const DEFAULT_ROUTING_RULE_FORM_DATA: RoutingRuleFormData = {
 	priority: 0,
 	enabled: true,
 	isDirty: false,
+	grouped_routing_enabled: false,
+	health_policy: { ...DEFAULT_HEALTH_POLICY },
+	route_groups: [],
 };

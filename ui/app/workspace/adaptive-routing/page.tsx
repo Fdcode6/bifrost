@@ -1,9 +1,9 @@
-import AdaptiveRoutingView from "@enterprise/components/adaptive-routing/adaptiveRoutingView";
+import HealthStatusView from "./healthStatusView";
 
 export default function AdaptiveRoutingPage() {
 	return (
 		<div className="mx-auto w-full">
-			<AdaptiveRoutingView />
+			<HealthStatusView />
 		</div>
 	);
 }

@@ -46,10 +46,11 @@ type GovernanceManager interface {
 type GovernanceHandler struct {
 	configStore       configstore.ConfigStore
 	governanceManager GovernanceManager
+	healthTracker     *governance.HealthTracker
 }
 
 // NewGovernanceHandler creates a new governance handler instance
-func NewGovernanceHandler(manager GovernanceManager, configStore configstore.ConfigStore) (*GovernanceHandler, error) {
+func NewGovernanceHandler(manager GovernanceManager, configStore configstore.ConfigStore, healthTracker *governance.HealthTracker) (*GovernanceHandler, error) {
 	if manager == nil {
 		return nil, fmt.Errorf("governance manager is required")
 	}
@@ -59,6 +60,7 @@ func NewGovernanceHandler(manager GovernanceManager, configStore configstore.Con
 	return &GovernanceHandler{
 		governanceManager: manager,
 		configStore:       configStore,
+		healthTracker:     healthTracker,
 	}, nil
 }
 
@@ -134,6 +136,21 @@ type RoutingTarget struct {
 	Weight   float64 `json:"weight"`             // must be > 0; all weights must sum to 1
 }
 
+// HealthPolicyRequest represents the health policy for grouped routing
+type HealthPolicyRequest struct {
+	FailureThreshold     *int `json:"failure_threshold,omitempty"`
+	FailureWindowSeconds *int `json:"failure_window_seconds,omitempty"`
+	CooldownSeconds      *int `json:"cooldown_seconds,omitempty"`
+	ConsecutiveFailures  *int `json:"consecutive_failures,omitempty"`
+}
+
+// RouteGroupRequest represents a route group in a create/update request
+type RouteGroupRequest struct {
+	Name       string          `json:"name"`
+	RetryLimit int             `json:"retry_limit"`
+	Targets    []RoutingTarget `json:"targets"` // grouped targets must explicitly set provider and model
+}
+
 // CreateRoutingRuleRequest represents the request body for creating a routing rule
 type CreateRoutingRuleRequest struct {
 	Name          string          `json:"name" validate:"required"`
@@ -146,6 +163,10 @@ type CreateRoutingRuleRequest struct {
 	ScopeID       *string         `json:"scope_id,omitempty"`
 	Query         map[string]any  `json:"query,omitempty"`
 	Priority      int             `json:"priority,omitempty"` // Defaults to 0 if not provided
+	// Grouped health routing (optional)
+	GroupedRoutingEnabled *bool                `json:"grouped_routing_enabled,omitempty"`
+	HealthPolicy          *HealthPolicyRequest `json:"health_policy,omitempty"`
+	RouteGroups           []RouteGroupRequest  `json:"route_groups,omitempty"`
 }
 
 // UpdateRoutingRuleRequest represents the request body for updating a routing rule
@@ -160,6 +181,10 @@ type UpdateRoutingRuleRequest struct {
 	Priority      *int            `json:"priority,omitempty"`
 	Scope         *string         `json:"scope,omitempty"`
 	ScopeID       *string         `json:"scope_id,omitempty"`
+	// Grouped health routing (optional)
+	GroupedRoutingEnabled *bool                `json:"grouped_routing_enabled,omitempty"`
+	HealthPolicy          *HealthPolicyRequest `json:"health_policy,omitempty"`
+	RouteGroups           []RouteGroupRequest  `json:"route_groups,omitempty"`
 }
 
 // CreateRateLimitRequest represents the request body for creating a rate limit using flexible approach
@@ -308,6 +333,9 @@ func (h *GovernanceHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 	r.GET("/api/governance/providers", lib.ChainMiddlewares(h.getProviderGovernance, middlewares...))
 	r.PUT("/api/governance/providers/{provider_name}", lib.ChainMiddlewares(h.updateProviderGovernance, middlewares...))
 	r.DELETE("/api/governance/providers/{provider_name}", lib.ChainMiddlewares(h.deleteProviderGovernance, middlewares...))
+
+	// Health Status (grouped routing)
+	r.GET("/api/governance/health-status", lib.ChainMiddlewares(h.getHealthStatus, middlewares...))
 }
 
 // Virtual Key CRUD Operations
@@ -718,33 +746,33 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 					vk.Budget = nil
 				}
 			} else if vk.BudgetID != nil {
-			// Update existing budget
-			budget := configstoreTables.TableBudget{}
-			if err := tx.First(&budget, "id = ?", *vk.BudgetID).Error; err != nil {
-				return err
-			}
-
-			if req.Budget.MaxLimit != nil {
-				budget.MaxLimit = *req.Budget.MaxLimit
-			}
-			if req.Budget.ResetDuration != nil {
-				budget.ResetDuration = *req.Budget.ResetDuration
-			}
-			if req.Budget.CalendarAligned != nil {
-				wasCalendarAligned := budget.CalendarAligned
-				budget.CalendarAligned = *req.Budget.CalendarAligned
-				if *req.Budget.CalendarAligned && !wasCalendarAligned {
-					budget.LastReset = configstoreTables.GetCalendarPeriodStart(budget.ResetDuration, time.Now())
-					budget.CurrentUsage = 0
+				// Update existing budget
+				budget := configstoreTables.TableBudget{}
+				if err := tx.First(&budget, "id = ?", *vk.BudgetID).Error; err != nil {
+					return err
 				}
-			}
-			if err := validateBudget(&budget); err != nil {
-				return err
-			}
-			if err := h.configStore.UpdateBudget(ctx, &budget, tx); err != nil {
-				return err
-			}
-			vk.Budget = &budget
+
+				if req.Budget.MaxLimit != nil {
+					budget.MaxLimit = *req.Budget.MaxLimit
+				}
+				if req.Budget.ResetDuration != nil {
+					budget.ResetDuration = *req.Budget.ResetDuration
+				}
+				if req.Budget.CalendarAligned != nil {
+					wasCalendarAligned := budget.CalendarAligned
+					budget.CalendarAligned = *req.Budget.CalendarAligned
+					if *req.Budget.CalendarAligned && !wasCalendarAligned {
+						budget.LastReset = configstoreTables.GetCalendarPeriodStart(budget.ResetDuration, time.Now())
+						budget.CurrentUsage = 0
+					}
+				}
+				if err := validateBudget(&budget); err != nil {
+					return err
+				}
+				if err := h.configStore.UpdateBudget(ctx, &budget, tx); err != nil {
+					return err
+				}
+				vk.Budget = &budget
 			} else {
 				// Create new budget
 				if req.Budget.MaxLimit == nil || req.Budget.ResetDuration == nil {
@@ -756,23 +784,23 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 				if _, err := configstoreTables.ParseDuration(*req.Budget.ResetDuration); err != nil {
 					return fmt.Errorf("invalid reset duration format: %s", *req.Budget.ResetDuration)
 				}
-			calAligned := req.Budget.CalendarAligned != nil && *req.Budget.CalendarAligned
-			budget := configstoreTables.TableBudget{
-				ID:              uuid.NewString(),
-				MaxLimit:        *req.Budget.MaxLimit,
-				ResetDuration:   *req.Budget.ResetDuration,
-				CalendarAligned: calAligned,
-				LastReset:       budgetLastReset(calAligned, *req.Budget.ResetDuration),
-				CurrentUsage:    0,
-			}
-			if err := validateBudget(&budget); err != nil {
-				return err
-			}
-			if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
-				return err
-			}
-			vk.BudgetID = &budget.ID
-			vk.Budget = &budget
+				calAligned := req.Budget.CalendarAligned != nil && *req.Budget.CalendarAligned
+				budget := configstoreTables.TableBudget{
+					ID:              uuid.NewString(),
+					MaxLimit:        *req.Budget.MaxLimit,
+					ResetDuration:   *req.Budget.ResetDuration,
+					CalendarAligned: calAligned,
+					LastReset:       budgetLastReset(calAligned, *req.Budget.ResetDuration),
+					CurrentUsage:    0,
+				}
+				if err := validateBudget(&budget); err != nil {
+					return err
+				}
+				if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
+					return err
+				}
+				vk.BudgetID = &budget.ID
+				vk.Budget = &budget
 			}
 		}
 		// Handle rate limit updates
@@ -881,25 +909,25 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 						AllowedModels: pc.AllowedModels,
 						Keys:          keys,
 					}
-				// Create budget for provider config if provided
-				if pc.Budget != nil {
-					pcCalAligned := pc.Budget.CalendarAligned != nil && *pc.Budget.CalendarAligned
-					budget := configstoreTables.TableBudget{
-						ID:              uuid.NewString(),
-						MaxLimit:        *pc.Budget.MaxLimit,
-						ResetDuration:   *pc.Budget.ResetDuration,
-						CalendarAligned: pcCalAligned,
-						LastReset:       budgetLastReset(pcCalAligned, *pc.Budget.ResetDuration),
-						CurrentUsage:    0,
+					// Create budget for provider config if provided
+					if pc.Budget != nil {
+						pcCalAligned := pc.Budget.CalendarAligned != nil && *pc.Budget.CalendarAligned
+						budget := configstoreTables.TableBudget{
+							ID:              uuid.NewString(),
+							MaxLimit:        *pc.Budget.MaxLimit,
+							ResetDuration:   *pc.Budget.ResetDuration,
+							CalendarAligned: pcCalAligned,
+							LastReset:       budgetLastReset(pcCalAligned, *pc.Budget.ResetDuration),
+							CurrentUsage:    0,
+						}
+						if err := validateBudget(&budget); err != nil {
+							return err
+						}
+						if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
+							return err
+						}
+						providerConfig.BudgetID = &budget.ID
 					}
-					if err := validateBudget(&budget); err != nil {
-						return err
-					}
-					if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
-						return err
-					}
-					providerConfig.BudgetID = &budget.ID
-				}
 					// Create rate limit for provider config if provided
 					if pc.RateLimit != nil {
 						rateLimit := configstoreTables.TableRateLimit{
@@ -956,31 +984,31 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 								existing.Budget = nil
 							}
 						} else if existing.BudgetID != nil {
-						// Update existing budget
-						budget := configstoreTables.TableBudget{}
-						if err := tx.First(&budget, "id = ?", *existing.BudgetID).Error; err != nil {
-							return err
-						}
-						if pc.Budget.MaxLimit != nil {
-							budget.MaxLimit = *pc.Budget.MaxLimit
-						}
-						if pc.Budget.ResetDuration != nil {
-							budget.ResetDuration = *pc.Budget.ResetDuration
-						}
-						if pc.Budget.CalendarAligned != nil {
-							wasCalendarAligned := budget.CalendarAligned
-							budget.CalendarAligned = *pc.Budget.CalendarAligned
-							if *pc.Budget.CalendarAligned && !wasCalendarAligned {
-								budget.LastReset = configstoreTables.GetCalendarPeriodStart(budget.ResetDuration, time.Now())
-								budget.CurrentUsage = 0
+							// Update existing budget
+							budget := configstoreTables.TableBudget{}
+							if err := tx.First(&budget, "id = ?", *existing.BudgetID).Error; err != nil {
+								return err
 							}
-						}
-						if err := validateBudget(&budget); err != nil {
-							return err
-						}
-						if err := h.configStore.UpdateBudget(ctx, &budget, tx); err != nil {
-							return err
-						}
+							if pc.Budget.MaxLimit != nil {
+								budget.MaxLimit = *pc.Budget.MaxLimit
+							}
+							if pc.Budget.ResetDuration != nil {
+								budget.ResetDuration = *pc.Budget.ResetDuration
+							}
+							if pc.Budget.CalendarAligned != nil {
+								wasCalendarAligned := budget.CalendarAligned
+								budget.CalendarAligned = *pc.Budget.CalendarAligned
+								if *pc.Budget.CalendarAligned && !wasCalendarAligned {
+									budget.LastReset = configstoreTables.GetCalendarPeriodStart(budget.ResetDuration, time.Now())
+									budget.CurrentUsage = 0
+								}
+							}
+							if err := validateBudget(&budget); err != nil {
+								return err
+							}
+							if err := h.configStore.UpdateBudget(ctx, &budget, tx); err != nil {
+								return err
+							}
 						} else {
 							// Create new budget for existing provider config
 							if pc.Budget.MaxLimit == nil || pc.Budget.ResetDuration == nil {
@@ -992,22 +1020,22 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 							if _, err := configstoreTables.ParseDuration(*pc.Budget.ResetDuration); err != nil {
 								return fmt.Errorf("invalid provider config budget reset duration format: %s", *pc.Budget.ResetDuration)
 							}
-						pcExistCalAligned := pc.Budget.CalendarAligned != nil && *pc.Budget.CalendarAligned
-						budget := configstoreTables.TableBudget{
-							ID:              uuid.NewString(),
-							MaxLimit:        *pc.Budget.MaxLimit,
-							ResetDuration:   *pc.Budget.ResetDuration,
-							CalendarAligned: pcExistCalAligned,
-							LastReset:       budgetLastReset(pcExistCalAligned, *pc.Budget.ResetDuration),
-							CurrentUsage:    0,
-						}
-						if err := validateBudget(&budget); err != nil {
-							return err
-						}
-						if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
-							return err
-						}
-						existing.BudgetID = &budget.ID
+							pcExistCalAligned := pc.Budget.CalendarAligned != nil && *pc.Budget.CalendarAligned
+							budget := configstoreTables.TableBudget{
+								ID:              uuid.NewString(),
+								MaxLimit:        *pc.Budget.MaxLimit,
+								ResetDuration:   *pc.Budget.ResetDuration,
+								CalendarAligned: pcExistCalAligned,
+								LastReset:       budgetLastReset(pcExistCalAligned, *pc.Budget.ResetDuration),
+								CurrentUsage:    0,
+							}
+							if err := validateBudget(&budget); err != nil {
+								return err
+							}
+							if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
+								return err
+							}
+							existing.BudgetID = &budget.ID
 						}
 					}
 					// Handle rate limit updates for provider config
@@ -1347,23 +1375,23 @@ func (h *GovernanceHandler) createTeam(ctx *fasthttp.RequestCtx) {
 			Name:       req.Name,
 			CustomerID: req.CustomerID,
 		}
-	if req.Budget != nil {
-		budget := configstoreTables.TableBudget{
-			ID:              uuid.NewString(),
-			MaxLimit:        req.Budget.MaxLimit,
-			ResetDuration:   req.Budget.ResetDuration,
-			CalendarAligned: req.Budget.CalendarAligned,
-			LastReset:       budgetLastReset(req.Budget.CalendarAligned, req.Budget.ResetDuration),
-			CurrentUsage:    0,
+		if req.Budget != nil {
+			budget := configstoreTables.TableBudget{
+				ID:              uuid.NewString(),
+				MaxLimit:        req.Budget.MaxLimit,
+				ResetDuration:   req.Budget.ResetDuration,
+				CalendarAligned: req.Budget.CalendarAligned,
+				LastReset:       budgetLastReset(req.Budget.CalendarAligned, req.Budget.ResetDuration),
+				CurrentUsage:    0,
+			}
+			if err := validateBudget(&budget); err != nil {
+				return err
+			}
+			if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
+				return err
+			}
+			team.BudgetID = &budget.ID
 		}
-		if err := validateBudget(&budget); err != nil {
-			return err
-		}
-		if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
-			return err
-		}
-		team.BudgetID = &budget.ID
-	}
 		if req.RateLimit != nil {
 			rateLimit := configstoreTables.TableRateLimit{
 				ID:                   uuid.NewString(),
@@ -1482,32 +1510,32 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 					team.Budget = nil
 				}
 			} else if team.BudgetID != nil {
-			// Update existing budget — all fields are optional (partial update)
-			budget := configstoreTables.TableBudget{}
-			if err := tx.First(&budget, "id = ?", *team.BudgetID).Error; err != nil {
-				return err
-			}
-			if req.Budget.MaxLimit != nil {
-				budget.MaxLimit = *req.Budget.MaxLimit
-			}
-			if req.Budget.ResetDuration != nil {
-				budget.ResetDuration = *req.Budget.ResetDuration
-			}
-			if req.Budget.CalendarAligned != nil {
-				wasCalendarAligned := budget.CalendarAligned
-				budget.CalendarAligned = *req.Budget.CalendarAligned
-				if *req.Budget.CalendarAligned && !wasCalendarAligned {
-					budget.LastReset = configstoreTables.GetCalendarPeriodStart(budget.ResetDuration, time.Now())
-					budget.CurrentUsage = 0
+				// Update existing budget — all fields are optional (partial update)
+				budget := configstoreTables.TableBudget{}
+				if err := tx.First(&budget, "id = ?", *team.BudgetID).Error; err != nil {
+					return err
 				}
-			}
-			if err := validateBudget(&budget); err != nil {
-				return err
-			}
-			if err := h.configStore.UpdateBudget(ctx, &budget, tx); err != nil {
-				return err
-			}
-			team.Budget = &budget
+				if req.Budget.MaxLimit != nil {
+					budget.MaxLimit = *req.Budget.MaxLimit
+				}
+				if req.Budget.ResetDuration != nil {
+					budget.ResetDuration = *req.Budget.ResetDuration
+				}
+				if req.Budget.CalendarAligned != nil {
+					wasCalendarAligned := budget.CalendarAligned
+					budget.CalendarAligned = *req.Budget.CalendarAligned
+					if *req.Budget.CalendarAligned && !wasCalendarAligned {
+						budget.LastReset = configstoreTables.GetCalendarPeriodStart(budget.ResetDuration, time.Now())
+						budget.CurrentUsage = 0
+					}
+				}
+				if err := validateBudget(&budget); err != nil {
+					return err
+				}
+				if err := h.configStore.UpdateBudget(ctx, &budget, tx); err != nil {
+					return err
+				}
+				team.Budget = &budget
 			} else {
 				// Create new budget
 				if req.Budget.MaxLimit == nil || req.Budget.ResetDuration == nil {
@@ -1519,23 +1547,23 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 				if _, err := configstoreTables.ParseDuration(*req.Budget.ResetDuration); err != nil {
 					return fmt.Errorf("invalid reset duration format: %s", *req.Budget.ResetDuration)
 				}
-			teamCalAligned := req.Budget.CalendarAligned != nil && *req.Budget.CalendarAligned
-			budget := configstoreTables.TableBudget{
-				ID:              uuid.NewString(),
-				MaxLimit:        *req.Budget.MaxLimit,
-				ResetDuration:   *req.Budget.ResetDuration,
-				CalendarAligned: teamCalAligned,
-				LastReset:       budgetLastReset(teamCalAligned, *req.Budget.ResetDuration),
-				CurrentUsage:    0,
-			}
-			if err := validateBudget(&budget); err != nil {
-				return err
-			}
-			if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
-				return err
-			}
-			team.BudgetID = &budget.ID
-			team.Budget = &budget
+				teamCalAligned := req.Budget.CalendarAligned != nil && *req.Budget.CalendarAligned
+				budget := configstoreTables.TableBudget{
+					ID:              uuid.NewString(),
+					MaxLimit:        *req.Budget.MaxLimit,
+					ResetDuration:   *req.Budget.ResetDuration,
+					CalendarAligned: teamCalAligned,
+					LastReset:       budgetLastReset(teamCalAligned, *req.Budget.ResetDuration),
+					CurrentUsage:    0,
+				}
+				if err := validateBudget(&budget); err != nil {
+					return err
+				}
+				if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
+					return err
+				}
+				team.BudgetID = &budget.ID
+				team.Budget = &budget
 			}
 		}
 		// Handle rate limit updates
@@ -1759,23 +1787,23 @@ func (h *GovernanceHandler) createCustomer(ctx *fasthttp.RequestCtx) {
 			Name: req.Name,
 		}
 
-	if req.Budget != nil {
-		budget := configstoreTables.TableBudget{
-			ID:              uuid.NewString(),
-			MaxLimit:        req.Budget.MaxLimit,
-			ResetDuration:   req.Budget.ResetDuration,
-			CalendarAligned: req.Budget.CalendarAligned,
-			LastReset:       budgetLastReset(req.Budget.CalendarAligned, req.Budget.ResetDuration),
-			CurrentUsage:    0,
+		if req.Budget != nil {
+			budget := configstoreTables.TableBudget{
+				ID:              uuid.NewString(),
+				MaxLimit:        req.Budget.MaxLimit,
+				ResetDuration:   req.Budget.ResetDuration,
+				CalendarAligned: req.Budget.CalendarAligned,
+				LastReset:       budgetLastReset(req.Budget.CalendarAligned, req.Budget.ResetDuration),
+				CurrentUsage:    0,
+			}
+			if err := validateBudget(&budget); err != nil {
+				return err
+			}
+			if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
+				return err
+			}
+			customer.BudgetID = &budget.ID
 		}
-		if err := validateBudget(&budget); err != nil {
-			return err
-		}
-		if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
-			return err
-		}
-		customer.BudgetID = &budget.ID
-	}
 		if req.RateLimit != nil {
 			rateLimit := configstoreTables.TableRateLimit{
 				ID:                   uuid.NewString(),
@@ -1884,32 +1912,32 @@ func (h *GovernanceHandler) updateCustomer(ctx *fasthttp.RequestCtx) {
 					customer.Budget = nil
 				}
 			} else if customer.BudgetID != nil {
-			// Update existing budget — all fields are optional (partial update)
-			budget := configstoreTables.TableBudget{}
-			if err := tx.First(&budget, "id = ?", *customer.BudgetID).Error; err != nil {
-				return err
-			}
-			if req.Budget.MaxLimit != nil {
-				budget.MaxLimit = *req.Budget.MaxLimit
-			}
-			if req.Budget.ResetDuration != nil {
-				budget.ResetDuration = *req.Budget.ResetDuration
-			}
-			if req.Budget.CalendarAligned != nil {
-				wasCalendarAligned := budget.CalendarAligned
-				budget.CalendarAligned = *req.Budget.CalendarAligned
-				if *req.Budget.CalendarAligned && !wasCalendarAligned {
-					budget.LastReset = configstoreTables.GetCalendarPeriodStart(budget.ResetDuration, time.Now())
-					budget.CurrentUsage = 0
+				// Update existing budget — all fields are optional (partial update)
+				budget := configstoreTables.TableBudget{}
+				if err := tx.First(&budget, "id = ?", *customer.BudgetID).Error; err != nil {
+					return err
 				}
-			}
-			if err := validateBudget(&budget); err != nil {
-				return err
-			}
-			if err := h.configStore.UpdateBudget(ctx, &budget, tx); err != nil {
-				return err
-			}
-			customer.Budget = &budget
+				if req.Budget.MaxLimit != nil {
+					budget.MaxLimit = *req.Budget.MaxLimit
+				}
+				if req.Budget.ResetDuration != nil {
+					budget.ResetDuration = *req.Budget.ResetDuration
+				}
+				if req.Budget.CalendarAligned != nil {
+					wasCalendarAligned := budget.CalendarAligned
+					budget.CalendarAligned = *req.Budget.CalendarAligned
+					if *req.Budget.CalendarAligned && !wasCalendarAligned {
+						budget.LastReset = configstoreTables.GetCalendarPeriodStart(budget.ResetDuration, time.Now())
+						budget.CurrentUsage = 0
+					}
+				}
+				if err := validateBudget(&budget); err != nil {
+					return err
+				}
+				if err := h.configStore.UpdateBudget(ctx, &budget, tx); err != nil {
+					return err
+				}
+				customer.Budget = &budget
 			} else {
 				// Create new budget
 				if req.Budget.MaxLimit == nil || req.Budget.ResetDuration == nil {
@@ -1921,23 +1949,23 @@ func (h *GovernanceHandler) updateCustomer(ctx *fasthttp.RequestCtx) {
 				if _, err := configstoreTables.ParseDuration(*req.Budget.ResetDuration); err != nil {
 					return fmt.Errorf("invalid reset duration format: %s", *req.Budget.ResetDuration)
 				}
-			custCalAligned := req.Budget.CalendarAligned != nil && *req.Budget.CalendarAligned
-			budget := configstoreTables.TableBudget{
-				ID:              uuid.NewString(),
-				MaxLimit:        *req.Budget.MaxLimit,
-				ResetDuration:   *req.Budget.ResetDuration,
-				CalendarAligned: custCalAligned,
-				LastReset:       budgetLastReset(custCalAligned, *req.Budget.ResetDuration),
-				CurrentUsage:    0,
-			}
-			if err := validateBudget(&budget); err != nil {
-				return err
-			}
-			if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
-				return err
-			}
-			customer.BudgetID = &budget.ID
-			customer.Budget = &budget
+				custCalAligned := req.Budget.CalendarAligned != nil && *req.Budget.CalendarAligned
+				budget := configstoreTables.TableBudget{
+					ID:              uuid.NewString(),
+					MaxLimit:        *req.Budget.MaxLimit,
+					ResetDuration:   *req.Budget.ResetDuration,
+					CalendarAligned: custCalAligned,
+					LastReset:       budgetLastReset(custCalAligned, *req.Budget.ResetDuration),
+					CurrentUsage:    0,
+				}
+				if err := validateBudget(&budget); err != nil {
+					return err
+				}
+				if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
+					return err
+				}
+				customer.BudgetID = &budget.ID
+				customer.Budget = &budget
 			}
 		}
 		// Handle rate limit updates
@@ -2412,32 +2440,32 @@ func (h *GovernanceHandler) updateModelConfig(ctx *fasthttp.RequestCtx) {
 					mc.Budget = nil
 				}
 			} else if mc.BudgetID != nil {
-			// Update existing budget — all fields are optional (partial update)
-			budget := configstoreTables.TableBudget{}
-			if err := tx.First(&budget, "id = ?", *mc.BudgetID).Error; err != nil {
-				return err
-			}
-			if req.Budget.MaxLimit != nil {
-				budget.MaxLimit = *req.Budget.MaxLimit
-			}
-			if req.Budget.ResetDuration != nil {
-				budget.ResetDuration = *req.Budget.ResetDuration
-			}
-			if req.Budget.CalendarAligned != nil {
-				wasCalendarAligned := budget.CalendarAligned
-				budget.CalendarAligned = *req.Budget.CalendarAligned
-				if *req.Budget.CalendarAligned && !wasCalendarAligned {
-					budget.LastReset = configstoreTables.GetCalendarPeriodStart(budget.ResetDuration, time.Now())
-					budget.CurrentUsage = 0
+				// Update existing budget — all fields are optional (partial update)
+				budget := configstoreTables.TableBudget{}
+				if err := tx.First(&budget, "id = ?", *mc.BudgetID).Error; err != nil {
+					return err
 				}
-			}
-			if err := validateBudget(&budget); err != nil {
-				return err
-			}
-			if err := h.configStore.UpdateBudget(ctx, &budget, tx); err != nil {
-				return err
-			}
-			mc.Budget = &budget
+				if req.Budget.MaxLimit != nil {
+					budget.MaxLimit = *req.Budget.MaxLimit
+				}
+				if req.Budget.ResetDuration != nil {
+					budget.ResetDuration = *req.Budget.ResetDuration
+				}
+				if req.Budget.CalendarAligned != nil {
+					wasCalendarAligned := budget.CalendarAligned
+					budget.CalendarAligned = *req.Budget.CalendarAligned
+					if *req.Budget.CalendarAligned && !wasCalendarAligned {
+						budget.LastReset = configstoreTables.GetCalendarPeriodStart(budget.ResetDuration, time.Now())
+						budget.CurrentUsage = 0
+					}
+				}
+				if err := validateBudget(&budget); err != nil {
+					return err
+				}
+				if err := h.configStore.UpdateBudget(ctx, &budget, tx); err != nil {
+					return err
+				}
+				mc.Budget = &budget
 			} else {
 				// Create new budget
 				if req.Budget.MaxLimit == nil || req.Budget.ResetDuration == nil {
@@ -2449,23 +2477,23 @@ func (h *GovernanceHandler) updateModelConfig(ctx *fasthttp.RequestCtx) {
 				if _, err := configstoreTables.ParseDuration(*req.Budget.ResetDuration); err != nil {
 					return fmt.Errorf("invalid reset duration format: %s", *req.Budget.ResetDuration)
 				}
-			mcCalAligned := req.Budget.CalendarAligned != nil && *req.Budget.CalendarAligned
-			budget := configstoreTables.TableBudget{
-				ID:              uuid.NewString(),
-				MaxLimit:        *req.Budget.MaxLimit,
-				ResetDuration:   *req.Budget.ResetDuration,
-				CalendarAligned: mcCalAligned,
-				LastReset:       budgetLastReset(mcCalAligned, *req.Budget.ResetDuration),
-				CurrentUsage:    0,
-			}
-			if err := validateBudget(&budget); err != nil {
-				return err
-			}
-			if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
-				return err
-			}
-			mc.BudgetID = &budget.ID
-			mc.Budget = &budget
+				mcCalAligned := req.Budget.CalendarAligned != nil && *req.Budget.CalendarAligned
+				budget := configstoreTables.TableBudget{
+					ID:              uuid.NewString(),
+					MaxLimit:        *req.Budget.MaxLimit,
+					ResetDuration:   *req.Budget.ResetDuration,
+					CalendarAligned: mcCalAligned,
+					LastReset:       budgetLastReset(mcCalAligned, *req.Budget.ResetDuration),
+					CurrentUsage:    0,
+				}
+				if err := validateBudget(&budget); err != nil {
+					return err
+				}
+				if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
+					return err
+				}
+				mc.BudgetID = &budget.ID
+				mc.Budget = &budget
 			}
 		}
 		// Handle rate limit updates
@@ -2684,54 +2712,54 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 					provider.Budget = nil
 				}
 			} else if provider.BudgetID != nil {
-			// Update existing budget — all fields are optional (partial update)
-			budget := configstoreTables.TableBudget{}
-			if err := tx.First(&budget, "id = ?", *provider.BudgetID).Error; err != nil {
-				return err
-			}
-			if req.Budget.MaxLimit != nil {
-				budget.MaxLimit = *req.Budget.MaxLimit
-			}
-			if req.Budget.ResetDuration != nil {
-				budget.ResetDuration = *req.Budget.ResetDuration
-			}
-			if req.Budget.CalendarAligned != nil {
-				wasCalendarAligned := budget.CalendarAligned
-				budget.CalendarAligned = *req.Budget.CalendarAligned
-				if *req.Budget.CalendarAligned && !wasCalendarAligned {
-					budget.LastReset = configstoreTables.GetCalendarPeriodStart(budget.ResetDuration, time.Now())
-					budget.CurrentUsage = 0
+				// Update existing budget — all fields are optional (partial update)
+				budget := configstoreTables.TableBudget{}
+				if err := tx.First(&budget, "id = ?", *provider.BudgetID).Error; err != nil {
+					return err
 				}
-			}
-			if err := validateBudget(&budget); err != nil {
-				return err
-			}
-			if err := h.configStore.UpdateBudget(ctx, &budget, tx); err != nil {
-				return err
-			}
-			provider.Budget = &budget
+				if req.Budget.MaxLimit != nil {
+					budget.MaxLimit = *req.Budget.MaxLimit
+				}
+				if req.Budget.ResetDuration != nil {
+					budget.ResetDuration = *req.Budget.ResetDuration
+				}
+				if req.Budget.CalendarAligned != nil {
+					wasCalendarAligned := budget.CalendarAligned
+					budget.CalendarAligned = *req.Budget.CalendarAligned
+					if *req.Budget.CalendarAligned && !wasCalendarAligned {
+						budget.LastReset = configstoreTables.GetCalendarPeriodStart(budget.ResetDuration, time.Now())
+						budget.CurrentUsage = 0
+					}
+				}
+				if err := validateBudget(&budget); err != nil {
+					return err
+				}
+				if err := h.configStore.UpdateBudget(ctx, &budget, tx); err != nil {
+					return err
+				}
+				provider.Budget = &budget
 			} else {
 				// Create new budget
 				if req.Budget.MaxLimit == nil || req.Budget.ResetDuration == nil {
 					return fmt.Errorf("both max_limit and reset_duration are required when creating a new budget")
 				}
-			provCalAligned := req.Budget.CalendarAligned != nil && *req.Budget.CalendarAligned
-			budget := configstoreTables.TableBudget{
-				ID:              uuid.NewString(),
-				MaxLimit:        *req.Budget.MaxLimit,
-				ResetDuration:   *req.Budget.ResetDuration,
-				CalendarAligned: provCalAligned,
-				LastReset:       budgetLastReset(provCalAligned, *req.Budget.ResetDuration),
-				CurrentUsage:    0,
-			}
-			if err := validateBudget(&budget); err != nil {
-				return err
-			}
-			if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
-				return err
-			}
-			provider.BudgetID = &budget.ID
-			provider.Budget = &budget
+				provCalAligned := req.Budget.CalendarAligned != nil && *req.Budget.CalendarAligned
+				budget := configstoreTables.TableBudget{
+					ID:              uuid.NewString(),
+					MaxLimit:        *req.Budget.MaxLimit,
+					ResetDuration:   *req.Budget.ResetDuration,
+					CalendarAligned: provCalAligned,
+					LastReset:       budgetLastReset(provCalAligned, *req.Budget.ResetDuration),
+					CurrentUsage:    0,
+				}
+				if err := validateBudget(&budget); err != nil {
+					return err
+				}
+				if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
+					return err
+				}
+				provider.BudgetID = &budget.ID
+				provider.Budget = &budget
 			}
 		}
 		// Handle rate limit updates
@@ -3089,14 +3117,20 @@ func (h *GovernanceHandler) createRoutingRule(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	// Validate targets
-	if len(req.Targets) == 0 {
-		SendError(ctx, 400, "at least one target is required")
-		return
+	// Validate targets — grouped routing rules use route_groups instead
+	groupedRoutingEnabled := false
+	if req.GroupedRoutingEnabled != nil {
+		groupedRoutingEnabled = *req.GroupedRoutingEnabled
 	}
-	if err := validateRoutingTargets(req.Targets); err != nil {
-		SendError(ctx, 400, err.Error())
-		return
+	if !groupedRoutingEnabled {
+		if len(req.Targets) == 0 {
+			SendError(ctx, 400, "at least one target is required")
+			return
+		}
+		if err := validateRoutingTargets(req.Targets); err != nil {
+			SendError(ctx, 400, err.Error())
+			return
+		}
 	}
 
 	// Set defaults and normalize scope/scope_id
@@ -3131,6 +3165,22 @@ func (h *GovernanceHandler) createRoutingRule(ctx *fasthttp.RequestCtx) {
 		})
 	}
 
+	// Validate and build grouped routing fields
+	var parsedHealthPolicy *configstoreTables.HealthPolicy
+	var parsedRouteGroups []configstoreTables.RouteGroup
+	if groupedRoutingEnabled {
+		if err := validateHealthPolicy(req.HealthPolicy); err != nil {
+			SendError(ctx, 400, err.Error())
+			return
+		}
+		if err := validateRouteGroups(req.RouteGroups); err != nil {
+			SendError(ctx, 400, err.Error())
+			return
+		}
+		parsedHealthPolicy = buildHealthPolicy(req.HealthPolicy)
+		parsedRouteGroups = buildRouteGroups(req.RouteGroups)
+	}
+
 	// Create routing rule
 	// Handle Enabled: nil means use DB default (true), otherwise use provided value
 	enabled := true // DB default
@@ -3138,17 +3188,20 @@ func (h *GovernanceHandler) createRoutingRule(ctx *fasthttp.RequestCtx) {
 		enabled = *req.Enabled
 	}
 	rule := &configstoreTables.TableRoutingRule{
-		ID:              ruleID,
-		Name:            req.Name,
-		Description:     req.Description,
-		Enabled:         enabled,
-		CelExpression:   req.CelExpression,
-		Targets:         targets,
-		Scope:           scope,
-		ScopeID:         req.ScopeID,
-		Priority:        req.Priority,
-		ParsedFallbacks: req.Fallbacks,
-		ParsedQuery:     req.Query,
+		ID:                    ruleID,
+		Name:                  req.Name,
+		Description:           req.Description,
+		Enabled:               enabled,
+		CelExpression:         req.CelExpression,
+		Targets:               targets,
+		Scope:                 scope,
+		ScopeID:               req.ScopeID,
+		Priority:              req.Priority,
+		ParsedFallbacks:       req.Fallbacks,
+		ParsedQuery:           req.Query,
+		GroupedRoutingEnabled: groupedRoutingEnabled,
+		ParsedHealthPolicy:    parsedHealthPolicy,
+		ParsedRouteGroups:     parsedRouteGroups,
 	}
 
 	// Create in database
@@ -3191,6 +3244,11 @@ func (h *GovernanceHandler) updateRoutingRule(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	effectiveGroupedRoutingEnabled := rule.GroupedRoutingEnabled
+	if req.GroupedRoutingEnabled != nil {
+		effectiveGroupedRoutingEnabled = *req.GroupedRoutingEnabled
+	}
+
 	// Update fields if provided
 	if req.Name != nil && *req.Name != "" {
 		rule.Name = *req.Name
@@ -3206,23 +3264,27 @@ func (h *GovernanceHandler) updateRoutingRule(ctx *fasthttp.RequestCtx) {
 	}
 	if req.Targets != nil {
 		if len(req.Targets) == 0 {
-			SendError(ctx, 400, "at least one routing target is required")
-			return
+			if !effectiveGroupedRoutingEnabled {
+				SendError(ctx, 400, "at least one routing target is required")
+				return
+			}
+			rule.Targets = []configstoreTables.TableRoutingTarget{}
+		} else {
+			if err := validateRoutingTargets(req.Targets); err != nil {
+				SendError(ctx, 400, err.Error())
+				return
+			}
+			newTargets := make([]configstoreTables.TableRoutingTarget, 0, len(req.Targets))
+			for _, t := range req.Targets {
+				newTargets = append(newTargets, configstoreTables.TableRoutingTarget{
+					Provider: t.Provider,
+					Model:    t.Model,
+					KeyID:    t.KeyID,
+					Weight:   t.Weight,
+				})
+			}
+			rule.Targets = newTargets
 		}
-		if err := validateRoutingTargets(req.Targets); err != nil {
-			SendError(ctx, 400, err.Error())
-			return
-		}
-		newTargets := make([]configstoreTables.TableRoutingTarget, 0, len(req.Targets))
-		for _, t := range req.Targets {
-			newTargets = append(newTargets, configstoreTables.TableRoutingTarget{
-				Provider: t.Provider,
-				Model:    t.Model,
-				KeyID:    t.KeyID,
-				Weight:   t.Weight,
-			})
-		}
-		rule.Targets = newTargets
 	}
 	if req.Priority != nil {
 		rule.Priority = *req.Priority
@@ -3250,6 +3312,34 @@ func (h *GovernanceHandler) updateRoutingRule(ctx *fasthttp.RequestCtx) {
 		rule.ScopeID = nil
 	} else if rule.ScopeID == nil || *rule.ScopeID == "" {
 		SendError(ctx, 400, "scope_id field is required when scope is not global")
+		return
+	}
+
+	// Update grouped routing fields if provided
+	if req.GroupedRoutingEnabled != nil {
+		rule.GroupedRoutingEnabled = *req.GroupedRoutingEnabled
+	}
+	if req.HealthPolicy != nil {
+		if err := validateHealthPolicy(req.HealthPolicy); err != nil {
+			SendError(ctx, 400, err.Error())
+			return
+		}
+		rule.ParsedHealthPolicy = buildHealthPolicy(req.HealthPolicy)
+	}
+	if req.RouteGroups != nil {
+		if err := validateRouteGroups(req.RouteGroups); err != nil {
+			SendError(ctx, 400, err.Error())
+			return
+		}
+		rule.ParsedRouteGroups = buildRouteGroups(req.RouteGroups)
+	}
+	// When grouped routing is enabled, validate that route_groups is present
+	if rule.GroupedRoutingEnabled && len(rule.ParsedRouteGroups) == 0 {
+		SendError(ctx, 400, "route_groups is required when grouped_routing_enabled is true")
+		return
+	}
+	if !rule.GroupedRoutingEnabled && len(rule.Targets) == 0 {
+		SendError(ctx, 400, "at least one routing target is required")
 		return
 	}
 
@@ -3353,4 +3443,179 @@ func validateRoutingTargets(targets []RoutingTarget) error {
 		return fmt.Errorf("target weights must sum to 1, got %.4f", total)
 	}
 	return nil
+}
+
+// validateRouteGroups validates the route groups for grouped health routing
+func validateRouteGroups(groups []RouteGroupRequest) error {
+	if len(groups) == 0 {
+		return fmt.Errorf("at least one route group is required when grouped routing is enabled")
+	}
+	names := make(map[string]struct{}, len(groups))
+	for i, g := range groups {
+		if g.Name == "" {
+			return fmt.Errorf("route group[%d]: name is required", i)
+		}
+		if _, exists := names[g.Name]; exists {
+			return fmt.Errorf("duplicate route group name: %q", g.Name)
+		}
+		names[g.Name] = struct{}{}
+		if g.RetryLimit < 0 {
+			return fmt.Errorf("route group %q: retry_limit must be >= 0", g.Name)
+		}
+		if len(g.Targets) == 0 {
+			return fmt.Errorf("route group %q: at least one target is required", g.Name)
+		}
+		for j, t := range g.Targets {
+			if t.Provider == nil || strings.TrimSpace(*t.Provider) == "" {
+				return fmt.Errorf("route group %q: target[%d] provider is required", g.Name, j)
+			}
+			if t.Model == nil || strings.TrimSpace(*t.Model) == "" {
+				return fmt.Errorf("route group %q: target[%d] model is required", g.Name, j)
+			}
+		}
+		if err := validateRoutingTargets(g.Targets); err != nil {
+			return fmt.Errorf("route group %q: %w", g.Name, err)
+		}
+	}
+	return nil
+}
+
+// validateHealthPolicy checks health policy fields are positive if set
+func validateHealthPolicy(hp *HealthPolicyRequest) error {
+	if hp == nil {
+		return nil
+	}
+	if hp.FailureThreshold != nil && *hp.FailureThreshold < 1 {
+		return fmt.Errorf("health_policy.failure_threshold must be >= 1")
+	}
+	if hp.FailureWindowSeconds != nil && *hp.FailureWindowSeconds < 1 {
+		return fmt.Errorf("health_policy.failure_window_seconds must be >= 1")
+	}
+	if hp.CooldownSeconds != nil && *hp.CooldownSeconds < 1 {
+		return fmt.Errorf("health_policy.cooldown_seconds must be >= 1")
+	}
+	if hp.ConsecutiveFailures != nil && *hp.ConsecutiveFailures < 1 {
+		return fmt.Errorf("health_policy.consecutive_failures must be >= 1")
+	}
+	return nil
+}
+
+// buildHealthPolicy converts the request health policy to a table health policy with defaults
+func buildHealthPolicy(hp *HealthPolicyRequest) *configstoreTables.HealthPolicy {
+	result := &configstoreTables.HealthPolicy{
+		FailureThreshold:     2,
+		FailureWindowSeconds: 30,
+		CooldownSeconds:      30,
+	}
+	if hp == nil {
+		return result
+	}
+	if hp.FailureThreshold != nil {
+		result.FailureThreshold = *hp.FailureThreshold
+	}
+	if hp.FailureWindowSeconds != nil {
+		result.FailureWindowSeconds = *hp.FailureWindowSeconds
+	}
+	if hp.CooldownSeconds != nil {
+		result.CooldownSeconds = *hp.CooldownSeconds
+	}
+	if hp.ConsecutiveFailures != nil {
+		result.ConsecutiveFailures = *hp.ConsecutiveFailures
+	}
+	return result
+}
+
+// buildRouteGroups converts request route groups to table route groups
+func buildRouteGroups(groups []RouteGroupRequest) []configstoreTables.RouteGroup {
+	result := make([]configstoreTables.RouteGroup, 0, len(groups))
+	for _, g := range groups {
+		targets := make([]configstoreTables.RouteGroupTarget, 0, len(g.Targets))
+		for _, t := range g.Targets {
+			targets = append(targets, configstoreTables.RouteGroupTarget{
+				Provider: t.Provider,
+				Model:    t.Model,
+				KeyID:    t.KeyID,
+				Weight:   t.Weight,
+			})
+		}
+		result = append(result, configstoreTables.RouteGroup{
+			Name:       g.Name,
+			RetryLimit: g.RetryLimit,
+			Targets:    targets,
+		})
+	}
+	return result
+}
+
+// getHealthStatus handles GET /api/governance/health-status
+// Returns health status for grouped routing targets, grouped by their actual routing rule
+// and evaluated using each rule's real health policy (not a fabricated display policy).
+func (h *GovernanceHandler) getHealthStatus(ctx *fasthttp.RequestCtx) {
+	if h.healthTracker == nil {
+		SendJSON(ctx, map[string]interface{}{
+			"rules":   []interface{}{},
+			"message": "health tracker not available",
+		})
+		return
+	}
+
+	// Fetch all routing rules from the database to find grouped routing rules
+	rules, err := h.configStore.GetRoutingRules(ctx)
+	if err != nil {
+		logger.Error("failed to get routing rules for health status: %v", err)
+		SendJSON(ctx, map[string]interface{}{
+			"rules":   []interface{}{},
+			"message": "failed to retrieve routing rules",
+		})
+		return
+	}
+
+	now := time.Now()
+	type ruleHealthStatus struct {
+		RuleID   string                            `json:"rule_id"`
+		RuleName string                            `json:"rule_name"`
+		Policy   *configstoreTables.HealthPolicy   `json:"policy"`
+		Targets  []governance.TargetHealthSnapshot `json:"targets"`
+	}
+
+	var result []ruleHealthStatus
+	for _, rule := range rules {
+		if !rule.GroupedRoutingEnabled || len(rule.ParsedRouteGroups) == 0 {
+			continue
+		}
+		policy := rule.ParsedHealthPolicy
+		if policy == nil {
+			policy = &configstoreTables.HealthPolicy{
+				FailureThreshold:     2,
+				FailureWindowSeconds: 30,
+				CooldownSeconds:      30,
+			}
+		}
+
+		// Collect all target keys from this rule's route groups
+		var targets []governance.TargetHealthSnapshot
+		seen := make(map[string]struct{})
+		for _, group := range rule.ParsedRouteGroups {
+			for _, t := range group.Targets {
+				key := governance.RouteGroupTargetKey(t)
+				if _, dup := seen[key]; dup {
+					continue
+				}
+				seen[key] = struct{}{}
+				targets = append(targets, h.healthTracker.GetTargetStatusForRule(rule.ID, key, policy, now))
+			}
+		}
+
+		result = append(result, ruleHealthStatus{
+			RuleID:   rule.ID,
+			RuleName: rule.Name,
+			Policy:   policy,
+			Targets:  targets,
+		})
+	}
+
+	SendJSON(ctx, map[string]interface{}{
+		"rules": result,
+		"count": len(result),
+	})
 }

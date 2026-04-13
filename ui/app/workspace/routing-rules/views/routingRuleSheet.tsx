@@ -22,13 +22,17 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { ModelMultiselect } from "@/components/ui/modelMultiselect";
-import { X, Save, Plus, Trash2 } from "lucide-react";
+import { X, Save, Plus, Trash2, ChevronDown, ChevronUp } from "lucide-react";
 import {
 	RoutingRule,
 	RoutingRuleFormData,
 	RoutingTargetFormData,
+	RouteGroupFormData,
+	CreateRoutingRuleRequest,
 	DEFAULT_ROUTING_RULE_FORM_DATA,
 	DEFAULT_ROUTING_TARGET,
+	DEFAULT_HEALTH_POLICY,
+	DEFAULT_ROUTE_GROUP,
 	ROUTING_RULE_SCOPES,
 } from "@/lib/types/routingRules";
 import {
@@ -93,6 +97,7 @@ export function RoutingRuleSheet({
 
 	// State for targets and query (managed outside react-hook-form for complex nested structures)
 	const [targets, setTargets] = useState<RoutingTargetFormData[]>([{ ...DEFAULT_ROUTING_TARGET }]);
+	const [routeGroups, setRouteGroups] = useState<RouteGroupFormData[]>([]);
 	const [query, setQuery] = useState<RuleGroupType>(defaultQuery);
 	const [builderKey, setBuilderKey] = useState(0);
 
@@ -113,6 +118,8 @@ export function RoutingRuleSheet({
 	const scope = watch("scope");
 	const scopeId = watch("scope_id");
 	const fallbacks = watch("fallbacks");
+	const groupedEnabled = watch("grouped_routing_enabled");
+	const healthPolicy = watch("health_policy");
 
 	// Get available providers from configured providers, plus any provider already
 	// referenced by the current targets, existing rules' targets, or rules' fallbacks
@@ -138,6 +145,8 @@ export function RoutingRuleSheet({
 			setValue("scope_id", editingRule.scope_id || "");
 			setValue("priority", editingRule.priority);
 			setValue("enabled", editingRule.enabled);
+			setValue("grouped_routing_enabled", editingRule.grouped_routing_enabled || false);
+			setValue("health_policy", editingRule.health_policy || { ...DEFAULT_HEALTH_POLICY });
 			if (editingRule.targets && editingRule.targets.length > 0) {
 				setTargets(editingRule.targets.map((t) => ({
 					...DEFAULT_ROUTING_TARGET,
@@ -149,6 +158,20 @@ export function RoutingRuleSheet({
 			} else {
 				setTargets([{ ...DEFAULT_ROUTING_TARGET }]);
 			}
+			if (editingRule.route_groups && editingRule.route_groups.length > 0) {
+				setRouteGroups(editingRule.route_groups.map((g) => ({
+					name: g.name,
+					retry_limit: g.retry_limit,
+					targets: g.targets.map((t) => ({
+						provider: t.provider || "",
+						model: t.model || "",
+						key_id: t.key_id || "",
+						weight: t.weight,
+					})),
+				})));
+			} else {
+				setRouteGroups([]);
+			}
 			// Restore the query object if it exists, otherwise use default
 			if (editingRule.query) {
 				setQuery(editingRule.query);
@@ -159,6 +182,7 @@ export function RoutingRuleSheet({
 		} else {
 			reset();
 			setTargets([{ ...DEFAULT_ROUTING_TARGET }]);
+			setRouteGroups([]);
 			setQuery(defaultQuery);
 			setBuilderKey((prev) => prev + 1);
 		}
@@ -194,20 +218,67 @@ export function RoutingRuleSheet({
 			return;
 		}
 
-		// Validate targets
-		if (targets.length === 0) {
-			toast.error("At least one routing target is required");
-			return;
-		}
-		for (const t of targets) {
-			if (t.weight <= 0) {
-				toast.error("Each target weight must be greater than 0");
+		if (data.grouped_routing_enabled) {
+			// Grouped routing validation
+			if (routeGroups.length === 0) {
+				toast.error("At least one route group is required");
 				return;
 			}
-		}
-		if (Math.abs(totalWeight - 1) > 0.001) {
-			toast.error(`Target weights must sum to 1, current total: ${totalWeight.toFixed(4)}`);
-			return;
+			for (const group of routeGroups) {
+				if (!group.name.trim()) {
+					toast.error("Each route group must have a name");
+					return;
+				}
+				if (group.targets.length === 0) {
+					toast.error(`Route group "${group.name}" must have at least one target`);
+					return;
+				}
+				const groupWeight = group.targets.reduce((sum, t) => sum + (t.weight || 0), 0);
+				if (Math.abs(groupWeight - 1) > 0.001) {
+					toast.error(`Weights in group "${group.name}" must sum to 1 (current: ${groupWeight.toFixed(4)})`);
+					return;
+				}
+				for (const t of group.targets) {
+					if (!t.provider) {
+						toast.error(`Each target in group "${group.name}" must have a provider`);
+						return;
+					}
+					if (!t.model) {
+						toast.error(`Each target in group "${group.name}" must have a model`);
+						return;
+					}
+				}
+			}
+			if (data.health_policy) {
+				if (data.health_policy.failure_threshold < 1) {
+					toast.error("Failure threshold must be at least 1");
+					return;
+				}
+				if (data.health_policy.failure_window_seconds < 1) {
+					toast.error("Failure window must be at least 1 second");
+					return;
+				}
+				if (data.health_policy.cooldown_seconds < 1) {
+					toast.error("Cooldown must be at least 1 second");
+					return;
+				}
+			}
+		} else {
+			// Standard routing validation
+			if (targets.length === 0) {
+				toast.error("At least one routing target is required");
+				return;
+			}
+			for (const t of targets) {
+				if (t.weight <= 0) {
+					toast.error("Each target weight must be greater than 0");
+					return;
+				}
+			}
+			if (Math.abs(totalWeight - 1) > 0.001) {
+				toast.error(`Target weights must sum to 1, current total: ${totalWeight.toFixed(4)}`);
+				return;
+			}
 		}
 
 		// Validate regex patterns in routing rules
@@ -230,22 +301,38 @@ export function RoutingRuleSheet({
 			return provider && provider.length > 0;
 		});
 
-		const payload = {
+		const payload: CreateRoutingRuleRequest = {
 			name: data.name,
 			description: data.description,
 			cel_expression: data.cel_expression,
-			targets: targets.map(({ provider, model, key_id, weight }) => ({
-				provider: provider || undefined,
-				model: model || undefined,
-				key_id: key_id || undefined,
-				weight,
-			})),
-			fallbacks: validFallbacks,
+			targets: data.grouped_routing_enabled
+				? []
+				: targets.map(({ provider, model, key_id, weight }) => ({
+					provider: provider || undefined,
+					model: model || undefined,
+					key_id: key_id || undefined,
+					weight,
+				})),
+			fallbacks: data.grouped_routing_enabled ? [] : validFallbacks,
 			scope: data.scope,
 			scope_id: data.scope === "global" ? undefined : (data.scope_id || undefined),
 			priority: data.priority,
 			enabled: data.enabled,
 			query: query,
+			grouped_routing_enabled: data.grouped_routing_enabled,
+			health_policy: data.grouped_routing_enabled ? data.health_policy : undefined,
+			route_groups: data.grouped_routing_enabled
+				? routeGroups.map((g) => ({
+					name: g.name,
+					retry_limit: g.retry_limit,
+					targets: g.targets.map(({ provider, model, key_id, weight }) => ({
+						provider,
+						model,
+						key_id: key_id || undefined,
+						weight,
+					})),
+				}))
+				: undefined,
 		};
 
 		const submitPromise = isEditing && editingRule
@@ -264,6 +351,7 @@ export function RoutingRuleSheet({
 				);
 				reset();
 				setTargets([{ ...DEFAULT_ROUTING_TARGET }]);
+				setRouteGroups([]);
 				setQuery(defaultQuery);
 				setBuilderKey((prev) => prev + 1);
 				onOpenChange(false);
@@ -277,6 +365,7 @@ export function RoutingRuleSheet({
 	const handleCancel = () => {
 		reset();
 		setTargets([{ ...DEFAULT_ROUTING_TARGET }]);
+		setRouteGroups([]);
 		setQuery(defaultQuery);
 		setBuilderKey((prev) => prev + 1);
 		onOpenChange(false);
@@ -458,8 +547,152 @@ export function RoutingRuleSheet({
 
 					<Separator />
 
-					{/* Routing Targets */}
-					<div className="space-y-3">
+					{/* Grouped Health Routing Toggle */}
+					<div className="flex items-center justify-between rounded-lg border p-4">
+						<div className="space-y-0.5">
+							<Label htmlFor="grouped_routing_enabled">Grouped Health Routing</Label>
+							<p className="text-muted-foreground text-sm">Enable health-aware routing with route groups and automatic failover</p>
+						</div>
+						<Switch
+							id="grouped_routing_enabled"
+							checked={groupedEnabled}
+							onCheckedChange={(checked) => setValue("grouped_routing_enabled", checked)}
+							data-testid="grouped-routing-toggle"
+						/>
+					</div>
+
+					{groupedEnabled ? (
+						<>
+							{/* Health Policy */}
+							<div className="space-y-3">
+								<Label>Health Policy</Label>
+								<p className="text-muted-foreground text-xs">Configure when a target is considered unhealthy and placed in cooldown. Two triggers (either one activates cooldown): window-based (burst failures) and consecutive (persistent failures regardless of time).</p>
+								<div className="grid grid-cols-2 gap-3">
+									<div className="space-y-1.5">
+										<Label htmlFor="hp-threshold" className="text-xs">Window Threshold</Label>
+										<Input
+											id="hp-threshold"
+											type="number"
+											min={1}
+											value={healthPolicy?.failure_threshold ?? DEFAULT_HEALTH_POLICY.failure_threshold}
+											onChange={(e) => setValue("health_policy", {
+												...healthPolicy,
+												failure_threshold: parseInt(e.target.value) || 1,
+											})}
+											data-testid="health-policy-threshold"
+										/>
+										<p className="text-muted-foreground text-[10px]">Failures within window to trigger cooldown</p>
+									</div>
+									<div className="space-y-1.5">
+										<Label htmlFor="hp-window" className="text-xs">Failure Window (s)</Label>
+										<Input
+											id="hp-window"
+											type="number"
+											min={1}
+											value={healthPolicy?.failure_window_seconds ?? DEFAULT_HEALTH_POLICY.failure_window_seconds}
+											onChange={(e) => setValue("health_policy", {
+												...healthPolicy,
+												failure_window_seconds: parseInt(e.target.value) || 1,
+											})}
+											data-testid="health-policy-window"
+										/>
+										<p className="text-muted-foreground text-[10px]">Sliding time window for counting failures</p>
+									</div>
+									<div className="space-y-1.5">
+										<Label htmlFor="hp-consecutive" className="text-xs">Consecutive Failures</Label>
+										<Input
+											id="hp-consecutive"
+											type="number"
+											min={1}
+											value={healthPolicy?.consecutive_failures ?? DEFAULT_HEALTH_POLICY.consecutive_failures ?? healthPolicy?.failure_threshold ?? 2}
+											onChange={(e) => setValue("health_policy", {
+												...healthPolicy,
+												consecutive_failures: parseInt(e.target.value) || 1,
+											})}
+											data-testid="health-policy-consecutive"
+										/>
+										<p className="text-muted-foreground text-[10px]">Consecutive failures (any pace) to trigger cooldown</p>
+									</div>
+									<div className="space-y-1.5">
+										<Label htmlFor="hp-cooldown" className="text-xs">Cooldown (s)</Label>
+										<Input
+											id="hp-cooldown"
+											type="number"
+											min={1}
+											value={healthPolicy?.cooldown_seconds ?? DEFAULT_HEALTH_POLICY.cooldown_seconds}
+											onChange={(e) => setValue("health_policy", {
+												...healthPolicy,
+												cooldown_seconds: parseInt(e.target.value) || 1,
+											})}
+											data-testid="health-policy-cooldown"
+										/>
+									</div>
+								</div>
+							</div>
+
+							<Separator />
+
+							{/* Route Groups */}
+							<div className="space-y-3">
+								<div className="flex items-center justify-between">
+									<div>
+										<Label>Route Groups</Label>
+										<p className="text-muted-foreground text-xs mt-0.5">
+											Groups are tried in order. Each group selects targets by weight, with retries within the group.
+										</p>
+									</div>
+									<Button
+										type="button"
+										variant="outline"
+										size="sm"
+										onClick={() => setRouteGroups((prev) => [...prev, {
+											...DEFAULT_ROUTE_GROUP,
+											name: `Group ${prev.length + 1}`,
+											targets: [{ provider: "", model: "", key_id: "", weight: 1 }],
+										}])}
+										className="gap-2 shrink-0"
+										data-testid="route-group-add"
+									>
+										<Plus className="h-4 w-4" />
+										Add Group
+									</Button>
+								</div>
+
+								{routeGroups.length === 0 && (
+									<p className="text-muted-foreground text-sm text-center py-4 border border-dashed rounded-lg">
+										No route groups configured. Add a group to get started.
+									</p>
+								)}
+
+								<div className="space-y-4">
+									{routeGroups.map((group, gi) => (
+										<RouteGroupEditor
+											key={gi}
+											group={group}
+											groupIndex={gi}
+											availableProviders={availableProviders}
+											providersData={providersData}
+											onUpdate={(updated) => setRouteGroups((prev) => prev.map((g, i) => i === gi ? updated : g))}
+											onRemove={() => setRouteGroups((prev) => prev.filter((_, i) => i !== gi))}
+											onMoveUp={gi > 0 ? () => setRouteGroups((prev) => {
+												const next = [...prev];
+												[next[gi - 1], next[gi]] = [next[gi], next[gi - 1]];
+												return next;
+											}) : undefined}
+											onMoveDown={gi < routeGroups.length - 1 ? () => setRouteGroups((prev) => {
+												const next = [...prev];
+												[next[gi], next[gi + 1]] = [next[gi + 1], next[gi]];
+												return next;
+											}) : undefined}
+										/>
+									))}
+								</div>
+							</div>
+						</>
+					) : (
+						<>
+							{/* Routing Targets (standard mode) */}
+							<div className="space-y-3">
 						<div className="flex items-center justify-between">
 							<div>
 								<Label>Routing Targets</Label>
@@ -601,6 +834,8 @@ export function RoutingRuleSheet({
 						</div>
 						<p className="text-muted-foreground text-xs">Fallbacks will be used in the order they are defined</p>
 					</div>
+						</>
+					)}
 
 					{/* Action Buttons */}
 					<div className="flex justify-end gap-3">
@@ -794,6 +1029,226 @@ function TargetRow({ target, index, availableProviders, providersData, showRemov
 						)}
 					</div>
 				</div>
+			)}
+		</div>
+	);
+}
+
+/* ─── Route Group Editor ────────────────────────────────── */
+
+interface RouteGroupEditorProps {
+	group: RouteGroupFormData;
+	groupIndex: number;
+	availableProviders: string[];
+	providersData: Array<{ name: string; keys: Array<{ id: string; name: string }> }>;
+	onUpdate: (group: RouteGroupFormData) => void;
+	onRemove: () => void;
+	onMoveUp?: () => void;
+	onMoveDown?: () => void;
+}
+
+function RouteGroupEditor({ group, groupIndex, availableProviders, providersData, onUpdate, onRemove, onMoveUp, onMoveDown }: RouteGroupEditorProps) {
+	const [collapsed, setCollapsed] = useState(false);
+
+	const addGroupTarget = () => {
+		const remaining = 1 - group.targets.reduce((sum, t) => sum + (t.weight || 0), 0);
+		onUpdate({
+			...group,
+			targets: [...group.targets, { provider: "", model: "", key_id: "", weight: Math.max(0, parseFloat(remaining.toFixed(4))) }],
+		});
+	};
+
+	const updateGroupTarget = (index: number, field: keyof RoutingTargetFormData, value: string | number) => {
+		onUpdate({
+			...group,
+			targets: group.targets.map((t, i) => i === index ? { ...t, [field]: value } : t),
+		});
+	};
+
+	const removeGroupTarget = (index: number) => {
+		onUpdate({
+			...group,
+			targets: group.targets.filter((_, i) => i !== index),
+		});
+	};
+
+	const groupWeight = group.targets.reduce((sum, t) => sum + (t.weight || 0), 0);
+
+	return (
+		<div className="rounded-lg border space-y-0" data-testid={`route-group-${groupIndex}`}>
+			{/* Group header */}
+			<div className="flex items-center justify-between p-3 bg-muted/30 rounded-t-lg">
+				<button
+					type="button"
+					className="flex items-center gap-2 text-sm font-medium hover:text-foreground text-foreground/80"
+					onClick={() => setCollapsed(!collapsed)}
+				>
+					{collapsed ? <ChevronDown className="h-4 w-4" /> : <ChevronUp className="h-4 w-4" />}
+					<span>{group.name || `Group ${groupIndex + 1}`}</span>
+					<span className="text-muted-foreground font-normal">({group.targets.length} target{group.targets.length !== 1 ? "s" : ""})</span>
+				</button>
+				<div className="flex items-center gap-1">
+					{onMoveUp && (
+						<Button type="button" variant="ghost" size="sm" onClick={onMoveUp} className="h-7 w-7 p-0" aria-label="Move group up">
+							<ChevronUp className="h-3.5 w-3.5" />
+						</Button>
+					)}
+					{onMoveDown && (
+						<Button type="button" variant="ghost" size="sm" onClick={onMoveDown} className="h-7 w-7 p-0" aria-label="Move group down">
+							<ChevronDown className="h-3.5 w-3.5" />
+						</Button>
+					)}
+					<Button type="button" variant="ghost" size="sm" onClick={onRemove} className="h-7 w-7 p-0 text-destructive hover:text-destructive" aria-label="Remove group"
+						data-testid={`route-group-${groupIndex}-remove`}
+					>
+						<Trash2 className="h-3.5 w-3.5" />
+					</Button>
+				</div>
+			</div>
+
+			{!collapsed && (
+				<div className="p-3 space-y-3">
+					{/* Group name & retry limit */}
+					<div className="grid grid-cols-2 gap-3">
+						<div className="space-y-1.5">
+							<Label className="text-xs">Group Name</Label>
+							<Input
+								value={group.name}
+								onChange={(e) => onUpdate({ ...group, name: e.target.value })}
+								placeholder="e.g., Primary, Fallback"
+								className="h-9 text-sm"
+								data-testid={`route-group-${groupIndex}-name`}
+							/>
+						</div>
+						<div className="space-y-1.5">
+							<Label className="text-xs">Retry Limit</Label>
+							<Input
+								type="number"
+								min={0}
+								max={10}
+								value={group.retry_limit}
+								onChange={(e) => onUpdate({ ...group, retry_limit: parseInt(e.target.value) || 0 })}
+								className="h-9 text-sm"
+								data-testid={`route-group-${groupIndex}-retry`}
+							/>
+							<p className="text-muted-foreground text-[10px]">Extra attempts within this group (0 = no retries)</p>
+						</div>
+					</div>
+
+					{/* Group targets */}
+					<div className="space-y-2">
+						<div className="flex items-center justify-between">
+							<Label className="text-xs">Targets</Label>
+							<Button
+								type="button"
+								variant="outline"
+								size="sm"
+								onClick={addGroupTarget}
+								className="h-7 gap-1 text-xs"
+								data-testid={`route-group-${groupIndex}-target-add`}
+							>
+								<Plus className="h-3 w-3" />
+								Add
+							</Button>
+						</div>
+
+						{group.targets.map((target, ti) => (
+							<GroupTargetRow
+								key={ti}
+								target={target}
+								groupIndex={groupIndex}
+								targetIndex={ti}
+								availableProviders={availableProviders}
+								providersData={providersData}
+								showRemove={group.targets.length > 1}
+								onUpdate={updateGroupTarget}
+								onRemove={removeGroupTarget}
+							/>
+						))}
+
+						<div className={`flex items-center justify-end gap-2 text-xs font-medium ${Math.abs(groupWeight - 1) > 0.001 ? "text-destructive" : "text-muted-foreground"}`}>
+							Total: {groupWeight.toFixed(4)}
+							{Math.abs(groupWeight - 1) > 0.001 && <span className="text-destructive">(must equal 1)</span>}
+						</div>
+					</div>
+				</div>
+			)}
+		</div>
+	);
+}
+
+/* ─── Group Target Row (compact) ────────────────────────── */
+
+interface GroupTargetRowProps {
+	target: RoutingTargetFormData;
+	groupIndex: number;
+	targetIndex: number;
+	availableProviders: string[];
+	providersData: Array<{ name: string; keys: Array<{ id: string; name: string }> }>;
+	showRemove: boolean;
+	onUpdate: (index: number, field: keyof RoutingTargetFormData, value: string | number) => void;
+	onRemove: (index: number) => void;
+}
+
+function GroupTargetRow({ target, groupIndex, targetIndex, availableProviders, providersData, showRemove, onUpdate, onRemove }: GroupTargetRowProps) {
+	return (
+		<div className="flex items-center gap-2" data-testid={`route-group-${groupIndex}-target-${targetIndex}`}>
+			<div className="flex-1">
+				<Select
+					value={target.provider}
+					onValueChange={(value) => {
+						onUpdate(targetIndex, "provider", value);
+						onUpdate(targetIndex, "model", "");
+						onUpdate(targetIndex, "key_id", "");
+					}}
+				>
+					<SelectTrigger className="h-9 text-sm">
+						<SelectValue placeholder="Provider..." />
+					</SelectTrigger>
+					<SelectContent>
+						{availableProviders.map((prov) => (
+							<SelectItem key={prov} value={prov}>
+								<div className="flex items-center gap-2">
+									<RenderProviderIcon provider={prov as ProviderIconType} size="sm" className="h-4 w-4" />
+									<span>{getProviderLabel(prov)}</span>
+								</div>
+							</SelectItem>
+						))}
+					</SelectContent>
+				</Select>
+			</div>
+			<div className="flex-1">
+				<ModelMultiselect
+					provider={target.provider || undefined}
+					value={target.model}
+					onChange={(value) => onUpdate(targetIndex, "model", value)}
+					placeholder="Model..."
+					isSingleSelect
+					disabled={!target.provider}
+					className="!h-9 !min-h-9"
+				/>
+			</div>
+			<Input
+				type="number"
+				min={0.001}
+				max={1}
+				step={0.001}
+				value={target.weight}
+				onChange={(e) => onUpdate(targetIndex, "weight", parseFloat(e.target.value) || 0)}
+				className="h-9 w-20 text-sm"
+				data-testid={`route-group-${groupIndex}-target-${targetIndex}-weight`}
+			/>
+			{showRemove && (
+				<Button
+					type="button"
+					variant="ghost"
+					size="sm"
+					onClick={() => onRemove(targetIndex)}
+					className="h-9 w-9 p-0 shrink-0"
+					aria-label={`Remove target ${targetIndex + 1} from group ${groupIndex + 1}`}
+				>
+					<Trash2 className="h-3.5 w-3.5" />
+				</Button>
 			)}
 		</div>
 	);

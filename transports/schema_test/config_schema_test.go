@@ -433,6 +433,101 @@ func TestSchemaMCPToolManagerCodeMode(t *testing.T) {
 	})
 }
 
+func TestSchemaGovernanceGroupedRoutingRules(t *testing.T) {
+	compiled := compileSchema(t)
+
+	t.Run("grouped routing rule validates without legacy targets", func(t *testing.T) {
+		config := `{
+			"governance": {
+				"routing_rules": [
+					{
+						"id": "rule-1",
+						"name": "grouped",
+						"grouped_routing_enabled": true,
+						"route_groups": [
+							{
+								"name": "primary",
+								"targets": [
+									{"provider": "openai", "model": "gpt-4.1", "weight": 1}
+								]
+							}
+						]
+					}
+				]
+			}
+		}`
+		if err := validateConfig(t, compiled, config); err != nil {
+			t.Errorf("grouped routing rule without legacy targets should be valid, got: %v", err)
+		}
+	})
+
+	t.Run("standard routing rule still requires targets", func(t *testing.T) {
+		config := `{
+			"governance": {
+				"routing_rules": [
+					{
+						"id": "rule-1",
+						"name": "standard"
+					}
+				]
+			}
+		}`
+		if err := validateConfig(t, compiled, config); err == nil {
+			t.Error("standard routing rule without targets should be invalid")
+		}
+	})
+
+	t.Run("grouped routing target requires provider", func(t *testing.T) {
+		config := `{
+			"governance": {
+				"routing_rules": [
+					{
+						"id": "rule-1",
+						"name": "grouped",
+						"grouped_routing_enabled": true,
+						"route_groups": [
+							{
+								"name": "primary",
+								"targets": [
+									{"model": "gpt-4.1", "weight": 1}
+								]
+							}
+						]
+					}
+				]
+			}
+		}`
+		if err := validateConfig(t, compiled, config); err == nil {
+			t.Error("grouped routing target without provider should be invalid")
+		}
+	})
+
+	t.Run("grouped routing target requires model", func(t *testing.T) {
+		config := `{
+			"governance": {
+				"routing_rules": [
+					{
+						"id": "rule-1",
+						"name": "grouped",
+						"grouped_routing_enabled": true,
+						"route_groups": [
+							{
+								"name": "primary",
+								"targets": [
+									{"provider": "openai", "weight": 1}
+								]
+							}
+						]
+					}
+				]
+			}
+		}`
+		if err := validateConfig(t, compiled, config); err == nil {
+			t.Error("grouped routing target without model should be invalid")
+		}
+	})
+}
+
 func TestSchemaMCPClientConfigFields(t *testing.T) {
 	schema := loadSchema(t)
 

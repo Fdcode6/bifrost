@@ -1539,9 +1539,129 @@
           "type": "object",
           "description": "Additional query parameters",
           "additionalProperties": true
+        },
+        "grouped_routing_enabled": {
+          "type": "boolean",
+          "description": "Enable grouped health routing. When true, route_groups is used instead of targets/fallbacks.",
+          "default": false
+        },
+        "health_policy": {
+          "$ref": "#/$defs/health_policy"
+        },
+        "route_groups": {
+          "type": "array",
+          "description": "Ordered list of route groups for grouped health routing. Groups are tried in order; within each group targets are selected by weight.",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/route_group"
+          }
         }
       },
-      "required": ["id", "name", "targets"],
+      "required": ["id", "name"],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "grouped_routing_enabled": {
+                "const": true
+              }
+            },
+            "required": ["grouped_routing_enabled"]
+          },
+          "then": {
+            "required": ["route_groups"]
+          },
+          "else": {
+            "required": ["targets"]
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "health_policy": {
+      "type": "object",
+      "description": "Health policy for grouped routing: defines failure thresholds and cooldown behavior",
+      "properties": {
+        "failure_threshold": {
+          "type": "integer",
+          "description": "Number of failures within the window before a target enters cooldown",
+          "minimum": 1,
+          "default": 2
+        },
+        "failure_window_seconds": {
+          "type": "integer",
+          "description": "Sliding time window (seconds) for counting failures",
+          "minimum": 1,
+          "default": 30
+        },
+        "cooldown_seconds": {
+          "type": "integer",
+          "description": "Duration (seconds) a target stays in cooldown after exceeding the failure threshold",
+          "minimum": 1,
+          "default": 30
+        },
+        "consecutive_failures": {
+          "type": "integer",
+          "description": "Number of consecutive failures (regardless of time window) before a target enters cooldown. Useful for low-traffic scenarios. 0 or omitted = use failure_threshold value",
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "route_group": {
+      "type": "object",
+      "description": "A named group of targets with its own retry budget",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Human-readable group name (e.g., 'primary', 'backup')"
+        },
+        "retry_limit": {
+          "type": "integer",
+          "description": "Additional attempts on other healthy targets within this group after the first attempt. The same target is not retried again within the same request.",
+          "minimum": 0,
+          "default": 0
+        },
+        "targets": {
+          "type": "array",
+          "minItems": 1,
+          "description": "Weighted targets within this group. provider and model are required explicitly for grouped health routing. Weights must sum to 1.",
+          "items": {
+            "$ref": "#/$defs/route_group_target"
+          }
+        }
+      },
+      "required": ["name", "targets"],
+      "additionalProperties": false
+    },
+    "route_group_target": {
+      "type": "object",
+      "description": "A single weighted target inside a grouped health route group. provider and model must be explicit so health tracking and request history stay stable.",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Target provider name (for example 'openai' or 'openrouter')"
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Target model name"
+        },
+        "key_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional API key UUID to pin for this target. Omit for load-balanced key selection"
+        },
+        "weight": {
+          "type": "number",
+          "description": "Probability weight for this target (must be > 0). All weights in a group must sum to 1",
+          "exclusiveMinimum": 0,
+          "maximum": 1
+        }
+      },
+      "required": ["provider", "model", "weight"],
       "additionalProperties": false
     },
     "virtual_key_provider_config": {

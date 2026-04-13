@@ -3,13 +3,17 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/plugins/governance"
+	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
+	"gorm.io/gorm"
 )
 
 // mockGovernanceManagerForVK embeds the interface so unimplemented methods panic.
@@ -34,6 +38,57 @@ func (m *mockConfigStoreForVK) GetVirtualKeysPaginated(_ context.Context, _ conf
 
 func (m *mockConfigStoreForVK) GetVirtualKeys(_ context.Context) ([]configstoreTables.TableVirtualKey, error) {
 	return nil, nil
+}
+
+type mockGovernanceManagerForRoutingRule struct {
+	GovernanceManager
+	reloadedRuleID string
+}
+
+func (m *mockGovernanceManagerForRoutingRule) ReloadRoutingRule(_ context.Context, id string) error {
+	m.reloadedRuleID = id
+	return nil
+}
+
+type mockConfigStoreForRoutingRule struct {
+	configstore.ConfigStore
+	rule        *configstoreTables.TableRoutingRule
+	rules       []configstoreTables.TableRoutingRule
+	createdRule *configstoreTables.TableRoutingRule
+	updatedRule *configstoreTables.TableRoutingRule
+}
+
+func (m *mockConfigStoreForRoutingRule) GetRoutingRule(_ context.Context, id string) (*configstoreTables.TableRoutingRule, error) {
+	if m.rule == nil || m.rule.ID != id {
+		return nil, configstore.ErrNotFound
+	}
+	ruleCopy := *m.rule
+	ruleCopy.Targets = append([]configstoreTables.TableRoutingTarget(nil), m.rule.Targets...)
+	ruleCopy.ParsedFallbacks = append([]string(nil), m.rule.ParsedFallbacks...)
+	ruleCopy.ParsedRouteGroups = append([]configstoreTables.RouteGroup(nil), m.rule.ParsedRouteGroups...)
+	return &ruleCopy, nil
+}
+
+func (m *mockConfigStoreForRoutingRule) UpdateRoutingRule(_ context.Context, rule *configstoreTables.TableRoutingRule, _ ...*gorm.DB) error {
+	ruleCopy := *rule
+	ruleCopy.Targets = append([]configstoreTables.TableRoutingTarget(nil), rule.Targets...)
+	ruleCopy.ParsedFallbacks = append([]string(nil), rule.ParsedFallbacks...)
+	ruleCopy.ParsedRouteGroups = append([]configstoreTables.RouteGroup(nil), rule.ParsedRouteGroups...)
+	m.updatedRule = &ruleCopy
+	return nil
+}
+
+func (m *mockConfigStoreForRoutingRule) CreateRoutingRule(_ context.Context, rule *configstoreTables.TableRoutingRule, _ ...*gorm.DB) error {
+	ruleCopy := *rule
+	ruleCopy.Targets = append([]configstoreTables.TableRoutingTarget(nil), rule.Targets...)
+	ruleCopy.ParsedFallbacks = append([]string(nil), rule.ParsedFallbacks...)
+	ruleCopy.ParsedRouteGroups = append([]configstoreTables.RouteGroup(nil), rule.ParsedRouteGroups...)
+	m.createdRule = &ruleCopy
+	return nil
+}
+
+func (m *mockConfigStoreForRoutingRule) GetRoutingRules(_ context.Context) ([]configstoreTables.TableRoutingRule, error) {
+	return append([]configstoreTables.TableRoutingRule(nil), m.rules...), nil
 }
 
 // TestGetVirtualKeys_PaginatedEndpoint_ResponseShape verifies the JSON response
@@ -334,4 +389,270 @@ func bifrostString(v string) *string {
 
 func bifrostBool(v bool) *bool {
 	return &v
+}
+
+func TestUpdateRoutingRule_GroupedModeAllowsEmptyTargets(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	keyID := "relay-a"
+	store := &mockConfigStoreForRoutingRule{
+		rule: &configstoreTables.TableRoutingRule{
+			ID:                    "rule-1",
+			Name:                  "grouped rule",
+			Enabled:               true,
+			CelExpression:         "true",
+			GroupedRoutingEnabled: true,
+			ParsedHealthPolicy: &configstoreTables.HealthPolicy{
+				FailureThreshold:     2,
+				FailureWindowSeconds: 30,
+				CooldownSeconds:      30,
+			},
+			ParsedRouteGroups: []configstoreTables.RouteGroup{
+				{
+					Name:       "primary",
+					RetryLimit: 0,
+					Targets: []configstoreTables.RouteGroupTarget{
+						{Provider: bifrostString("openai"), Model: bifrostString("gpt-4.1"), KeyID: &keyID, Weight: 1},
+					},
+				},
+			},
+			Scope: "global",
+		},
+	}
+	manager := &mockGovernanceManagerForRoutingRule{}
+	h := &GovernanceHandler{
+		configStore:       store,
+		governanceManager: manager,
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.SetUserValue("rule_id", "rule-1")
+	ctx.Request.Header.SetMethod("PUT")
+	ctx.Request.SetBodyString(`{
+		"targets": [],
+		"grouped_routing_enabled": true,
+		"route_groups": [
+			{
+				"name": "primary",
+				"retry_limit": 0,
+				"targets": [
+					{"provider": "openai", "model": "gpt-4.1", "key_id": "relay-a", "weight": 1}
+				]
+			}
+		]
+	}`)
+
+	h.updateRoutingRule(ctx)
+
+	require.Equal(t, 200, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	require.NotNil(t, store.updatedRule)
+	require.Empty(t, store.updatedRule.Targets)
+	require.True(t, store.updatedRule.GroupedRoutingEnabled)
+	require.Equal(t, "rule-1", manager.reloadedRuleID)
+}
+
+func TestCreateRoutingRule_GroupedModeRequiresExplicitProviderAndModel(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	tests := []struct {
+		name        string
+		targetJSON  string
+		wantMessage string
+	}{
+		{
+			name:        "missing provider",
+			targetJSON:  `{"model":"gpt-4.1","weight":1}`,
+			wantMessage: "provider is required",
+		},
+		{
+			name:        "missing model",
+			targetJSON:  `{"provider":"openai","weight":1}`,
+			wantMessage: "model is required",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &mockConfigStoreForRoutingRule{}
+			manager := &mockGovernanceManagerForRoutingRule{}
+			h := &GovernanceHandler{
+				configStore:       store,
+				governanceManager: manager,
+			}
+
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.SetMethod("POST")
+			ctx.Request.SetBodyString(fmt.Sprintf(`{
+				"name": "grouped rule",
+				"cel_expression": "true",
+				"grouped_routing_enabled": true,
+				"route_groups": [
+					{
+						"name": "primary",
+						"retry_limit": 0,
+						"targets": [%s]
+					}
+				]
+			}`, tt.targetJSON))
+
+			h.createRoutingRule(ctx)
+
+			require.Equal(t, 400, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			require.Contains(t, string(ctx.Response.Body()), tt.wantMessage)
+			require.Nil(t, store.createdRule)
+			require.Empty(t, manager.reloadedRuleID)
+		})
+	}
+}
+
+func TestUpdateRoutingRule_GroupedModeRequiresExplicitProviderAndModel(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	tests := []struct {
+		name        string
+		targetJSON  string
+		wantMessage string
+	}{
+		{
+			name:        "missing provider",
+			targetJSON:  `{"model":"gpt-4.1","weight":1}`,
+			wantMessage: "provider is required",
+		},
+		{
+			name:        "missing model",
+			targetJSON:  `{"provider":"openai","weight":1}`,
+			wantMessage: "model is required",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &mockConfigStoreForRoutingRule{
+				rule: &configstoreTables.TableRoutingRule{
+					ID:                    "rule-1",
+					Name:                  "grouped rule",
+					Enabled:               true,
+					CelExpression:         "true",
+					GroupedRoutingEnabled: true,
+					ParsedRouteGroups: []configstoreTables.RouteGroup{
+						{
+							Name:       "primary",
+							RetryLimit: 0,
+							Targets: []configstoreTables.RouteGroupTarget{
+								{Provider: bifrostString("openai"), Model: bifrostString("gpt-4.1"), Weight: 1},
+							},
+						},
+					},
+					Scope: "global",
+				},
+			}
+			manager := &mockGovernanceManagerForRoutingRule{}
+			h := &GovernanceHandler{
+				configStore:       store,
+				governanceManager: manager,
+			}
+
+			ctx := &fasthttp.RequestCtx{}
+			ctx.SetUserValue("rule_id", "rule-1")
+			ctx.Request.Header.SetMethod("PUT")
+			ctx.Request.SetBodyString(fmt.Sprintf(`{
+				"targets": [],
+				"grouped_routing_enabled": true,
+				"route_groups": [
+					{
+						"name": "primary",
+						"retry_limit": 0,
+						"targets": [%s]
+					}
+				]
+			}`, tt.targetJSON))
+
+			h.updateRoutingRule(ctx)
+
+			require.Equal(t, 400, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			require.Contains(t, string(ctx.Response.Body()), tt.wantMessage)
+			require.Nil(t, store.updatedRule)
+			require.Empty(t, manager.reloadedRuleID)
+		})
+	}
+}
+
+func TestGetHealthStatus_GroupedRulesAreRuleScoped(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	policy := &configstoreTables.HealthPolicy{
+		FailureThreshold:     2,
+		FailureWindowSeconds: 30,
+		CooldownSeconds:      30,
+	}
+	target := configstoreTables.RouteGroupTarget{
+		Provider: bifrostString("openai"),
+		Model:    bifrostString("gpt-4.1"),
+		KeyID:    bifrostString("relay-a"),
+		Weight:   1,
+	}
+	routeGroup := configstoreTables.RouteGroup{
+		Name:       "primary",
+		RetryLimit: 0,
+		Targets:    []configstoreTables.RouteGroupTarget{target},
+	}
+	store := &mockConfigStoreForRoutingRule{
+		rules: []configstoreTables.TableRoutingRule{
+			{
+				ID:                    "rule-a",
+				Name:                  "Rule A",
+				GroupedRoutingEnabled: true,
+				ParsedHealthPolicy:    policy,
+				ParsedRouteGroups:     []configstoreTables.RouteGroup{routeGroup},
+			},
+			{
+				ID:                    "rule-b",
+				Name:                  "Rule B",
+				GroupedRoutingEnabled: true,
+				ParsedHealthPolicy:    policy,
+				ParsedRouteGroups:     []configstoreTables.RouteGroup{routeGroup},
+			},
+		},
+	}
+
+	healthTracker := governance.NewHealthTracker()
+	now := time.Now()
+	targetKey := governance.TargetKey("openai", "gpt-4.1", "relay-a")
+	healthTracker.RecordFailureForRule("rule-a", targetKey, "502", now)
+	healthTracker.RecordFailureForRule("rule-a", targetKey, "503", now.Add(time.Second))
+
+	h := &GovernanceHandler{
+		configStore:   store,
+		healthTracker: healthTracker,
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.SetRequestURI("/api/governance/health-status")
+
+	h.getHealthStatus(ctx)
+
+	require.Equal(t, 200, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+
+	var resp struct {
+		Rules []struct {
+			RuleID  string `json:"rule_id"`
+			Targets []struct {
+				Key    string `json:"key"`
+				Status string `json:"status"`
+			} `json:"targets"`
+		} `json:"rules"`
+	}
+	require.NoError(t, json.Unmarshal(ctx.Response.Body(), &resp))
+	require.Len(t, resp.Rules, 2)
+
+	statusByRule := make(map[string]string, len(resp.Rules))
+	for _, rule := range resp.Rules {
+		require.Len(t, rule.Targets, 1)
+		require.Equal(t, targetKey, rule.Targets[0].Key)
+		statusByRule[rule.RuleID] = rule.Targets[0].Status
+	}
+
+	require.Equal(t, "cooldown", statusByRule["rule-a"], fmt.Sprintf("unexpected response: %s", string(ctx.Response.Body())))
+	require.Equal(t, "available", statusByRule["rule-b"], fmt.Sprintf("unexpected response: %s", string(ctx.Response.Body())))
 }
