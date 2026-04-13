@@ -3743,3 +3743,43 @@ func validateRoutingTargets(targets []RoutingTarget) error {
 	}
 	return nil
 }
+
+// RegisterSelfServiceRoutes registers governance routes that do NOT require admin authentication.
+// These routes authenticate via the virtual key value itself (x-bf-vk header).
+func (h *GovernanceHandler) RegisterSelfServiceRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
+	r.GET("/api/governance/virtual-keys/quota", lib.ChainMiddlewares(h.getVirtualKeyQuota, middlewares...))
+}
+
+// getVirtualKeyQuota handles GET /api/governance/virtual-keys/quota
+// This is a self-service endpoint — no admin auth required. The VK value in the header is the credential.
+func (h *GovernanceHandler) getVirtualKeyQuota(ctx *fasthttp.RequestCtx) {
+	// Extract virtual key using the same logic as the inference path (lib/ctx.go):
+	// x-bf-vk accepts any value; other headers require the sk-bf- prefix.
+	var vkValue string
+	if v := string(ctx.Request.Header.Peek("x-bf-vk")); v != "" {
+		vkValue = v
+	} else if v := governance.ParseVirtualKeyFromFastHTTPRequest(ctx); v != nil {
+		vkValue = *v
+	}
+	if vkValue == "" {
+		SendError(ctx, 401, "Missing virtual key. Provide it via x-bf-vk header, Authorization Bearer, x-api-key, or x-goog-api-key header.")
+		return
+	}
+
+	vk, err := h.configStore.GetVirtualKeyQuotaByValue(ctx, vkValue)
+	if err != nil {
+		if errors.Is(err, configstore.ErrNotFound) {
+			SendError(ctx, 401, "Virtual key not found")
+			return
+		}
+		SendError(ctx, 500, "Failed to retrieve virtual key")
+		return
+	}
+
+	SendJSON(ctx, map[string]interface{}{
+		"virtual_key_name": vk.Name,
+		"is_active":        vk.IsActive,
+		"budgets":          vk.Budgets,
+		"rate_limit":       vk.RateLimit,
+	})
+}
