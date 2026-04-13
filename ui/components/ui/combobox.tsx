@@ -106,14 +106,10 @@ function Combobox({
 
 function ComboboxInput({
 	className,
-	children,
 	disabled = false,
 	showTrigger = true,
 	showClear = false,
 	placeholder,
-	readOnly,
-	autoFocus,
-	...props
 }: {
 	className?: string;
 	children?: React.ReactNode;
@@ -124,7 +120,7 @@ function ComboboxInput({
 	readOnly?: boolean;
 	autoFocus?: boolean;
 }) {
-	const { value, itemToStringLabel, setOpen, onValueChange, inputValue, setInputValue } = useComboboxContext();
+	const { value, itemToStringLabel, onValueChange } = useComboboxContext();
 
 	const displayValue = React.useMemo(() => {
 		if (Array.isArray(value)) return "";
@@ -186,7 +182,7 @@ function ComboboxContent({
 	anchor?: React.RefObject<HTMLElement | null>;
 	[key: string]: any;
 }) {
-	const { filter, inputValue, setInputValue } = useComboboxContext();
+	const { filter } = useComboboxContext();
 
 	return (
 		<PopoverContent
@@ -532,7 +528,7 @@ export {
 	ComboboxLabel,
 	ComboboxList,
 	ComboboxSelect,
-	ComboboxSeparator,
+	ComboboxSeparator
 };
 
-export type { ComboboxSelectOption, ComboboxSelectProps };
+	export type { ComboboxSelectOption, ComboboxSelectProps };
