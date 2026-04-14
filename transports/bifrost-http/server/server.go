@@ -1309,6 +1309,11 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 
 	logger.Info("models added to catalog")
 	s.Config.SetBifrostClient(s.Client)
+	if governancePlugin, govErr := lib.FindPluginAs[governance.BaseGovernancePlugin](s.Config, s.getGovernancePluginName()); govErr == nil {
+		if clientAware, ok := governancePlugin.(governance.BifrostClientAwareGovernancePlugin); ok {
+			clientAware.SetBifrostClient(s.Client)
+		}
+	}
 	// Initialize routes
 	s.Router = router.New()
 	commonMiddlewares := s.PrepareCommonMiddlewares()

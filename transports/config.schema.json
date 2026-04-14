@@ -1086,6 +1086,30 @@
                     "is_enterprise": {
                       "type": "boolean",
                       "description": "Enable enterprise mode features"
+                    },
+                    "active_health_probe_enabled": {
+                      "type": "boolean",
+                      "description": "Enable active health probing for grouped routing targets"
+                    },
+                    "active_health_probe_interval_seconds": {
+                      "type": "integer",
+                      "description": "Background scan interval in seconds for active health probing",
+                      "minimum": 1
+                    },
+                    "active_health_probe_passive_freshness_seconds": {
+                      "type": "integer",
+                      "description": "Minimum passive observation freshness window in seconds before active probing starts",
+                      "minimum": 1
+                    },
+                    "active_health_probe_timeout_seconds": {
+                      "type": "integer",
+                      "description": "Per-probe timeout in seconds",
+                      "minimum": 1
+                    },
+                    "active_health_probe_max_concurrency": {
+                      "type": "integer",
+                      "description": "Maximum number of active probes that can run concurrently in one scan",
+                      "minimum": 1
                     }
                   },
                   "additionalProperties": false

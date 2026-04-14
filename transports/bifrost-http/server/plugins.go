@@ -177,6 +177,14 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 			IsVkMandatory:   &s.Config.ClientConfig.EnforceAuthOnInference,
 			RequiredHeaders: &s.Config.ClientConfig.RequiredHeaders,
 		}
+		if governancePluginConfig := s.getPluginConfig(governance.PluginName); governancePluginConfig != nil {
+			extraConfig, err := MarshalPluginConfig[governance.Config](governancePluginConfig.Config)
+			if err == nil && extraConfig != nil {
+				extraConfig.IsVkMandatory = config.IsVkMandatory
+				extraConfig.RequiredHeaders = config.RequiredHeaders
+				config = extraConfig
+			}
+		}
 		s.registerPluginWithStatus(ctx, governance.PluginName, nil, config, false)
 	} else {
 		s.markPluginDisabled(governance.PluginName)
@@ -221,7 +229,6 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 
 	return nil
 }
-
 
 // loadCustomPlugins loads plugins from PluginConfigs
 func (s *BifrostHTTPServer) loadCustomPlugins(ctx context.Context) error {

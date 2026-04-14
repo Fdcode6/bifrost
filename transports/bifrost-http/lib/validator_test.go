@@ -988,6 +988,29 @@ func TestValidateConfigSchema_Plugin_Valid(t *testing.T) {
 	}
 }
 
+func TestValidateConfigSchema_GovernancePlugin_ActiveProbeConfigValid(t *testing.T) {
+	validConfig := `{
+		"plugins": [
+			{
+				"enabled": true,
+				"name": "governance",
+				"config": {
+					"active_health_probe_enabled": true,
+					"active_health_probe_interval_seconds": 5,
+					"active_health_probe_passive_freshness_seconds": 10,
+					"active_health_probe_timeout_seconds": 3,
+					"active_health_probe_max_concurrency": 2
+				}
+			}
+		]
+	}`
+
+	err := ValidateConfigSchema([]byte(validConfig), loadLocalSchema(t))
+	if err != nil {
+		t.Errorf("expected governance active probe config to pass validation, got error: %v", err)
+	}
+}
+
 func TestValidateConfigSchema_Plugin_MissingEnabled(t *testing.T) {
 	// Missing required field: enabled
 	invalidConfig := `{
