@@ -1,4 +1,6 @@
+import type { Metadata } from "next"
 import { Geist, Geist_Mono } from "next/font/google"
+import { siteMetadata } from "@/lib/config/siteMetadata"
 import "./globals.css"
 
 const geistSans = Geist({
@@ -12,6 +14,8 @@ const geistMono = Geist_Mono({
 	subsets: ["latin"],
 	display: "swap",
 })
+
+export const metadata: Metadata = siteMetadata
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
 	return (

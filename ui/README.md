@@ -41,6 +41,9 @@ The development server runs on `http://localhost:3000` and connects to your Bifr
 ```bash
 # Development only - customize Bifrost backend port
 NEXT_PUBLIC_BIFROST_PORT=8080
+
+# Optional - customize the browser tab title
+NEXT_PUBLIC_SITE_TITLE="Bifrost Console"
 ```
 
 ## Architecture

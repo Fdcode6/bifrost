@@ -8,7 +8,7 @@
 import { Metadata } from "next";
 
 export const metadata: Metadata = {
-	title: "Routing Rules | Bifrost",
+	title: "Routing Rules",
 	description: "Manage CEL-based routing rules for intelligent request routing",
 };
 

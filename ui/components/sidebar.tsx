@@ -12,7 +12,6 @@ import {
 	CircleDollarSign,
 	Construction,
 	DatabaseZap,
-	FlaskConical,
 	FolderGit,
 	Globe,
 	KeyRound,
@@ -61,7 +60,7 @@ import {
 } from "@/components/ui/sidebar";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import { IS_ENTERPRISE, TRIAL_EXPIRY } from "@/lib/constants/config";
-import { useGetCoreConfigQuery, useGetLatestReleaseQuery, useGetVersionQuery, useLogoutMutation } from "@/lib/store";
+import { useGetCoreConfigQuery, useGetVersionQuery, useLogoutMutation } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import type { UserInfo } from "@enterprise/lib/store/utils/tokenManager";
@@ -73,7 +72,7 @@ import { useTheme } from "next-themes";
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useCookies } from "react-cookie";
 import { ThemeToggle } from "./themeToggle";
 import { Badge } from "./ui/badge";
@@ -165,6 +164,45 @@ interface SidebarItem {
 	tag?: string;
 	isExternal?: boolean;
 	queryParam?: string; // Optional: for tab-based subitems (e.g., "client-settings")
+}
+
+interface SidebarItemsOptions {
+	hasLogsAccess: boolean;
+	hasObservabilityAccess: boolean;
+	hasModelProvidersAccess: boolean;
+	hasMCPGatewayAccess: boolean;
+	hasPluginsAccess: boolean;
+	hasUsersAccess: boolean;
+	hasUserProvisioningAccess: boolean;
+	hasAuditLogsAccess: boolean;
+	hasCustomersAccess: boolean;
+	hasTeamsAccess: boolean;
+	hasRbacAccess: boolean;
+	hasVirtualKeysAccess: boolean;
+	hasGovernanceAccess: boolean;
+	hasRoutingRulesAccess: boolean;
+	hasGuardrailsProvidersAccess: boolean;
+	hasGuardrailsConfigAccess: boolean;
+	hasClusterConfigAccess: boolean;
+	isAdaptiveRoutingAllowed: boolean;
+	hasSettingsAccess: boolean;
+	hasPromptRepositoryAccess: boolean;
+	hasPromptDeploymentStrategyAccess: boolean;
+	isDbConnected: boolean;
+}
+
+interface PromoCardItem {
+	id: string;
+	title: string | React.ReactElement;
+	description: string | React.ReactElement;
+	dismissible?: boolean;
+	variant?: "default" | "warning";
+}
+
+interface PromoCardsOptions {
+	restartRequiredReason?: string;
+	mounted: boolean;
+	isProductionSetupDismissed: boolean;
 }
 
 const getSidebarItemHref = (item: Pick<SidebarItem, "url" | "queryParam">) => {
@@ -331,44 +369,364 @@ const SidebarItemView = ({
 	);
 };
 
-// Helper function to compare semantic versions
-const compareVersions = (v1: string, v2: string): number => {
-	// Remove 'v' prefix if present
-	const cleanV1 = v1.startsWith("v") ? v1.slice(1) : v1;
-	const cleanV2 = v2.startsWith("v") ? v2.slice(1) : v2;
+export const buildSidebarItems = ({
+	hasLogsAccess,
+	hasObservabilityAccess,
+	hasModelProvidersAccess,
+	hasMCPGatewayAccess,
+	hasPluginsAccess,
+	hasUsersAccess,
+	hasUserProvisioningAccess,
+	hasAuditLogsAccess,
+	hasCustomersAccess,
+	hasTeamsAccess,
+	hasRbacAccess,
+	hasVirtualKeysAccess,
+	hasGovernanceAccess,
+	hasRoutingRulesAccess,
+	hasGuardrailsProvidersAccess,
+	hasGuardrailsConfigAccess,
+	hasClusterConfigAccess,
+	isAdaptiveRoutingAllowed,
+	hasSettingsAccess,
+	hasPromptRepositoryAccess,
+	hasPromptDeploymentStrategyAccess,
+	isDbConnected,
+}: SidebarItemsOptions): SidebarItem[] => [
+	{
+		title: "Observability",
+		url: "/workspace/logs",
+		icon: Telescope,
+		description: "Request logs & monitoring",
+		hasAccess: hasLogsAccess,
+		subItems: [
+			{
+				title: "Dashboard",
+				url: "/workspace/dashboard",
+				icon: ChartColumnBig,
+				description: "Dashboard",
+				hasAccess: hasObservabilityAccess,
+			},
+			{
+				title: "LLM Logs",
+				url: "/workspace/logs",
+				icon: Logs,
+				description: "LLM request logs & monitoring",
+				hasAccess: hasLogsAccess,
+			},
+			{
+				title: "MCP Logs",
+				url: "/workspace/mcp-logs",
+				icon: MCPIcon,
+				description: "MCP tool execution logs",
+				hasAccess: hasLogsAccess,
+			},
+			{
+				title: "Connectors",
+				url: "/workspace/observability",
+				icon: ChevronsLeftRightEllipsis,
+				description: "Log connectors",
+				hasAccess: hasObservabilityAccess,
+			},
+			{
+				title: "Logs Settings",
+				url: "/workspace/config/logging",
+				icon: Settings,
+				description: "Logs configuration",
+				hasAccess: hasSettingsAccess,
+			},
+		],
+	},
+	{
+		title: "Models",
+		url: "/workspace/providers",
+		icon: BoxIcon,
+		description: "Configure models",
+		hasAccess: true,
+		subItems: [
+			{
+				title: "Model Catalog",
+				url: "/workspace/model-catalog",
+				icon: LayoutGrid,
+				description: "Overview of providers, keys, and usage",
+				hasAccess: hasModelProvidersAccess,
+			},
+			{
+				title: "Model Providers",
+				url: "/workspace/providers",
+				icon: Boxes,
+				description: "Configure models",
+				hasAccess: hasModelProvidersAccess,
+			},
+			{
+				title: "Budgets & Limits",
+				url: "/workspace/model-limits",
+				icon: Wallet,
+				description: "Model limits",
+				hasAccess: hasGovernanceAccess,
+			},
+			{
+				title: "Routing Rules",
+				url: "/workspace/routing-rules",
+				icon: Network,
+				description: "Intelligent routing rules",
+				hasAccess: hasRoutingRulesAccess,
+			},
+			{
+				title: "Pricing config",
+				url: "/workspace/custom-pricing",
+				icon: CircleDollarSign,
+				description: "Pricing configuration",
+				hasAccess: hasSettingsAccess,
+			},
+		],
+	},
+	{
+		title: "MCP Gateway",
+		icon: MCPIcon,
+		description: "MCP configuration",
+		url: "/workspace/mcp-gateway",
+		hasAccess: hasMCPGatewayAccess,
+		subItems: [
+			{
+				title: "MCP Catalog",
+				url: "/workspace/mcp-registry",
+				icon: LayoutGrid,
+				description: "MCP tool catalog",
+				hasAccess: hasMCPGatewayAccess,
+			},
+			{
+				title: "Tool groups",
+				url: "/workspace/mcp-tool-groups",
+				icon: ToolCase,
+				description: "MCP tool groups",
+				hasAccess: hasMCPGatewayAccess,
+			},
+			{
+				title: "Auth Config",
+				url: "/workspace/mcp-auth-config",
+				icon: ShieldUser,
+				description: "MCP auth config",
+				hasAccess: hasMCPGatewayAccess,
+			},
+			{
+				title: "MCP Settings",
+				url: "/workspace/mcp-settings",
+				icon: Settings,
+				description: "MCP configuration",
+				hasAccess: hasMCPGatewayAccess,
+			},
+		],
+	},
+	{
+		title: "Plugins",
+		url: "/workspace/plugins",
+		icon: Puzzle,
+		description: "Manage custom plugins",
+		hasAccess: hasPluginsAccess,
+	},
+	{
+		title: "Governance",
+		url: "/workspace/governance",
+		icon: Landmark,
+		description: "Virtual keys, users, teams, customers & roles",
+		hasAccess: hasGovernanceAccess,
+		subItems: [
+			{
+				title: "Virtual Keys",
+				url: "/workspace/governance/virtual-keys",
+				icon: KeyRound,
+				description: "Manage virtual keys & access",
+				hasAccess: hasVirtualKeysAccess,
+			},
+			{
+				title: "Users",
+				url: "/workspace/governance/users",
+				icon: Users,
+				description: "Manage users",
+				hasAccess: hasUsersAccess,
+			},
+			{
+				title: "Teams",
+				url: "/workspace/governance/teams",
+				icon: Building,
+				description: "Manage teams",
+				hasAccess: hasTeamsAccess,
+			},
+			{
+				title: "Customers",
+				url: "/workspace/governance/customers",
+				icon: WalletCards,
+				description: "Manage customers",
+				hasAccess: hasCustomersAccess,
+			},
+			{
+				title: "User Provisioning",
+				url: "/workspace/scim",
+				icon: BookUser,
+				description: "User management and provisioning",
+				hasAccess: hasUserProvisioningAccess,
+			},
+			{
+				title: "Roles & Permissions",
+				url: "/workspace/governance/rbac",
+				icon: UserRoundCheck,
+				description: "User roles and permissions",
+				hasAccess: hasRbacAccess,
+			},
+			{
+				title: "Audit Logs",
+				url: "/workspace/audit-logs",
+				icon: ScrollText,
+				description: "Audit logs and compliance",
+				hasAccess: hasAuditLogsAccess,
+			},
+		],
+	},
+	{
+		title: "Guardrails",
+		url: "/workspace/guardrails",
+		icon: Construction,
+		description: "Guardrails configuration",
+		hasAccess: hasGuardrailsConfigAccess || hasGuardrailsProvidersAccess,
+		subItems: [
+			{
+				title: "Rules",
+				url: "/workspace/guardrails/configuration",
+				icon: SearchCheck,
+				description: "Guardrail rules",
+				hasAccess: hasGuardrailsConfigAccess,
+			},
+			{
+				title: "Providers",
+				url: "/workspace/guardrails/providers",
+				icon: Boxes,
+				description: "Guardrail providers configuration",
+				hasAccess: hasGuardrailsProvidersAccess,
+			},
+		],
+	},
+	{
+		title: "Cluster Config",
+		url: "/workspace/cluster",
+		icon: Network,
+		description: "Manage Bifrost cluster",
+		hasAccess: hasClusterConfigAccess,
+	},
+	{
+		title: "Adaptive Routing",
+		url: "/workspace/adaptive-routing",
+		icon: Shuffle,
+		description: "Manage adaptive load balancer",
+		hasAccess: isAdaptiveRoutingAllowed,
+	},
+	...(isDbConnected
+		? [
+				{
+					title: "Prompt Repository",
+					url: "/workspace/prompt-repo",
+					icon: FolderGit,
+					description: "Prompt repository",
+					hasAccess: hasPromptRepositoryAccess || hasPromptDeploymentStrategyAccess,
+					subItems: [
+						{
+							title: "Prompts",
+							url: "/workspace/prompt-repo/prompts",
+							icon: SquareTerminal,
+							description: "Manage prompts",
+							hasAccess: hasPromptRepositoryAccess,
+							tag: "Beta",
+						},
+						{
+							title: "Deployments",
+							url: "/workspace/prompt-repo/deployments",
+							icon: Router,
+							description: "Manage deployment",
+							hasAccess: hasPromptDeploymentStrategyAccess,
+						},
+					],
+				},
+			]
+		: []),
+	{
+		title: "Settings",
+		url: "/workspace/config",
+		icon: Settings2Icon,
+		description: "Bifrost settings",
+		hasAccess: hasSettingsAccess || hasAuditLogsAccess || hasUserProvisioningAccess,
+		subItems: [
+			{
+				title: "Client Settings",
+				url: "/workspace/config/client-settings",
+				icon: Settings,
+				description: "Client configuration settings",
+				hasAccess: hasSettingsAccess,
+			},
+			{
+				title: "Caching",
+				url: "/workspace/config/caching",
+				icon: DatabaseZap,
+				description: "Caching configuration",
+				hasAccess: hasSettingsAccess,
+			},
+			{
+				title: "Security",
+				url: "/workspace/config/security",
+				icon: ShieldCheck,
+				description: "Security settings",
+				hasAccess: hasSettingsAccess,
+			},
+			...(IS_ENTERPRISE
+				? [
+						{
+							title: "Proxy",
+							url: "/workspace/config/proxy",
+							icon: Globe,
+							description: "Proxy configuration",
+							hasAccess: hasSettingsAccess,
+						},
+					]
+				: []),
+			{
+				title: "API Keys",
+				url: "/workspace/config/api-keys",
+				icon: KeyRound,
+				description: "API keys management",
+				hasAccess: hasSettingsAccess,
+			},
+			{
+				title: "Performance Tuning",
+				url: "/workspace/config/performance-tuning",
+				icon: TrendingUp,
+				description: "Performance tuning settings",
+				hasAccess: hasSettingsAccess,
+			},
+		],
+	},
+];
 
-	// Split into main version and prerelease
-	const [mainV1, prereleaseV1] = cleanV1.split("-");
-	const [mainV2, prereleaseV2] = cleanV2.split("-");
+export const buildPromoCards = ({
+	restartRequiredReason,
+	mounted,
+	isProductionSetupDismissed,
+}: PromoCardsOptions): PromoCardItem[] => {
+	const cards: PromoCardItem[] = [];
 
-	// Compare main version numbers (major.minor.patch)
-	const partsV1 = mainV1.split(".").map(Number);
-	const partsV2 = mainV2.split(".").map(Number);
-
-	for (let i = 0; i < Math.max(partsV1.length, partsV2.length); i++) {
-		const num1 = partsV1[i] || 0;
-		const num2 = partsV2[i] || 0;
-
-		if (num1 > num2) return 1;
-		if (num1 < num2) return -1;
+	if (restartRequiredReason) {
+		cards.push({
+			id: "restart-required",
+			title: "Restart Required",
+			description: <div className="text-xs text-amber-700 dark:text-amber-300/80">{restartRequiredReason}</div>,
+			dismissible: false,
+			variant: "warning",
+		});
 	}
 
-	// If main versions are equal, check prerelease
-	// Version without prerelease is higher than version with prerelease
-	if (!prereleaseV1 && prereleaseV2) return 1;
-	if (prereleaseV1 && !prereleaseV2) return -1;
-
-	// Both have prereleases, compare them
-	if (prereleaseV1 && prereleaseV2) {
-		// Extract prerelease number (e.g., "prerelease1" -> 1)
-		const prereleaseNum1 = parseInt(prereleaseV1.replace(/\D/g, "")) || 0;
-		const prereleaseNum2 = parseInt(prereleaseV2.replace(/\D/g, "")) || 0;
-
-		if (prereleaseNum1 > prereleaseNum2) return 1;
-		if (prereleaseNum1 < prereleaseNum2) return -1;
+	if (!IS_ENTERPRISE && mounted && !isProductionSetupDismissed) {
+		cards.push(productionSetupHelpCard);
 	}
 
-	return 0;
+	return cards;
 };
 
 export default function AppSidebar() {
@@ -383,9 +741,6 @@ export default function AppSidebar() {
 	const searchInputRef = useRef<HTMLInputElement>(null);
 	const [cookies, setCookie] = useCookies([PRODUCTION_SETUP_DISMISSED_COOKIE]);
 	const isProductionSetupDismissed = !!cookies[PRODUCTION_SETUP_DISMISSED_COOKIE];
-	const { data: latestRelease } = useGetLatestReleaseQuery(undefined, {
-		skip: !mounted, // Only fetch after component is mounted
-	});
 	const hasLogsAccess = useRbac(RbacResource.Logs, RbacOperation.View);
 	const hasObservabilityAccess = useRbac(RbacResource.Observability, RbacOperation.View);
 	const hasModelProvidersAccess = useRbac(RbacResource.ModelProvider, RbacOperation.View);
@@ -411,326 +766,31 @@ export default function AppSidebar() {
 	const isDbConnected = coreConfig?.is_db_connected ?? false;
 
 	const items = useMemo(
-		() => [
-			{
-				title: "Observability",
-				url: "/workspace/logs",
-				icon: Telescope,
-				description: "Request logs & monitoring",
-				hasAccess: hasLogsAccess,
-				subItems: [
-					{
-						title: "Dashboard",
-						url: "/workspace/dashboard",
-						icon: ChartColumnBig,
-						description: "Dashboard",
-						hasAccess: hasObservabilityAccess,
-					},
-					{
-						title: "LLM Logs",
-						url: "/workspace/logs",
-						icon: Logs,
-						description: "LLM request logs & monitoring",
-						hasAccess: hasLogsAccess,
-					},
-					{
-						title: "MCP Logs",
-						url: "/workspace/mcp-logs",
-						icon: MCPIcon,
-						description: "MCP tool execution logs",
-						hasAccess: hasLogsAccess,
-					},
-					{
-						title: "Connectors",
-						url: "/workspace/observability",
-						icon: ChevronsLeftRightEllipsis,
-						description: "Log connectors",
-						hasAccess: hasObservabilityAccess,
-					},
-					{
-						title: "Logs Settings",
-						url: "/workspace/config/logging",
-						icon: Settings,
-						description: "Logs configuration",
-						hasAccess: hasSettingsAccess,
-					},
-				],
-			},
-			{
-				title: "Models",
-				url: "/workspace/providers",
-				icon: BoxIcon,
-				description: "Configure models",
-				hasAccess: true,
-				subItems: [
-					{
-						title: "Model Catalog",
-						url: "/workspace/model-catalog",
-						icon: LayoutGrid,
-						description: "Overview of providers, keys, and usage",
-						hasAccess: hasModelProvidersAccess,
-					},
-					{
-						title: "Model Providers",
-						url: "/workspace/providers",
-						icon: Boxes,
-						description: "Configure models",
-						hasAccess: hasModelProvidersAccess,
-					},
-					{
-						title: "Budgets & Limits",
-						url: "/workspace/model-limits",
-						icon: Wallet,
-						description: "Model limits",
-						hasAccess: hasGovernanceAccess,
-					},
-					{
-						title: "Routing Rules",
-						url: "/workspace/routing-rules",
-						icon: Network,
-						description: "Intelligent routing rules",
-						hasAccess: hasRoutingRulesAccess,
-					},
-					{
-						title: "Pricing config",
-						url: "/workspace/custom-pricing",
-						icon: CircleDollarSign,
-						description: "Pricing configuration",
-						hasAccess: hasSettingsAccess,
-					},
-				],
-			},
-			{
-				title: "MCP Gateway",
-				icon: MCPIcon,
-				description: "MCP configuration",
-				url: "/workspace/mcp-gateway",
-				hasAccess: hasMCPGatewayAccess,
-				subItems: [
-					{
-						title: "MCP Catalog",
-						url: "/workspace/mcp-registry",
-						icon: LayoutGrid,
-						description: "MCP tool catalog",
-						hasAccess: hasMCPGatewayAccess,
-					},
-					{
-						title: "Tool groups",
-						url: "/workspace/mcp-tool-groups",
-						icon: ToolCase,
-						description: "MCP tool groups",
-						hasAccess: hasMCPGatewayAccess,
-					},
-					{
-						title: "Auth Config",
-						url: "/workspace/mcp-auth-config",
-						icon: ShieldUser,
-						description: "MCP auth config",
-						hasAccess: hasMCPGatewayAccess,
-					},
-					{
-						title: "MCP Settings",
-						url: "/workspace/mcp-settings",
-						icon: Settings,
-						description: "MCP configuration",
-						hasAccess: hasMCPGatewayAccess,
-					},
-				],
-			},
-			{
-				title: "Plugins",
-				url: "/workspace/plugins",
-				icon: Puzzle,
-				description: "Manage custom plugins",
-				hasAccess: hasPluginsAccess,
-			},
-			{
-				title: "Governance",
-				url: "/workspace/governance",
-				icon: Landmark,
-				description: "Virtual keys, users, teams, customers & roles",
-				hasAccess: hasGovernanceAccess,
-				subItems: [
-					{
-						title: "Virtual Keys",
-						url: "/workspace/governance/virtual-keys",
-						icon: KeyRound,
-						description: "Manage virtual keys & access",
-						hasAccess: hasVirtualKeysAccess,
-					},
-					{
-						title: "Users",
-						url: "/workspace/governance/users",
-						icon: Users,
-						description: "Manage users",
-						hasAccess: hasUsersAccess,
-					},
-					{
-						title: "Teams",
-						url: "/workspace/governance/teams",
-						icon: Building,
-						description: "Manage teams",
-						hasAccess: hasTeamsAccess,
-					},
-					{
-						title: "Customers",
-						url: "/workspace/governance/customers",
-						icon: WalletCards,
-						description: "Manage customers",
-						hasAccess: hasCustomersAccess,
-					},
-					{
-						title: "User Provisioning",
-						url: "/workspace/scim",
-						icon: BookUser,
-						description: "User management and provisioning",
-						hasAccess: hasUserProvisioningAccess,
-					},
-					{
-						title: "Roles & Permissions",
-						url: "/workspace/governance/rbac",
-						icon: UserRoundCheck,
-						description: "User roles and permissions",
-						hasAccess: hasRbacAccess,
-					},
-					{
-						title: "Audit Logs",
-						url: "/workspace/audit-logs",
-						icon: ScrollText,
-						description: "Audit logs and compliance",
-						hasAccess: hasAuditLogsAccess,
-					},
-				],
-			},
-			{
-				title: "Guardrails",
-				url: "/workspace/guardrails",
-				icon: Construction,
-				description: "Guardrails configuration",
-				hasAccess: hasGuardrailsConfigAccess || hasGuardrailsProvidersAccess,
-				subItems: [
-					{
-						title: "Rules",
-						url: "/workspace/guardrails/configuration",
-						icon: SearchCheck,
-						description: "Guardrail rules",
-						hasAccess: hasGuardrailsConfigAccess,
-					},
-					{
-						title: "Providers",
-						url: "/workspace/guardrails/providers",
-						icon: Boxes,
-						description: "Guardrail providers configuration",
-						hasAccess: hasGuardrailsProvidersAccess,
-					},
-				],
-			},
-			{
-				title: "Cluster Config",
-				url: "/workspace/cluster",
-				icon: Network,
-				description: "Manage Bifrost cluster",
-				hasAccess: hasClusterConfigAccess,
-			},
-			{
-				title: "Adaptive Routing",
-				url: "/workspace/adaptive-routing",
-				icon: Shuffle,
-				description: "Manage adaptive load balancer",
-				hasAccess: isAdaptiveRoutingAllowed,
-			},
-			...(isDbConnected
-				? [
-						{
-							title: "Prompt Repository",
-							url: "/workspace/prompt-repo",
-							icon: FolderGit,
-							description: "Prompt repository",
-							hasAccess: hasPromptRepositoryAccess || hasPromptDeploymentStrategyAccess,
-							subItems: [
-								{
-									title: "Prompts",
-									url: "/workspace/prompt-repo/prompts",
-									icon: SquareTerminal,
-									description: "Manage prompts",
-									hasAccess: hasPromptRepositoryAccess,
-									tag: "Beta",
-								},
-								{
-									title: "Deployments",
-									url: "/workspace/prompt-repo/deployments",
-									icon: Router,
-									description: "Manage deployment",
-									hasAccess: hasPromptDeploymentStrategyAccess,
-								},
-							],
-						},
-					]
-				: []),
-			{
-				title: "Evals",
-				url: "https://www.getmaxim.ai",
-				icon: FlaskConical,
-				isExternal: true,
-				description: "Evaluations",
-				hasAccess: true,
-			},
-			{
-				title: "Settings",
-				url: "/workspace/config",
-				icon: Settings2Icon,
-				description: "Bifrost settings",
-				hasAccess: hasSettingsAccess || hasAuditLogsAccess || hasUserProvisioningAccess,
-				subItems: [
-					{
-						title: "Client Settings",
-						url: "/workspace/config/client-settings",
-						icon: Settings,
-						description: "Client configuration settings",
-						hasAccess: hasSettingsAccess,
-					},
-					{
-						title: "Caching",
-						url: "/workspace/config/caching",
-						icon: DatabaseZap,
-						description: "Caching configuration",
-						hasAccess: hasSettingsAccess,
-					},
-					{
-						title: "Security",
-						url: "/workspace/config/security",
-						icon: ShieldCheck,
-						description: "Security settings",
-						hasAccess: hasSettingsAccess,
-					},
-					...(IS_ENTERPRISE
-						? [
-								{
-									title: "Proxy",
-									url: "/workspace/config/proxy",
-									icon: Globe,
-									description: "Proxy configuration",
-									hasAccess: hasSettingsAccess,
-								},
-							]
-						: []),
-					{
-						title: "API Keys",
-						url: "/workspace/config/api-keys",
-						icon: KeyRound,
-						description: "API keys management",
-						hasAccess: hasSettingsAccess,
-					},
-					{
-						title: "Performance Tuning",
-						url: "/workspace/config/performance-tuning",
-						icon: TrendingUp,
-						description: "Performance tuning settings",
-						hasAccess: hasSettingsAccess,
-					},
-				],
-			},
-		],
+		() =>
+			buildSidebarItems({
+				hasLogsAccess,
+				hasObservabilityAccess,
+				hasModelProvidersAccess,
+				hasMCPGatewayAccess,
+				hasPluginsAccess,
+				hasUsersAccess,
+				hasUserProvisioningAccess,
+				hasAuditLogsAccess,
+				hasCustomersAccess,
+				hasTeamsAccess,
+				hasRbacAccess,
+				hasVirtualKeysAccess,
+				hasGovernanceAccess,
+				hasRoutingRulesAccess,
+				hasGuardrailsProvidersAccess,
+				hasGuardrailsConfigAccess,
+				hasClusterConfigAccess,
+				isAdaptiveRoutingAllowed,
+				hasSettingsAccess,
+				hasPromptRepositoryAccess,
+				hasPromptDeploymentStrategyAccess,
+				isDbConnected,
+			}),
 		[
 			hasLogsAccess,
 			hasObservabilityAccess,
@@ -800,14 +860,6 @@ export default function AppSidebar() {
 			setUserInfo(info);
 		}
 	}, []);
-
-	const showNewReleaseBanner = useMemo(() => {
-		if (IS_ENTERPRISE) return false;
-		if (latestRelease && version) {
-			return compareVersions(latestRelease.name, version) > 0;
-		}
-		return false;
-	}, [latestRelease, version]);
 	const isAuthEnabled = coreConfig?.auth_config?.is_enabled || false;
 
 	useEffect(() => {
@@ -960,51 +1012,17 @@ export default function AppSidebar() {
 
 	const { isConnected: isWebSocketConnected } = useWebSocket();
 
-	// New release image - based on theme
-	const newReleaseImage = mounted && resolvedTheme === "dark" ? "/images/new-release-image-dark.png" : "/images/new-release-image.png";
-
-	// Memoize promo cards array to prevent duplicates and unnecessary re-renders
-	const promoCards = useMemo(() => {
-		const cards = [];
-		// Restart required card - non-dismissible, shown first
-		if (coreConfig?.restart_required?.required) {
-			cards.push({
-				id: "restart-required",
-				title: "Restart Required",
-				description: (
-					<div className="text-xs text-amber-700 dark:text-amber-300/80">
-						{coreConfig.restart_required.reason || "Configuration changes require a server restart to take effect."}
-					</div>
-				),
-				dismissible: false,
-				variant: "warning" as const,
-			});
-		}
-		if (showNewReleaseBanner && latestRelease) {
-			cards.push({
-				id: "new-release",
-				title: `${latestRelease.name} is now available.`,
-				description: (
-					<div className="flex h-full flex-col gap-2">
-						<img src={newReleaseImage} alt="Bifrost" className="h-[95px] rounded-md object-cover" />
-						<Link
-							href={`https://docs.getbifrost.ai/changelogs/${latestRelease.name}`}
-							target="_blank"
-							className="text-primary mt-auto pb-1 font-medium underline"
-						>
-							View release notes
-						</Link>
-					</div>
-				),
-				dismissible: true,
-			});
-		}
-		// Only show after mounted to ensure cookie is properly hydrated and avoid flash
-		if (!IS_ENTERPRISE && mounted && !isProductionSetupDismissed) {
-			cards.push(productionSetupHelpCard);
-		}
-		return cards;
-	}, [coreConfig?.restart_required, showNewReleaseBanner, latestRelease, newReleaseImage, isProductionSetupDismissed, mounted]);
+	const promoCards = useMemo(
+		() =>
+			buildPromoCards({
+				restartRequiredReason: coreConfig?.restart_required?.required
+					? coreConfig.restart_required.reason || "Configuration changes require a server restart to take effect."
+					: undefined,
+				mounted,
+				isProductionSetupDismissed,
+			}),
+		[coreConfig?.restart_required, isProductionSetupDismissed, mounted],
+	);
 
 	// Reset areCardsEmpty when promoCards changes
 	useEffect(() => {
