@@ -621,10 +621,14 @@ func TestGetHealthStatus_GroupedRulesAreRuleScoped(t *testing.T) {
 	healthTracker.RecordFailureForRule("rule-a", targetKey, "502", now)
 	healthTracker.RecordFailureForRule("rule-a", targetKey, "503", now.Add(time.Second))
 
-	h := &GovernanceHandler{
-		configStore:   store,
+	h, err := NewAdaptiveRoutingHandler(&mockAdaptiveRoutingRuntime{
+		store: &mockAdaptiveRoutingStore{rules: []*configstoreTables.TableRoutingRule{
+			&store.rules[0],
+			&store.rules[1],
+		}},
 		healthTracker: healthTracker,
-	}
+	}, nil)
+	require.NoError(t, err)
 
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.Header.SetMethod("GET")

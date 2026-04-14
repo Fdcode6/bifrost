@@ -267,6 +267,15 @@ func (s *BifrostHTTPServer) getGovernancePlugin() (governance.BaseGovernancePlug
 	return lib.FindPluginAs[governance.BaseGovernancePlugin](s.Config, s.getGovernancePluginName())
 }
 
+// GetGovernancePlugin returns the currently loaded governance plugin, if available.
+func (s *BifrostHTTPServer) GetGovernancePlugin() governance.BaseGovernancePlugin {
+	governancePlugin, err := s.getGovernancePlugin()
+	if err != nil {
+		return nil
+	}
+	return governancePlugin
+}
+
 // ReloadVirtualKey reloads a virtual key from the in-memory store
 func (s *BifrostHTTPServer) ReloadVirtualKey(ctx context.Context, id string) (*tables.TableVirtualKey, error) {
 	// Load relationships for response
@@ -982,6 +991,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 		loggingHandler = handlers.NewLoggingHandler(loggerPlugin.GetPluginLogManager(), s, s.Config)
 	}
 	var governanceHandler *handlers.GovernanceHandler
+	var adaptiveRoutingHandler *handlers.AdaptiveRoutingHandler
 	governancePluginName := governance.PluginName
 	if name, ok := ctx.Value(schemas.BifrostContextKeyGovernancePluginName).(string); ok && name != "" {
 		governancePluginName = name
@@ -992,10 +1002,16 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 		var healthTracker *governance.HealthTracker
 		if gp, ok := governancePlugin.(governance.BaseGovernancePlugin); ok {
 			healthTracker = gp.GetHealthTracker()
+			adaptiveRoutingHandler, err = handlers.NewAdaptiveRoutingHandler(s, s.Config.ConfigStore)
+			if err != nil {
+				return fmt.Errorf("failed to initialize adaptive routing handler: %v", err)
+			}
 		}
-		governanceHandler, err = handlers.NewGovernanceHandler(callbacks, s.Config.ConfigStore, healthTracker)
-		if err != nil {
-			return fmt.Errorf("failed to initialize governance handler: %v", err)
+		if s.Config.ConfigStore != nil {
+			governanceHandler, err = handlers.NewGovernanceHandler(callbacks, s.Config.ConfigStore, healthTracker)
+			if err != nil {
+				return fmt.Errorf("failed to initialize governance handler: %v", err)
+			}
 		}
 	}
 	var cacheHandler *handlers.CacheHandler
@@ -1050,6 +1066,9 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	}
 	if governanceHandler != nil {
 		governanceHandler.RegisterRoutes(s.Router, middlewares...)
+	}
+	if adaptiveRoutingHandler != nil {
+		adaptiveRoutingHandler.RegisterRoutes(s.Router, middlewares...)
 	}
 	if loggingHandler != nil {
 		loggingHandler.RegisterRoutes(s.Router, middlewares...)

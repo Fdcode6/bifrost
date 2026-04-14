@@ -334,8 +334,6 @@ func (h *GovernanceHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 	r.PUT("/api/governance/providers/{provider_name}", lib.ChainMiddlewares(h.updateProviderGovernance, middlewares...))
 	r.DELETE("/api/governance/providers/{provider_name}", lib.ChainMiddlewares(h.deleteProviderGovernance, middlewares...))
 
-	// Health Status (grouped routing)
-	r.GET("/api/governance/health-status", lib.ChainMiddlewares(h.getHealthStatus, middlewares...))
 }
 
 // Virtual Key CRUD Operations
@@ -3545,77 +3543,4 @@ func buildRouteGroups(groups []RouteGroupRequest) []configstoreTables.RouteGroup
 		})
 	}
 	return result
-}
-
-// getHealthStatus handles GET /api/governance/health-status
-// Returns health status for grouped routing targets, grouped by their actual routing rule
-// and evaluated using each rule's real health policy (not a fabricated display policy).
-func (h *GovernanceHandler) getHealthStatus(ctx *fasthttp.RequestCtx) {
-	if h.healthTracker == nil {
-		SendJSON(ctx, map[string]interface{}{
-			"rules":   []interface{}{},
-			"message": "health tracker not available",
-		})
-		return
-	}
-
-	// Fetch all routing rules from the database to find grouped routing rules
-	rules, err := h.configStore.GetRoutingRules(ctx)
-	if err != nil {
-		logger.Error("failed to get routing rules for health status: %v", err)
-		SendJSON(ctx, map[string]interface{}{
-			"rules":   []interface{}{},
-			"message": "failed to retrieve routing rules",
-		})
-		return
-	}
-
-	now := time.Now()
-	type ruleHealthStatus struct {
-		RuleID   string                            `json:"rule_id"`
-		RuleName string                            `json:"rule_name"`
-		Policy   *configstoreTables.HealthPolicy   `json:"policy"`
-		Targets  []governance.TargetHealthSnapshot `json:"targets"`
-	}
-
-	var result []ruleHealthStatus
-	for _, rule := range rules {
-		if !rule.GroupedRoutingEnabled || len(rule.ParsedRouteGroups) == 0 {
-			continue
-		}
-		policy := rule.ParsedHealthPolicy
-		if policy == nil {
-			policy = &configstoreTables.HealthPolicy{
-				FailureThreshold:     2,
-				FailureWindowSeconds: 30,
-				CooldownSeconds:      30,
-			}
-		}
-
-		// Collect all target keys from this rule's route groups
-		var targets []governance.TargetHealthSnapshot
-		seen := make(map[string]struct{})
-		for _, group := range rule.ParsedRouteGroups {
-			for _, t := range group.Targets {
-				key := governance.RouteGroupTargetKey(t)
-				if _, dup := seen[key]; dup {
-					continue
-				}
-				seen[key] = struct{}{}
-				targets = append(targets, h.healthTracker.GetTargetStatusForRule(rule.ID, key, policy, now))
-			}
-		}
-
-		result = append(result, ruleHealthStatus{
-			RuleID:   rule.ID,
-			RuleName: rule.Name,
-			Policy:   policy,
-			Targets:  targets,
-		})
-	}
-
-	SendJSON(ctx, map[string]interface{}{
-		"rules": result,
-		"count": len(result),
-	})
 }

@@ -57,6 +57,20 @@ export interface HealthStatusResponse {
 	count: number;
 }
 
+export type HealthDetectionMode = "passive" | "hybrid";
+
+export interface HealthDetectionConfigResponse {
+	mode: HealthDetectionMode;
+	active_health_probe_interval_seconds: number;
+	active_health_probe_passive_freshness_seconds: number;
+	active_health_probe_timeout_seconds: number;
+	active_health_probe_max_concurrency: number;
+	editable: boolean;
+	read_only_reason?: string;
+}
+
+export type UpdateHealthDetectionConfigRequest = Omit<HealthDetectionConfigResponse, "editable" | "read_only_reason">;
+
 export interface RoutingRule {
 	id: string;
 	name: string;

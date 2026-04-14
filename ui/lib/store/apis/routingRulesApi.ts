@@ -3,7 +3,16 @@
  * Handles all API communication for routing rules CRUD operations
  */
 
-import { RoutingRule, GetRoutingRulesResponse, GetRoutingRulesParams, CreateRoutingRuleRequest, UpdateRoutingRuleRequest, HealthStatusResponse } from "@/lib/types/routingRules";
+import {
+	RoutingRule,
+	GetRoutingRulesResponse,
+	GetRoutingRulesParams,
+	CreateRoutingRuleRequest,
+	UpdateRoutingRuleRequest,
+	HealthStatusResponse,
+	HealthDetectionConfigResponse,
+	UpdateHealthDetectionConfigRequest,
+} from "@/lib/types/routingRules";
 import { baseApi } from "./baseApi";
 
 export const routingRulesApi = baseApi.injectEndpoints({
@@ -56,9 +65,7 @@ export const routingRulesApi = baseApi.injectEndpoints({
 							}),
 						);
 					}
-					dispatch(
-						routingRulesApi.util.updateQueryData("getRoutingRule", newRule.id, () => newRule)
-					);
+					dispatch(routingRulesApi.util.updateQueryData("getRoutingRule", newRule.id, () => newRule));
 				} catch {}
 			},
 		}),
@@ -87,9 +94,7 @@ export const routingRulesApi = baseApi.injectEndpoints({
 							}),
 						);
 					}
-					dispatch(
-						routingRulesApi.util.updateQueryData("getRoutingRule", updatedRule.id, () => updatedRule)
-					);
+					dispatch(routingRulesApi.util.updateQueryData("getRoutingRule", updatedRule.id, () => updatedRule));
 				} catch {}
 			},
 		}),
@@ -125,6 +130,21 @@ export const routingRulesApi = baseApi.injectEndpoints({
 		// Get health status for grouped routing targets, grouped by rule with actual policies
 		getHealthStatus: builder.query<HealthStatusResponse, void>({
 			query: () => "/governance/health-status",
+			providesTags: ["RoutingRules"],
+		}),
+
+		getHealthDetectionConfig: builder.query<HealthDetectionConfigResponse, void>({
+			query: () => "/governance/health-detection-config",
+			providesTags: ["RoutingRules"],
+		}),
+
+		updateHealthDetectionConfig: builder.mutation<HealthDetectionConfigResponse, UpdateHealthDetectionConfigRequest>({
+			query: (body) => ({
+				url: "/governance/health-detection-config",
+				method: "PUT",
+				body,
+			}),
+			invalidatesTags: ["RoutingRules"],
 		}),
 	}),
 });
@@ -137,4 +157,6 @@ export const {
 	useDeleteRoutingRuleMutation,
 	useLazyGetRoutingRulesQuery,
 	useGetHealthStatusQuery,
+	useGetHealthDetectionConfigQuery,
+	useUpdateHealthDetectionConfigMutation,
 } = routingRulesApi;

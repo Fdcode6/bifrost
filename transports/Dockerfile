@@ -23,6 +23,8 @@
   
   # Set environment for CGO-enabled build (required for go-sqlite3)
   ENV CGO_ENABLED=1 GOOS=linux
+  ARG GOPROXY=https://goproxy.cn,direct
+  ENV GOPROXY=$GOPROXY
   
   COPY transports/go.mod transports/go.sum ./
   RUN ls
@@ -59,6 +61,7 @@
   
   # Create data directory and set up user
   COPY --from=builder /app/main .
+  COPY --from=builder /app/config.schema.json ./config.schema.json
   COPY --from=builder /app/docker-entrypoint.sh .
   
   # Getting arguments

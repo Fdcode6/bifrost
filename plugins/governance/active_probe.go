@@ -23,6 +23,15 @@ type BifrostClientAwareGovernancePlugin interface {
 	SetBifrostClient(client *bifrost.Bifrost)
 }
 
+func (p *GovernancePlugin) GetActiveHealthProbeConfig() ActiveHealthProbeConfig {
+	if p == nil {
+		return ActiveHealthProbeConfig{}
+	}
+	p.cfgMutex.RLock()
+	defer p.cfgMutex.RUnlock()
+	return p.activeProbeConfig
+}
+
 type activeProbePlan struct {
 	TargetKey   string
 	Provider    schemas.ModelProvider

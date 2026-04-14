@@ -71,7 +71,7 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 			bifrostConfig.ModelCatalog, bifrostConfig.MCPCatalog)
 
 	case governance.PluginName:
-		governanceConfig, err := MarshalPluginConfig[governance.Config](pluginConfig)
+		governanceConfig, err := resolveGovernancePluginConfig(pluginConfig, bifrostConfig)
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal governance plugin config: %w", err)
 		}
@@ -111,6 +111,27 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 	default:
 		return nil, fmt.Errorf("unknown built-in plugin: %s", name)
 	}
+}
+
+func resolveGovernancePluginConfig(pluginConfig any, bifrostConfig *lib.Config) (*governance.Config, error) {
+	config := &governance.Config{
+		IsVkMandatory:   &bifrostConfig.ClientConfig.EnforceAuthOnInference,
+		RequiredHeaders: &bifrostConfig.ClientConfig.RequiredHeaders,
+	}
+	if pluginConfig == nil {
+		return config, nil
+	}
+
+	extraConfig, err := MarshalPluginConfig[governance.Config](pluginConfig)
+	if err != nil {
+		return nil, err
+	}
+	if extraConfig == nil {
+		return config, nil
+	}
+	extraConfig.IsVkMandatory = config.IsVkMandatory
+	extraConfig.RequiredHeaders = config.RequiredHeaders
+	return extraConfig, nil
 }
 
 // loadCustomPlugin loads a plugin from a shared object file
@@ -173,16 +194,14 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 
 	// 3. Governance (if enabled and not enterprise)
 	if ctx.Value(schemas.BifrostContextKeyIsEnterprise) == nil {
-		config := &governance.Config{
-			IsVkMandatory:   &s.Config.ClientConfig.EnforceAuthOnInference,
-			RequiredHeaders: &s.Config.ClientConfig.RequiredHeaders,
+		config, err := resolveGovernancePluginConfig(nil, s.Config)
+		if err != nil {
+			return err
 		}
 		if governancePluginConfig := s.getPluginConfig(governance.PluginName); governancePluginConfig != nil {
-			extraConfig, err := MarshalPluginConfig[governance.Config](governancePluginConfig.Config)
-			if err == nil && extraConfig != nil {
-				extraConfig.IsVkMandatory = config.IsVkMandatory
-				extraConfig.RequiredHeaders = config.RequiredHeaders
-				config = extraConfig
+			resolvedConfig, resolveErr := resolveGovernancePluginConfig(governancePluginConfig.Config, s.Config)
+			if resolveErr == nil && resolvedConfig != nil {
+				config = resolvedConfig
 			}
 		}
 		s.registerPluginWithStatus(ctx, governance.PluginName, nil, config, false)

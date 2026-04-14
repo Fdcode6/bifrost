@@ -68,6 +68,7 @@ type BaseGovernancePlugin interface {
 	Cleanup() error
 	GetGovernanceStore() GovernanceStore
 	GetHealthTracker() *HealthTracker
+	GetActiveHealthProbeConfig() ActiveHealthProbeConfig
 }
 
 // GovernancePlugin implements the main governance plugin with hierarchical budget system
