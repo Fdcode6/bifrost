@@ -314,6 +314,15 @@ func TestNewBifrostTimeoutError(t *testing.T) {
 	}
 }
 
+func TestNewBifrostTimeoutErrorWithTimeoutSeconds_UsesConfiguredTimeoutMessage(t *testing.T) {
+	err := NewBifrostTimeoutErrorWithTimeoutSeconds(25, context.DeadlineExceeded, "openai")
+
+	expected := "request timed out after 25 seconds. You can increase it by setting the default_request_timeout_in_seconds in the network_config or in UI - Providers > Provider Name > Network Config."
+	if err.Error.Message != expected {
+		t.Fatalf("expected %q, got %q", expected, err.Error.Message)
+	}
+}
+
 func TestMakeRequestWithContext_ClientError(t *testing.T) {
 	// Test that client errors still return noop wait function
 	client := &fasthttp.Client{

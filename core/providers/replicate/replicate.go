@@ -251,7 +251,7 @@ func pollPrediction(
 		select {
 		case <-pollCtx.Done():
 			return nil, nil, providerResponseHeaders, providerUtils.NewBifrostOperationError(
-				schemas.ErrProviderRequestTimedOut,
+				schemas.ProviderRequestTimedOutMessage(timeoutSeconds),
 				fmt.Errorf("prediction polling timed out after %d seconds", timeoutSeconds),
 				schemas.Replicate,
 			)
@@ -1360,7 +1360,7 @@ func (provider *ReplicateProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 			}, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 		}
 		if errors.Is(streamErr, fasthttp.ErrTimeout) || errors.Is(streamErr, context.DeadlineExceeded) {
-			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, streamErr, provider.GetProviderKey()), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostTimeoutErrorWithTimeoutSeconds(providerUtils.TimeoutSecondsFromFastHTTPClient(provider.client), streamErr, provider.GetProviderKey()), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 		}
 		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, streamErr, provider.GetProviderKey()), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}

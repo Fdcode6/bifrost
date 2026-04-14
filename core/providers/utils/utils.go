@@ -178,12 +178,12 @@ func MakeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *f
 			}
 			// Check for timeout errors first before checking net.OpError to avoid misclassification
 			if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
-				return latency, NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err, ""), noop
+				return latency, NewBifrostTimeoutErrorWithTimeoutSeconds(TimeoutSecondsFromFastHTTPClient(client), err, ""), noop
 			}
 			// Check if error implements net.Error and has Timeout() == true
 			var netErr net.Error
 			if errors.As(err, &netErr) && netErr.Timeout() {
-				return latency, NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err, ""), noop
+				return latency, NewBifrostTimeoutErrorWithTimeoutSeconds(TimeoutSecondsFromFastHTTPClient(client), err, ""), noop
 			}
 			// Check for DNS lookup and network errors after timeout checks
 			var opErr *net.OpError
@@ -1638,6 +1638,31 @@ func NewBifrostTimeoutError(message string, err error, providerType schemas.Mode
 			Provider: providerType,
 		},
 	}
+}
+
+func NewBifrostTimeoutErrorWithTimeoutSeconds(timeoutSeconds int, err error, providerType schemas.ModelProvider) *schemas.BifrostError {
+	return NewBifrostTimeoutError(schemas.ProviderRequestTimedOutMessage(timeoutSeconds), err, providerType)
+}
+
+func TimeoutSecondsFromFastHTTPClient(client *fasthttp.Client) int {
+	if client == nil {
+		return 0
+	}
+	return TimeoutSecondsFromDuration(client.ReadTimeout)
+}
+
+func TimeoutSecondsFromHTTPClient(client *http.Client) int {
+	if client == nil {
+		return 0
+	}
+	return TimeoutSecondsFromDuration(client.Timeout)
+}
+
+func TimeoutSecondsFromDuration(timeout time.Duration) int {
+	if timeout <= 0 {
+		return 0
+	}
+	return int(timeout / time.Second)
 }
 
 // NewProviderAPIError creates a standardized error for provider API errors.

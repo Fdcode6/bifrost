@@ -496,7 +496,7 @@ func (provider *VLLMProvider) TranscriptionStream(ctx *schemas.BifrostContext, p
 				}
 			}
 			if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
-				return nil, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err, providerName)
+				return nil, providerUtils.NewBifrostTimeoutErrorWithTimeoutSeconds(providerUtils.TimeoutSecondsFromFastHTTPClient(provider.client), err, providerName)
 			}
 			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err, providerName)
 		}
