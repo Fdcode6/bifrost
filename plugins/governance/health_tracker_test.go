@@ -184,6 +184,8 @@ func TestHealthTracker_RecordSuccess_ClearsCooldownAndWindowFailures(t *testing.
 	assert.Equal(t, 0, snap.FailureCount)
 	assert.Equal(t, 0, snap.ConsecutiveFailures)
 	assert.Nil(t, snap.CooldownUntil)
+	assert.Nil(t, snap.LastFailureTime)
+	assert.Empty(t, snap.LastFailureMsg)
 }
 
 func TestHealthTracker_RecordObservation_IncludedInSnapshot(t *testing.T) {

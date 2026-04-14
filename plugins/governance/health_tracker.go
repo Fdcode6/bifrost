@@ -343,6 +343,8 @@ func resetCooldownLocked(s *TargetHealthState) {
 	s.cooldownUntil = time.Time{}
 	s.failures = s.failures[:0]
 	s.consecutiveFailures = 0
+	s.lastFailureTime = time.Time{}
+	s.lastFailureMsg = ""
 }
 
 // GetAllStatuses returns snapshots for all tracked targets
