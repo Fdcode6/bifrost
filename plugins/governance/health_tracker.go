@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 )
 
@@ -48,20 +49,42 @@ type TargetHealthState struct {
 	lastFailureMsg      string
 }
 
+type HealthObservationSource string
+
+const (
+	HealthObservationSourcePassive HealthObservationSource = "passive"
+	HealthObservationSourceActive  HealthObservationSource = "active"
+)
+
+type TargetObservationState struct {
+	mu                      sync.Mutex
+	lastObservedAt          time.Time
+	lastObservedRequestType schemas.RequestType
+	lastObservationSource   HealthObservationSource
+}
+
+type TargetObservationSnapshot struct {
+	LastObservedAt          time.Time
+	LastObservedRequestType schemas.RequestType
+	LastObservationSource   HealthObservationSource
+}
+
 // HealthTracker tracks health state for routing targets (in-process, not shared across instances).
 //
 // Failure recording is decoupled from cooldown triggering:
 // - RecordFailure just appends a timestamp (cheap, called from PostLLMHook for every failure)
 // - IsInCooldown evaluates the policy lazily during chain building
 type HealthTracker struct {
-	mu      sync.RWMutex
-	targets map[string]*TargetHealthState // key = TargetKey
+	mu           sync.RWMutex
+	targets      map[string]*TargetHealthState      // key = TargetKey
+	observations map[string]*TargetObservationState // key = concrete TargetKey (provider:model[:key_id])
 }
 
 // NewHealthTracker creates a new in-process HealthTracker
 func NewHealthTracker() *HealthTracker {
 	return &HealthTracker{
-		targets: make(map[string]*TargetHealthState),
+		targets:      make(map[string]*TargetHealthState),
+		observations: make(map[string]*TargetObservationState),
 	}
 }
 
@@ -81,6 +104,23 @@ func (ht *HealthTracker) getOrCreate(key string) *TargetHealthState {
 	}
 	s = &TargetHealthState{}
 	ht.targets[key] = s
+	return s
+}
+
+func (ht *HealthTracker) getOrCreateObservation(key string) *TargetObservationState {
+	ht.mu.RLock()
+	s, ok := ht.observations[key]
+	ht.mu.RUnlock()
+	if ok {
+		return s
+	}
+	ht.mu.Lock()
+	defer ht.mu.Unlock()
+	if s, ok = ht.observations[key]; ok {
+		return s
+	}
+	s = &TargetObservationState{}
+	ht.observations[key] = s
 	return s
 }
 
@@ -114,12 +154,40 @@ func (ht *HealthTracker) RecordSuccess(key string) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.consecutiveFailures = 0
+	resetCooldownLocked(s)
 }
 
 // RecordSuccessForRule records a success for a target scoped to a specific routing rule.
 func (ht *HealthTracker) RecordSuccessForRule(ruleID, targetKey string) {
 	ht.RecordSuccess(scopedTargetKey(ruleID, targetKey))
+}
+
+func (ht *HealthTracker) RecordObservation(targetKey string, requestType schemas.RequestType, source HealthObservationSource, now time.Time) {
+	if targetKey == "" {
+		return
+	}
+	s := ht.getOrCreateObservation(targetKey)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastObservedAt = now
+	s.lastObservedRequestType = requestType
+	s.lastObservationSource = source
+}
+
+func (ht *HealthTracker) GetObservation(targetKey string) TargetObservationSnapshot {
+	ht.mu.RLock()
+	s, ok := ht.observations[targetKey]
+	ht.mu.RUnlock()
+	if !ok {
+		return TargetObservationSnapshot{}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return TargetObservationSnapshot{
+		LastObservedAt:          s.lastObservedAt,
+		LastObservedRequestType: s.lastObservedRequestType,
+		LastObservationSource:   s.lastObservationSource,
+	}
 }
 
 // IsInCooldown checks if the target should be considered in cooldown based on the given policy.
@@ -146,13 +214,16 @@ func (ht *HealthTracker) IsInCooldownForRule(ruleID, targetKey string, policy *c
 
 // TargetHealthSnapshot is a point-in-time view of a target's health state
 type TargetHealthSnapshot struct {
-	Key                 string  `json:"key"`
-	Status              string  `json:"status"` // "available" | "cooldown"
-	FailureCount        int     `json:"failure_count"`
-	ConsecutiveFailures int     `json:"consecutive_failures"`
-	CooldownUntil       *string `json:"cooldown_until,omitempty"`
-	LastFailureTime     *string `json:"last_failure_time,omitempty"`
-	LastFailureMsg      string  `json:"last_failure_msg,omitempty"`
+	Key                     string  `json:"key"`
+	Status                  string  `json:"status"` // "available" | "cooldown"
+	FailureCount            int     `json:"failure_count"`
+	ConsecutiveFailures     int     `json:"consecutive_failures"`
+	CooldownUntil           *string `json:"cooldown_until,omitempty"`
+	LastFailureTime         *string `json:"last_failure_time,omitempty"`
+	LastFailureMsg          string  `json:"last_failure_msg,omitempty"`
+	LastObservedAt          *string `json:"last_observed_at,omitempty"`
+	LastObservedRequestType string  `json:"last_observed_request_type,omitempty"`
+	LastObservationSource   string  `json:"last_observation_source,omitempty"`
 }
 
 // GetTargetStatus returns a snapshot of the health state for the given target.
@@ -170,12 +241,16 @@ func (ht *HealthTracker) GetTargetStatusForRule(ruleID, targetKey string, policy
 }
 
 func (ht *HealthTracker) getTargetStatus(stateKey, displayKey string, policy *configstoreTables.HealthPolicy, now time.Time) TargetHealthSnapshot {
+	observation := ht.GetObservation(displayKey)
+
 	ht.mu.RLock()
 	s, ok := ht.targets[stateKey]
 	ht.mu.RUnlock()
 
 	if !ok {
-		return TargetHealthSnapshot{Key: displayKey, Status: "available"}
+		snap := TargetHealthSnapshot{Key: displayKey, Status: "available"}
+		applyObservationSnapshot(&snap, observation)
+		return snap
 	}
 
 	s.mu.Lock()
@@ -203,7 +278,25 @@ func (ht *HealthTracker) getTargetStatus(stateKey, displayKey string, policy *co
 		snap.LastFailureMsg = s.lastFailureMsg
 	}
 
+	applyObservationSnapshot(&snap, observation)
+
 	return snap
+}
+
+func applyObservationSnapshot(snap *TargetHealthSnapshot, observation TargetObservationSnapshot) {
+	if snap == nil {
+		return
+	}
+	if !observation.LastObservedAt.IsZero() {
+		loa := observation.LastObservedAt.UTC().Format(time.RFC3339)
+		snap.LastObservedAt = &loa
+	}
+	if observation.LastObservedRequestType != "" {
+		snap.LastObservedRequestType = string(observation.LastObservedRequestType)
+	}
+	if observation.LastObservationSource != "" {
+		snap.LastObservationSource = string(observation.LastObservationSource)
+	}
 }
 
 func evaluateCooldownLocked(s *TargetHealthState, policy *configstoreTables.HealthPolicy, now time.Time) bool {

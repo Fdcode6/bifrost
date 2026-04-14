@@ -43,9 +43,14 @@ const (
 
 // Config is the configuration for the governance plugin
 type Config struct {
-	IsVkMandatory   *bool     `json:"is_vk_mandatory"`
-	RequiredHeaders *[]string `json:"required_headers"` // Pointer to live config slice; changes are reflected immediately without restart
-	IsEnterprise    bool      `json:"is_enterprise"`
+	IsVkMandatory                            *bool     `json:"is_vk_mandatory"`
+	RequiredHeaders                          *[]string `json:"required_headers"` // Pointer to live config slice; changes are reflected immediately without restart
+	IsEnterprise                             bool      `json:"is_enterprise"`
+	ActiveHealthProbeEnabled                 *bool     `json:"active_health_probe_enabled,omitempty"`
+	ActiveHealthProbeIntervalSeconds         *int      `json:"active_health_probe_interval_seconds,omitempty"`
+	ActiveHealthProbePassiveFreshnessSeconds *int      `json:"active_health_probe_passive_freshness_seconds,omitempty"`
+	ActiveHealthProbeTimeoutSeconds          *int      `json:"active_health_probe_timeout_seconds,omitempty"`
+	ActiveHealthProbeMaxConcurrency          *int      `json:"active_health_probe_max_concurrency,omitempty"`
 }
 
 type InMemoryStore interface {
@@ -93,6 +98,10 @@ type GovernancePlugin struct {
 	isVkMandatory   *bool
 	requiredHeaders *[]string // pointer to live config slice; lowercased at check time
 	isEnterprise    bool
+
+	bifrostClient        *bifrost.Bifrost
+	activeProbeConfig    ActiveHealthProbeConfig
+	activeProbeStartOnce sync.Once
 }
 
 // Init initializes and returns a governance plugin instance.
@@ -213,22 +222,23 @@ func Init(
 
 	ctx, cancelFunc := context.WithCancel(ctx)
 	plugin := &GovernancePlugin{
-		ctx:             ctx,
-		cancelFunc:      cancelFunc,
-		store:           governanceStore,
-		resolver:        resolver,
-		tracker:         tracker,
-		engine:          engine,
-		healthTracker:   healthTracker,
-		configStore:     configStore,
-		modelCatalog:    modelCatalog,
-		mcpCatalog:      mcpCatalog,
-		logger:          logger,
-		isVkMandatory:   isVkMandatory,
-		cfgMutex:        sync.RWMutex{},
-		requiredHeaders: requiredHeaders,
-		isEnterprise:    config != nil && config.IsEnterprise,
-		inMemoryStore:   inMemoryStore,
+		ctx:               ctx,
+		cancelFunc:        cancelFunc,
+		store:             governanceStore,
+		resolver:          resolver,
+		tracker:           tracker,
+		engine:            engine,
+		healthTracker:     healthTracker,
+		configStore:       configStore,
+		modelCatalog:      modelCatalog,
+		mcpCatalog:        mcpCatalog,
+		logger:            logger,
+		isVkMandatory:     isVkMandatory,
+		cfgMutex:          sync.RWMutex{},
+		requiredHeaders:   requiredHeaders,
+		isEnterprise:      config != nil && config.IsEnterprise,
+		inMemoryStore:     inMemoryStore,
+		activeProbeConfig: defaultActiveHealthProbeConfig(config),
 	}
 	return plugin, nil
 }
@@ -300,22 +310,23 @@ func InitFromStore(
 	}
 	ctx, cancelFunc := context.WithCancel(ctx)
 	plugin := &GovernancePlugin{
-		ctx:             ctx,
-		cancelFunc:      cancelFunc,
-		store:           governanceStore,
-		resolver:        resolver,
-		tracker:         tracker,
-		engine:          engine,
-		healthTracker:   healthTracker,
-		configStore:     configStore,
-		modelCatalog:    modelCatalog,
-		mcpCatalog:      mcpCatalog,
-		logger:          logger,
-		inMemoryStore:   inMemoryStore,
-		isVkMandatory:   isVkMandatory,
-		cfgMutex:        sync.RWMutex{},
-		requiredHeaders: requiredHeaders,
-		isEnterprise:    config != nil && config.IsEnterprise,
+		ctx:               ctx,
+		cancelFunc:        cancelFunc,
+		store:             governanceStore,
+		resolver:          resolver,
+		tracker:           tracker,
+		engine:            engine,
+		healthTracker:     healthTracker,
+		configStore:       configStore,
+		modelCatalog:      modelCatalog,
+		mcpCatalog:        mcpCatalog,
+		logger:            logger,
+		inMemoryStore:     inMemoryStore,
+		isVkMandatory:     isVkMandatory,
+		cfgMutex:          sync.RWMutex{},
+		requiredHeaders:   requiredHeaders,
+		isEnterprise:      config != nil && config.IsEnterprise,
+		activeProbeConfig: defaultActiveHealthProbeConfig(config),
 	}
 	return plugin, nil
 }
@@ -1127,6 +1138,7 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		pinnedKeyID, _ := ctx.Value(groupedRoutingPinnedKeyIDContextKey).(string)
 		if ruleID != "" {
 			targetKey := TargetKey(string(provider), model, pinnedKeyID)
+			p.healthTracker.RecordObservation(targetKey, requestType, HealthObservationSourcePassive, time.Now())
 			if err != nil {
 				failureMsg := "unknown error"
 				if err.Error != nil {

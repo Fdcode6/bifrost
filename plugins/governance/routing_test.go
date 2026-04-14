@@ -916,6 +916,52 @@ func TestBuildGroupedRoutingDecision_DoesNotShareCooldownAcrossRules(t *testing.
 	assert.Equal(t, "relay-a", decisionB.KeyID)
 }
 
+func TestBuildGroupedRoutingDecision_TargetRecoversAfterActiveProbeSuccess(t *testing.T) {
+	healthTracker := NewHealthTracker()
+	targetKey := TargetKey("openai", "gpt-4.1", "relay-a")
+	healthTracker.RecordFailureForRule("rule-a", targetKey, "timeout", time.Now())
+
+	routingCtx := &RoutingContext{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4.1",
+	}
+	target := configstoreTables.RouteGroupTarget{
+		Provider: bifrost.Ptr("openai"),
+		Model:    bifrost.Ptr("gpt-4.1"),
+		KeyID:    bifrost.Ptr("relay-a"),
+		Weight:   1,
+	}
+	policy := &configstoreTables.HealthPolicy{
+		FailureThreshold:     1,
+		FailureWindowSeconds: 30,
+		CooldownSeconds:      30,
+	}
+	rule := &configstoreTables.TableRoutingRule{
+		ID:                 "rule-a",
+		Name:               "Rule A",
+		ParsedHealthPolicy: policy,
+		ParsedRouteGroups: []configstoreTables.RouteGroup{
+			{Name: "primary", RetryLimit: 0, Targets: []configstoreTables.RouteGroupTarget{target}},
+		},
+	}
+
+	ctxBlocked := schemas.NewBifrostContext(context.Background(), time.Now())
+	assert.Nil(t, buildGroupedRoutingDecision(ctxBlocked, rule, routingCtx, healthTracker, NewMockLogger()))
+
+	applyActiveProbeResult(healthTracker, activeProbePlan{
+		TargetKey:   targetKey,
+		RequestType: schemas.ChatCompletionRequest,
+		RuleIDs:     []string{"rule-a"},
+	}, activeProbeResult{Success: true}, time.Now())
+
+	ctxRecovered := schemas.NewBifrostContext(context.Background(), time.Now())
+	decisionRecovered := buildGroupedRoutingDecision(ctxRecovered, rule, routingCtx, healthTracker, NewMockLogger())
+	require.NotNil(t, decisionRecovered)
+	assert.Equal(t, "openai", decisionRecovered.Provider)
+	assert.Equal(t, "gpt-4.1", decisionRecovered.Model)
+	assert.Equal(t, "relay-a", decisionRecovered.KeyID)
+}
+
 // TestCompileAndCacheProgram_BudgetExpression tests compiling budget expression
 func TestCompileAndCacheProgram_BudgetExpression(t *testing.T) {
 	ctx := context.Background()

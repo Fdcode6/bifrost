@@ -4,8 +4,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func testPolicy() *configstoreTables.HealthPolicy {
@@ -163,6 +165,53 @@ func TestHealthTracker_RecordSuccess_ResetsConsecutive(t *testing.T) {
 	ht.RecordFailure("openai:gpt-4.1", "502", now.Add(120*time.Second))
 	assert.False(t, ht.IsInCooldown("openai:gpt-4.1", policy, now.Add(120*time.Second)),
 		"success should have reset consecutive counter, so cooldown should not trigger")
+}
+
+func TestHealthTracker_RecordSuccess_ClearsCooldownAndWindowFailures(t *testing.T) {
+	ht := NewHealthTracker()
+	policy := testPolicy()
+	now := time.Now()
+	key := "openai:gpt-4.1"
+
+	ht.RecordFailure(key, "502", now)
+	ht.RecordFailure(key, "503", now.Add(time.Second))
+	assert.True(t, ht.IsInCooldown(key, policy, now.Add(2*time.Second)))
+
+	ht.RecordSuccess(key)
+
+	snap := ht.GetTargetStatus(key, policy, now.Add(2*time.Second))
+	assert.Equal(t, "available", snap.Status)
+	assert.Equal(t, 0, snap.FailureCount)
+	assert.Equal(t, 0, snap.ConsecutiveFailures)
+	assert.Nil(t, snap.CooldownUntil)
+}
+
+func TestHealthTracker_RecordObservation_IncludedInSnapshot(t *testing.T) {
+	ht := NewHealthTracker()
+	now := time.Now()
+	key := TargetKey("openai", "gpt-4.1", "relay-a")
+
+	ht.RecordObservation(key, schemas.ChatCompletionRequest, HealthObservationSourcePassive, now)
+
+	snap := ht.GetTargetStatus(key, testPolicy(), now)
+	require.NotNil(t, snap.LastObservedAt)
+	assert.Equal(t, now.UTC().Format(time.RFC3339), *snap.LastObservedAt)
+	assert.Equal(t, string(HealthObservationSourcePassive), snap.LastObservationSource)
+	assert.Equal(t, string(schemas.ChatCompletionRequest), snap.LastObservedRequestType)
+}
+
+func TestHealthTracker_GetTargetStatusForRule_UsesGlobalObservationMetadata(t *testing.T) {
+	ht := NewHealthTracker()
+	now := time.Now()
+	key := TargetKey("openai", "gpt-4.1", "relay-a")
+
+	ht.RecordObservation(key, schemas.ResponsesRequest, HealthObservationSourceActive, now)
+
+	snap := ht.GetTargetStatusForRule("rule-a", key, testPolicy(), now)
+	require.NotNil(t, snap.LastObservedAt)
+	assert.Equal(t, now.UTC().Format(time.RFC3339), *snap.LastObservedAt)
+	assert.Equal(t, string(HealthObservationSourceActive), snap.LastObservationSource)
+	assert.Equal(t, string(schemas.ResponsesRequest), snap.LastObservedRequestType)
 }
 
 func TestHealthTracker_ConsecutiveDefault_FallsBackToThreshold(t *testing.T) {
