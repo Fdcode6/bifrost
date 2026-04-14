@@ -8,13 +8,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { useForm } from "react-hook-form";
 import { RuleGroupType } from "react-querybuilder";
-import {
-	Sheet,
-	SheetContent,
-	SheetDescription,
-	SheetHeader,
-	SheetTitle,
-} from "@/components/ui/sheet";
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
@@ -35,16 +29,8 @@ import {
 	DEFAULT_ROUTE_GROUP,
 	ROUTING_RULE_SCOPES,
 } from "@/lib/types/routingRules";
-import {
-	useCreateRoutingRuleMutation,
-	useUpdateRoutingRuleMutation,
-	useGetRoutingRulesQuery,
-} from "@/lib/store/apis/routingRulesApi";
-import {
-	useGetVirtualKeysQuery,
-	useGetTeamsQuery,
-	useGetCustomersQuery,
-} from "@/lib/store/apis/governanceApi";
+import { useCreateRoutingRuleMutation, useUpdateRoutingRuleMutation, useGetRoutingRulesQuery } from "@/lib/store/apis/routingRulesApi";
+import { useGetVirtualKeysQuery, useGetTeamsQuery, useGetCustomersQuery } from "@/lib/store/apis/governanceApi";
 import { useGetProvidersQuery } from "@/lib/store/apis/providersApi";
 import { toast } from "sonner";
 import dynamic from "next/dynamic";
@@ -52,11 +38,12 @@ import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { getProviderLabel } from "@/lib/constants/logs";
 import { Separator } from "@/components/ui/separator";
 import { getErrorMessage } from "@/lib/store";
-import { updateRouteGroupTarget as applyRouteGroupTargetPatch } from "./routeGroupState";
 import {
-	validateRoutingRules,
-	validateRateLimitAndBudgetRules
-} from "@/lib/utils/celConverterRouting";
+	getRouteGroupAvailableKeys,
+	shouldShowRouteGroupKeySelector,
+	updateRouteGroupTarget as applyRouteGroupTargetPatch,
+} from "./routeGroupState";
+import { validateRoutingRules, validateRateLimitAndBudgetRules } from "@/lib/utils/celConverterRouting";
 
 interface RoutingRuleDialogProps {
 	open: boolean;
@@ -72,21 +59,17 @@ const defaultQuery: RuleGroupType = {
 
 // Dynamically import CEL builder to avoid SSR issues
 const CELRuleBuilder = dynamic(
-	() => import("@/app/workspace/routing-rules/components/celBuilder/celRuleBuilder").then((mod) => ({
-		default: mod.CELRuleBuilder,
-	})),
+	() =>
+		import("@/app/workspace/routing-rules/components/celBuilder/celRuleBuilder").then((mod) => ({
+			default: mod.CELRuleBuilder,
+		})),
 	{
 		loading: () => <div className="text-sm text-gray-500">Loading CEL builder...</div>,
 		ssr: false,
 	},
 );
 
-export function RoutingRuleSheet({
-	open,
-	onOpenChange,
-	editingRule,
-	onSuccess,
-}: RoutingRuleDialogProps) {
+export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }: RoutingRuleDialogProps) {
 	const { data: rulesData } = useGetRoutingRulesQuery();
 	const rules = rulesData?.rules || [];
 	const { data: providersData = [] } = useGetProvidersQuery();
@@ -130,7 +113,7 @@ export function RoutingRuleSheet({
 			...providersData.map((p) => p.name),
 			...(targets.map((t) => t.provider).filter(Boolean) as string[]),
 			...(rules.flatMap((r) => r.targets?.map((t) => t.provider).filter(Boolean) ?? []) as string[]),
-			...(rules.flatMap((r) => (r.fallbacks ?? []).map((f) => f.split("/")[0]?.trim()).filter(Boolean))),
+			...rules.flatMap((r) => (r.fallbacks ?? []).map((f) => f.split("/")[0]?.trim()).filter(Boolean)),
 		]),
 	);
 
@@ -149,27 +132,31 @@ export function RoutingRuleSheet({
 			setValue("grouped_routing_enabled", editingRule.grouped_routing_enabled || false);
 			setValue("health_policy", editingRule.health_policy || { ...DEFAULT_HEALTH_POLICY });
 			if (editingRule.targets && editingRule.targets.length > 0) {
-				setTargets(editingRule.targets.map((t) => ({
-					...DEFAULT_ROUTING_TARGET,
-					provider: t.provider || "",
-					model: t.model || "",
-					key_id: t.key_id || "",
-					weight: t.weight,
-				})));
-			} else {
-				setTargets([{ ...DEFAULT_ROUTING_TARGET }]);
-			}
-			if (editingRule.route_groups && editingRule.route_groups.length > 0) {
-				setRouteGroups(editingRule.route_groups.map((g) => ({
-					name: g.name,
-					retry_limit: g.retry_limit,
-					targets: g.targets.map((t) => ({
+				setTargets(
+					editingRule.targets.map((t) => ({
+						...DEFAULT_ROUTING_TARGET,
 						provider: t.provider || "",
 						model: t.model || "",
 						key_id: t.key_id || "",
 						weight: t.weight,
 					})),
-				})));
+				);
+			} else {
+				setTargets([{ ...DEFAULT_ROUTING_TARGET }]);
+			}
+			if (editingRule.route_groups && editingRule.route_groups.length > 0) {
+				setRouteGroups(
+					editingRule.route_groups.map((g) => ({
+						name: g.name,
+						retry_limit: g.retry_limit,
+						targets: g.targets.map((t) => ({
+							provider: t.provider || "",
+							model: t.model || "",
+							key_id: t.key_id || "",
+							weight: t.weight,
+						})),
+					})),
+				);
 			} else {
 				setRouteGroups([]);
 			}
@@ -207,7 +194,7 @@ export function RoutingRuleSheet({
 	};
 
 	const updateTarget = (index: number, field: keyof RoutingTargetFormData, value: string | number) => {
-		setTargets((prev) => prev.map((t, i) => i === index ? { ...t, [field]: value } : t));
+		setTargets((prev) => prev.map((t, i) => (i === index ? { ...t, [field]: value } : t)));
 	};
 
 	const totalWeight = targets.reduce((sum, t) => sum + (t.weight || 0), 0);
@@ -309,14 +296,14 @@ export function RoutingRuleSheet({
 			targets: data.grouped_routing_enabled
 				? []
 				: targets.map(({ provider, model, key_id, weight }) => ({
-					provider: provider || undefined,
-					model: model || undefined,
-					key_id: key_id || undefined,
-					weight,
-				})),
+						provider: provider || undefined,
+						model: model || undefined,
+						key_id: key_id || undefined,
+						weight,
+					})),
 			fallbacks: data.grouped_routing_enabled ? [] : validFallbacks,
 			scope: data.scope,
-			scope_id: data.scope === "global" ? undefined : (data.scope_id || undefined),
+			scope_id: data.scope === "global" ? undefined : data.scope_id || undefined,
 			priority: data.priority,
 			enabled: data.enabled,
 			query: query,
@@ -324,32 +311,29 @@ export function RoutingRuleSheet({
 			health_policy: data.grouped_routing_enabled ? data.health_policy : undefined,
 			route_groups: data.grouped_routing_enabled
 				? routeGroups.map((g) => ({
-					name: g.name,
-					retry_limit: g.retry_limit,
-					targets: g.targets.map(({ provider, model, key_id, weight }) => ({
-						provider,
-						model,
-						key_id: key_id || undefined,
-						weight,
-					})),
-				}))
+						name: g.name,
+						retry_limit: g.retry_limit,
+						targets: g.targets.map(({ provider, model, key_id, weight }) => ({
+							provider,
+							model,
+							key_id: key_id || undefined,
+							weight,
+						})),
+					}))
 				: undefined,
 		};
 
-		const submitPromise = isEditing && editingRule
-			? updateRoutingRule({
-				id: editingRule.id,
-				data: payload,
-			}).unwrap()
-			: createRoutingRule(payload).unwrap();
+		const submitPromise =
+			isEditing && editingRule
+				? updateRoutingRule({
+						id: editingRule.id,
+						data: payload,
+					}).unwrap()
+				: createRoutingRule(payload).unwrap();
 
 		submitPromise
 			.then(() => {
-				toast.success(
-					isEditing
-						? "Routing rule updated successfully"
-						: "Routing rule created successfully",
-				);
+				toast.success(isEditing ? "Routing rule updated successfully" : "Routing rule created successfully");
 				reset();
 				setTargets([{ ...DEFAULT_ROUTING_TARGET }]);
 				setRouteGroups([]);
@@ -374,15 +358,11 @@ export function RoutingRuleSheet({
 
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
-			<SheetContent className="flex w-full flex-col min-w-1/2 gap-4 overflow-x-hidden p-8">
+			<SheetContent className="flex w-full min-w-1/2 flex-col gap-4 overflow-x-hidden p-8">
 				<SheetHeader className="flex flex-col items-start">
-					<SheetTitle>
-						{isEditing ? "Edit Routing Rule" : "Create New Routing Rule"}
-					</SheetTitle>
+					<SheetTitle>{isEditing ? "Edit Routing Rule" : "Create New Routing Rule"}</SheetTitle>
 					<SheetDescription>
-						{isEditing
-							? "Update the routing rule configuration"
-							: "Create a new CEL-based routing rule for intelligent request routing"}
+						{isEditing ? "Update the routing rule configuration" : "Create a new CEL-based routing rule for intelligent request routing"}
 					</SheetDescription>
 				</SheetHeader>
 
@@ -403,12 +383,7 @@ export function RoutingRuleSheet({
 					{/* Description */}
 					<div className="space-y-3">
 						<Label htmlFor="description">Description</Label>
-						<Textarea
-							id="description"
-							placeholder="Describe what this rule does..."
-							rows={2}
-							{...register("description")}
-						/>
+						<Textarea id="description" placeholder="Describe what this rule does..." rows={2} {...register("description")} />
 					</div>
 
 					{/* Enabled Switch */}
@@ -417,22 +392,21 @@ export function RoutingRuleSheet({
 							<Label htmlFor="enabled">Enable Rule</Label>
 							<p className="text-muted-foreground text-sm">Rule will be active and applied to matching requests</p>
 						</div>
-						<Switch
-							id="enabled"
-							checked={enabled}
-							onCheckedChange={(checked) => setValue("enabled", checked)}
-						/>
+						<Switch id="enabled" checked={enabled} onCheckedChange={(checked) => setValue("enabled", checked)} />
 					</div>
 
 					{/* Scope and Priority - Side by Side */}
 					<div className="grid grid-cols-2 gap-4">
 						<div className="space-y-3">
 							<Label htmlFor="scope">Scope</Label>
-							<Select value={scope} onValueChange={(value) => {
-								setValue("scope", value as any);
-								// Clear scope_id when scope changes
-								setValue("scope_id", "");
-							}}>
+							<Select
+								value={scope}
+								onValueChange={(value) => {
+									setValue("scope", value as any);
+									// Clear scope_id when scope changes
+									setValue("scope_id", "");
+								}}
+							>
 								<SelectTrigger className="w-full">
 									<SelectValue placeholder="Select scope..." />
 								</SelectTrigger>
@@ -517,8 +491,10 @@ export function RoutingRuleSheet({
 							{((scope === "team" && teamsData.teams.length === 0) ||
 								(scope === "customer" && customersData.customers.length === 0) ||
 								(scope === "virtual_key" && vksData.virtual_keys.length === 0)) && (
-									<p className="text-sm text-muted-foreground">No {scope === "team" ? "teams" : scope === "customer" ? "customers" : "virtual keys"} available</p>
-								)}
+								<p className="text-muted-foreground text-sm">
+									No {scope === "team" ? "teams" : scope === "customer" ? "customers" : "virtual keys"} available
+								</p>
+							)}
 							{errors.scope_id && <p className="text-destructive text-sm">{errors.scope_id.message}</p>}
 						</div>
 					)}
@@ -542,8 +518,10 @@ export function RoutingRuleSheet({
 					</div>
 
 					{/* Note about Token/Request Limits and Budget Configuration */}
-					<p className="text-xs text-muted-foreground">
-						Note: Ensure token limits, request limits, and budget are configured in <strong>Model Providers → Configurations → {'{provider}'} → Governance</strong> (provider-level) or <strong>Model Providers → Budgets & Limits</strong> section (model-level) before using them in routing rules.
+					<p className="text-muted-foreground text-xs">
+						Note: Ensure token limits, request limits, and budget are configured in{" "}
+						<strong>Model Providers → Configurations → {"{provider}"} → Governance</strong> (provider-level) or{" "}
+						<strong>Model Providers → Budgets & Limits</strong> section (model-level) before using them in routing rules.
 					</p>
 
 					<Separator />
@@ -567,64 +545,88 @@ export function RoutingRuleSheet({
 							{/* Health Policy */}
 							<div className="space-y-3">
 								<Label>Health Policy</Label>
-								<p className="text-muted-foreground text-xs">Configure when a target is considered unhealthy and placed in cooldown. Two triggers (either one activates cooldown): window-based (burst failures) and consecutive (persistent failures regardless of time).</p>
+								<p className="text-muted-foreground text-xs">
+									Configure when a target is considered unhealthy and placed in cooldown. Two triggers (either one activates cooldown):
+									window-based (burst failures) and consecutive (persistent failures regardless of time).
+								</p>
 								<div className="grid grid-cols-2 gap-3">
 									<div className="space-y-1.5">
-										<Label htmlFor="hp-threshold" className="text-xs">Window Threshold</Label>
+										<Label htmlFor="hp-threshold" className="text-xs">
+											Window Threshold
+										</Label>
 										<Input
 											id="hp-threshold"
 											type="number"
 											min={1}
 											value={healthPolicy?.failure_threshold ?? DEFAULT_HEALTH_POLICY.failure_threshold}
-											onChange={(e) => setValue("health_policy", {
-												...healthPolicy,
-												failure_threshold: parseInt(e.target.value) || 1,
-											})}
+											onChange={(e) =>
+												setValue("health_policy", {
+													...healthPolicy,
+													failure_threshold: parseInt(e.target.value) || 1,
+												})
+											}
 											data-testid="health-policy-threshold"
 										/>
 										<p className="text-muted-foreground text-[10px]">Failures within window to trigger cooldown</p>
 									</div>
 									<div className="space-y-1.5">
-										<Label htmlFor="hp-window" className="text-xs">Failure Window (s)</Label>
+										<Label htmlFor="hp-window" className="text-xs">
+											Failure Window (s)
+										</Label>
 										<Input
 											id="hp-window"
 											type="number"
 											min={1}
 											value={healthPolicy?.failure_window_seconds ?? DEFAULT_HEALTH_POLICY.failure_window_seconds}
-											onChange={(e) => setValue("health_policy", {
-												...healthPolicy,
-												failure_window_seconds: parseInt(e.target.value) || 1,
-											})}
+											onChange={(e) =>
+												setValue("health_policy", {
+													...healthPolicy,
+													failure_window_seconds: parseInt(e.target.value) || 1,
+												})
+											}
 											data-testid="health-policy-window"
 										/>
 										<p className="text-muted-foreground text-[10px]">Sliding time window for counting failures</p>
 									</div>
 									<div className="space-y-1.5">
-										<Label htmlFor="hp-consecutive" className="text-xs">Consecutive Failures</Label>
+										<Label htmlFor="hp-consecutive" className="text-xs">
+											Consecutive Failures
+										</Label>
 										<Input
 											id="hp-consecutive"
 											type="number"
 											min={1}
-											value={healthPolicy?.consecutive_failures ?? DEFAULT_HEALTH_POLICY.consecutive_failures ?? healthPolicy?.failure_threshold ?? 2}
-											onChange={(e) => setValue("health_policy", {
-												...healthPolicy,
-												consecutive_failures: parseInt(e.target.value) || 1,
-											})}
+											value={
+												healthPolicy?.consecutive_failures ??
+												DEFAULT_HEALTH_POLICY.consecutive_failures ??
+												healthPolicy?.failure_threshold ??
+												2
+											}
+											onChange={(e) =>
+												setValue("health_policy", {
+													...healthPolicy,
+													consecutive_failures: parseInt(e.target.value) || 1,
+												})
+											}
 											data-testid="health-policy-consecutive"
 										/>
 										<p className="text-muted-foreground text-[10px]">Consecutive failures (any pace) to trigger cooldown</p>
 									</div>
 									<div className="space-y-1.5">
-										<Label htmlFor="hp-cooldown" className="text-xs">Cooldown (s)</Label>
+										<Label htmlFor="hp-cooldown" className="text-xs">
+											Cooldown (s)
+										</Label>
 										<Input
 											id="hp-cooldown"
 											type="number"
 											min={1}
 											value={healthPolicy?.cooldown_seconds ?? DEFAULT_HEALTH_POLICY.cooldown_seconds}
-											onChange={(e) => setValue("health_policy", {
-												...healthPolicy,
-												cooldown_seconds: parseInt(e.target.value) || 1,
-											})}
+											onChange={(e) =>
+												setValue("health_policy", {
+													...healthPolicy,
+													cooldown_seconds: parseInt(e.target.value) || 1,
+												})
+											}
 											data-testid="health-policy-cooldown"
 										/>
 									</div>
@@ -638,7 +640,7 @@ export function RoutingRuleSheet({
 								<div className="flex items-center justify-between">
 									<div>
 										<Label>Route Groups</Label>
-										<p className="text-muted-foreground text-xs mt-0.5">
+										<p className="text-muted-foreground mt-0.5 text-xs">
 											Groups are tried in order. Each group selects targets by weight, with retries within the group.
 										</p>
 									</div>
@@ -646,12 +648,17 @@ export function RoutingRuleSheet({
 										type="button"
 										variant="outline"
 										size="sm"
-										onClick={() => setRouteGroups((prev) => [...prev, {
-											...DEFAULT_ROUTE_GROUP,
-											name: `Group ${prev.length + 1}`,
-											targets: [{ provider: "", model: "", key_id: "", weight: 1 }],
-										}])}
-										className="gap-2 shrink-0"
+										onClick={() =>
+											setRouteGroups((prev) => [
+												...prev,
+												{
+													...DEFAULT_ROUTE_GROUP,
+													name: `Group ${prev.length + 1}`,
+													targets: [{ provider: "", model: "", key_id: "", weight: 1 }],
+												},
+											])
+										}
+										className="shrink-0 gap-2"
 										data-testid="route-group-add"
 									>
 										<Plus className="h-4 w-4" />
@@ -660,7 +667,7 @@ export function RoutingRuleSheet({
 								</div>
 
 								{routeGroups.length === 0 && (
-									<p className="text-muted-foreground text-sm text-center py-4 border border-dashed rounded-lg">
+									<p className="text-muted-foreground rounded-lg border border-dashed py-4 text-center text-sm">
 										No route groups configured. Add a group to get started.
 									</p>
 								)}
@@ -673,18 +680,28 @@ export function RoutingRuleSheet({
 											groupIndex={gi}
 											availableProviders={availableProviders}
 											providersData={providersData}
-											onUpdate={(updated) => setRouteGroups((prev) => prev.map((g, i) => i === gi ? updated : g))}
+											onUpdate={(updated) => setRouteGroups((prev) => prev.map((g, i) => (i === gi ? updated : g)))}
 											onRemove={() => setRouteGroups((prev) => prev.filter((_, i) => i !== gi))}
-											onMoveUp={gi > 0 ? () => setRouteGroups((prev) => {
-												const next = [...prev];
-												[next[gi - 1], next[gi]] = [next[gi], next[gi - 1]];
-												return next;
-											}) : undefined}
-											onMoveDown={gi < routeGroups.length - 1 ? () => setRouteGroups((prev) => {
-												const next = [...prev];
-												[next[gi], next[gi + 1]] = [next[gi + 1], next[gi]];
-												return next;
-											}) : undefined}
+											onMoveUp={
+												gi > 0
+													? () =>
+															setRouteGroups((prev) => {
+																const next = [...prev];
+																[next[gi - 1], next[gi]] = [next[gi], next[gi - 1]];
+																return next;
+															})
+													: undefined
+											}
+											onMoveDown={
+												gi < routeGroups.length - 1
+													? () =>
+															setRouteGroups((prev) => {
+																const next = [...prev];
+																[next[gi], next[gi + 1]] = [next[gi + 1], next[gi]];
+																return next;
+															})
+													: undefined
+											}
 										/>
 									))}
 								</div>
@@ -694,147 +711,143 @@ export function RoutingRuleSheet({
 						<>
 							{/* Routing Targets (standard mode) */}
 							<div className="space-y-3">
-						<div className="flex items-center justify-between">
-							<div>
-								<Label>Routing Targets</Label>
-								<p className="text-muted-foreground text-xs mt-0.5">
-									Weights must sum to 1. Leave provider or model empty to use the incoming request value.
-								</p>
+								<div className="flex items-center justify-between">
+									<div>
+										<Label>Routing Targets</Label>
+										<p className="text-muted-foreground mt-0.5 text-xs">
+											Weights must sum to 1. Leave provider or model empty to use the incoming request value.
+										</p>
+									</div>
+									<Button
+										type="button"
+										variant="outline"
+										size="sm"
+										onClick={addTarget}
+										className="shrink-0 gap-2"
+										data-testid="routing-rule-target-add"
+									>
+										<Plus className="h-4 w-4" />
+										Add Target
+									</Button>
+								</div>
+
+								<div className="space-y-3">
+									{targets.map((target, index) => (
+										<TargetRow
+											key={index}
+											target={target}
+											index={index}
+											availableProviders={availableProviders}
+											providersData={providersData}
+											showRemove={targets.length > 1}
+											onUpdate={updateTarget}
+											onRemove={removeTarget}
+										/>
+									))}
+								</div>
+
+								{/* Weight sum indicator */}
+								<div
+									className={`flex items-center justify-end gap-2 text-xs font-medium ${Math.abs(totalWeight - 1) > 0.001 ? "text-destructive" : "text-muted-foreground"}`}
+								>
+									Total weight: {totalWeight.toFixed(4)}
+									{Math.abs(totalWeight - 1) > 0.001 && <span className="text-destructive">(must equal 1)</span>}
+								</div>
 							</div>
-							<Button
-								type="button"
-								variant="outline"
-								size="sm"
-								onClick={addTarget}
-								className="gap-2 shrink-0"
-								data-testid="routing-rule-target-add"
-							>
-								<Plus className="h-4 w-4" />
-								Add Target
-							</Button>
-						</div>
 
-						<div className="space-y-3">
-							{targets.map((target, index) => (
-								<TargetRow
-									key={index}
-									target={target}
-									index={index}
-									availableProviders={availableProviders}
-									providersData={providersData}
-									showRemove={targets.length > 1}
-									onUpdate={updateTarget}
-									onRemove={removeTarget}
-								/>
-							))}
-						</div>
+							{/* Fallbacks */}
+							<div className="space-y-3">
+								<div className="flex items-center justify-between">
+									<Label>Fallbacks</Label>
+									<Button
+										type="button"
+										variant="outline"
+										size="sm"
+										onClick={() => setValue("fallbacks", [...(fallbacks || []), ""])}
+										className="gap-2"
+									>
+										<Plus className="h-4 w-4" />
+										Add Fallback
+									</Button>
+								</div>
+								<div className="space-y-2">
+									{(fallbacks || []).length === 0 ? (
+										<p className="text-muted-foreground text-sm">No fallbacks configured</p>
+									) : (
+										(fallbacks || []).map((fallback, index) => {
+											// Parse provider/model from fallback string
+											const parts = fallback.split("/");
+											const fbProvider = parts[0] || "";
+											const fbModel = parts[1] || "";
 
-						{/* Weight sum indicator */}
-						<div className={`flex items-center justify-end gap-2 text-xs font-medium ${Math.abs(totalWeight - 1) > 0.001 ? "text-destructive" : "text-muted-foreground"}`}>
-							Total weight: {totalWeight.toFixed(4)}
-							{Math.abs(totalWeight - 1) > 0.001 && (
-								<span className="text-destructive">(must equal 1)</span>
-							)}
-						</div>
-					</div>
+											const handleProviderChange = (newProvider: string) => {
+												const model = fbModel || "";
+												const newFallback = `${newProvider}/${model}`;
+												const newFallbacks = [...fallbacks];
+												newFallbacks[index] = newFallback;
+												setValue("fallbacks", newFallbacks);
+											};
 
-					{/* Fallbacks */}
-					<div className="space-y-3">
-						<div className="flex items-center justify-between">
-							<Label>Fallbacks</Label>
-							<Button
-								type="button"
-								variant="outline"
-								size="sm"
-								onClick={() => setValue("fallbacks", [...(fallbacks || []), ""])}
-								className="gap-2"
-							>
-								<Plus className="h-4 w-4" />
-								Add Fallback
-							</Button>
-						</div>
-						<div className="space-y-2">
-							{(fallbacks || []).length === 0 ? (
-								<p className="text-muted-foreground text-sm">No fallbacks configured</p>
-							) : (
-								(fallbacks || []).map((fallback, index) => {
-									// Parse provider/model from fallback string
-									const parts = fallback.split("/");
-									const fbProvider = parts[0] || "";
-									const fbModel = parts[1] || "";
+											const handleModelChange = (newModel: string) => {
+												const prov = fbProvider || "";
+												const newFallback = `${prov}/${newModel}`;
+												const newFallbacks = [...fallbacks];
+												newFallbacks[index] = newFallback;
+												setValue("fallbacks", newFallbacks);
+											};
 
-									const handleProviderChange = (newProvider: string) => {
-										const model = fbModel || "";
-										const newFallback = `${newProvider}/${model}`;
-										const newFallbacks = [...fallbacks];
-										newFallbacks[index] = newFallback;
-										setValue("fallbacks", newFallbacks);
-									};
+											const handleRemove = () => {
+												const newFallbacks = fallbacks.filter((_: string, i: number) => i !== index);
+												setValue("fallbacks", newFallbacks);
+											};
 
-									const handleModelChange = (newModel: string) => {
-										const prov = fbProvider || "";
-										const newFallback = `${prov}/${newModel}`;
-										const newFallbacks = [...fallbacks];
-										newFallbacks[index] = newFallback;
-										setValue("fallbacks", newFallbacks);
-									};
-
-									const handleRemove = () => {
-										const newFallbacks = fallbacks.filter((_: string, i: number) => i !== index);
-										setValue("fallbacks", newFallbacks);
-									};
-
-									return (
-										<div key={index} className="flex items-center gap-2">
-											<div className="flex-1">
-												<Select value={fbProvider} onValueChange={handleProviderChange}>
-													<SelectTrigger className="w-full">
-														<SelectValue placeholder="Select provider..." />
-													</SelectTrigger>
-													<SelectContent>
-														{availableProviders.map((prov) => (
-															<SelectItem key={prov} value={prov}>
-																<div className="flex items-center gap-2">
-																	<RenderProviderIcon
-																		provider={prov as ProviderIconType}
-																		size="sm"
-																		className="h-4 w-4"
-																	/>
-																	<span>{getProviderLabel(prov)}</span>
-																</div>
-															</SelectItem>
-														))}
-													</SelectContent>
-												</Select>
-											</div>
-											<div className="flex-1">
-												<ModelMultiselect
-													provider={fbProvider || undefined}
-													value={fbModel}
-													onChange={handleModelChange}
-													placeholder="Select model..."
-													isSingleSelect
-													disabled={!fbProvider}
-													className="!h-9 !min-h-9 w-full"
-												/>
-											</div>
-											<Button
-												type="button"
-												variant="ghost"
-												size="sm"
-												onClick={handleRemove}
-												className="h-9 px-2"
-												aria-label={`Remove fallback ${index + 1}`}
-											>
-												<Trash2 className="h-4 w-4" />
-											</Button>
-										</div>
-									);
-								})
-							)}
-						</div>
-						<p className="text-muted-foreground text-xs">Fallbacks will be used in the order they are defined</p>
-					</div>
+											return (
+												<div key={index} className="flex items-center gap-2">
+													<div className="flex-1">
+														<Select value={fbProvider} onValueChange={handleProviderChange}>
+															<SelectTrigger className="w-full">
+																<SelectValue placeholder="Select provider..." />
+															</SelectTrigger>
+															<SelectContent>
+																{availableProviders.map((prov) => (
+																	<SelectItem key={prov} value={prov}>
+																		<div className="flex items-center gap-2">
+																			<RenderProviderIcon provider={prov as ProviderIconType} size="sm" className="h-4 w-4" />
+																			<span>{getProviderLabel(prov)}</span>
+																		</div>
+																	</SelectItem>
+																))}
+															</SelectContent>
+														</Select>
+													</div>
+													<div className="flex-1">
+														<ModelMultiselect
+															provider={fbProvider || undefined}
+															value={fbModel}
+															onChange={handleModelChange}
+															placeholder="Select model..."
+															isSingleSelect
+															disabled={!fbProvider}
+															className="!h-9 !min-h-9 w-full"
+														/>
+													</div>
+													<Button
+														type="button"
+														variant="ghost"
+														size="sm"
+														onClick={handleRemove}
+														className="h-9 px-2"
+														aria-label={`Remove fallback ${index + 1}`}
+													>
+														<Trash2 className="h-4 w-4" />
+													</Button>
+												</div>
+											);
+										})
+									)}
+								</div>
+								<p className="text-muted-foreground text-xs">Fallbacks will be used in the order they are defined</p>
+							</div>
 						</>
 					)}
 
@@ -866,17 +879,17 @@ interface TargetRowProps {
 }
 
 function TargetRow({ target, index, availableProviders, providersData, showRemove, onUpdate, onRemove }: TargetRowProps) {
-	const availableKeys = target.provider
-		? (providersData.find((p) => p.name === target.provider)?.keys ?? [])
-		: [];
+	const availableKeys = target.provider ? (providersData.find((p) => p.name === target.provider)?.keys ?? []) : [];
 
 	return (
-		<div className="rounded-lg border p-3 space-y-3" data-testid={`routing-target-${index}`}>
+		<div className="space-y-3 rounded-lg border p-3" data-testid={`routing-target-${index}`}>
 			<div className="flex items-center justify-between">
-				<span className="text-sm font-medium text-muted-foreground">Target {index + 1}</span>
+				<span className="text-muted-foreground text-sm font-medium">Target {index + 1}</span>
 				<div className="flex items-center gap-2">
 					<div className="flex items-center gap-1.5">
-						<Label htmlFor={`routing-target-${index}-weight-input`} className="text-xs text-muted-foreground shrink-0">Weight</Label>
+						<Label htmlFor={`routing-target-${index}-weight-input`} className="text-muted-foreground shrink-0 text-xs">
+							Weight
+						</Label>
 						<Input
 							id={`routing-target-${index}-weight-input`}
 							type="number"
@@ -907,7 +920,9 @@ function TargetRow({ target, index, availableProviders, providersData, showRemov
 
 			<div className="grid grid-cols-2 gap-3">
 				<div className="space-y-1.5">
-					<Label id={`routing-target-${index}-provider-label`} className="text-xs">Provider</Label>
+					<Label id={`routing-target-${index}-provider-label`} className="text-xs">
+						Provider
+					</Label>
 					<div className="flex gap-1.5">
 						<Select
 							value={target.provider}
@@ -920,7 +935,7 @@ function TargetRow({ target, index, availableProviders, providersData, showRemov
 							<SelectTrigger
 								id={`routing-target-${index}-provider-select`}
 								aria-labelledby={`routing-target-${index}-provider-label`}
-								className="flex-1 h-9 text-sm"
+								className="h-9 flex-1 text-sm"
 								data-testid={`routing-target-${index}-provider-select`}
 							>
 								<SelectValue placeholder="Incoming (optional)" />
@@ -929,11 +944,7 @@ function TargetRow({ target, index, availableProviders, providersData, showRemov
 								{availableProviders.map((prov) => (
 									<SelectItem key={prov} value={prov}>
 										<div className="flex items-center gap-2">
-											<RenderProviderIcon
-												provider={prov as ProviderIconType}
-												size="sm"
-												className="h-4 w-4"
-											/>
+											<RenderProviderIcon provider={prov as ProviderIconType} size="sm" className="h-4 w-4" />
 											<span>{getProviderLabel(prov)}</span>
 										</div>
 									</SelectItem>
@@ -945,7 +956,11 @@ function TargetRow({ target, index, availableProviders, providersData, showRemov
 								type="button"
 								variant="outline"
 								size="sm"
-								onClick={() => { onUpdate(index, "provider", ""); onUpdate(index, "model", ""); onUpdate(index, "key_id", ""); }}
+								onClick={() => {
+									onUpdate(index, "provider", "");
+									onUpdate(index, "model", "");
+									onUpdate(index, "key_id", "");
+								}}
 								className="h-9 w-9 p-0"
 								aria-label={`Clear provider for target ${index + 1}`}
 								data-testid={`routing-target-${index}-provider-clear`}
@@ -957,7 +972,9 @@ function TargetRow({ target, index, availableProviders, providersData, showRemov
 				</div>
 
 				<div className="space-y-1.5">
-					<Label id={`routing-target-${index}-model-label`} className="text-xs">Model</Label>
+					<Label id={`routing-target-${index}-model-label`} className="text-xs">
+						Model
+					</Label>
 					<div className="flex gap-1.5">
 						<div className="flex-1" data-testid={`routing-target-${index}-model-select`}>
 							<ModelMultiselect
@@ -991,13 +1008,15 @@ function TargetRow({ target, index, availableProviders, providersData, showRemov
 
 			{target.provider && (availableKeys.length > 0 || target.key_id) && (
 				<div className="space-y-1.5">
-					<Label id={`routing-target-${index}-apikey-label`} className="text-xs">API Key <span className="text-muted-foreground">(optional — leave unset for load-balanced selection)</span></Label>
+					<Label id={`routing-target-${index}-apikey-label`} className="text-xs">
+						API Key <span className="text-muted-foreground">(optional — leave unset for load-balanced selection)</span>
+					</Label>
 					<div className="flex gap-1.5">
 						<Select value={target.key_id || ""} onValueChange={(value) => onUpdate(index, "key_id", value)}>
 							<SelectTrigger
 								id={`routing-target-${index}-apikey-select`}
 								aria-labelledby={`routing-target-${index}-apikey-label`}
-								className="flex-1 h-9 text-sm"
+								className="h-9 flex-1 text-sm"
 								data-testid={`routing-target-${index}-apikey-select`}
 							>
 								<SelectValue placeholder="Select key (optional)" />
@@ -1048,7 +1067,16 @@ interface RouteGroupEditorProps {
 	onMoveDown?: () => void;
 }
 
-function RouteGroupEditor({ group, groupIndex, availableProviders, providersData, onUpdate, onRemove, onMoveUp, onMoveDown }: RouteGroupEditorProps) {
+function RouteGroupEditor({
+	group,
+	groupIndex,
+	availableProviders,
+	providersData,
+	onUpdate,
+	onRemove,
+	onMoveUp,
+	onMoveDown,
+}: RouteGroupEditorProps) {
 	const [collapsed, setCollapsed] = useState(false);
 
 	const addGroupTarget = () => {
@@ -1073,17 +1101,19 @@ function RouteGroupEditor({ group, groupIndex, availableProviders, providersData
 	const groupWeight = group.targets.reduce((sum, t) => sum + (t.weight || 0), 0);
 
 	return (
-		<div className="rounded-lg border space-y-0" data-testid={`route-group-${groupIndex}`}>
+		<div className="space-y-0 rounded-lg border" data-testid={`route-group-${groupIndex}`}>
 			{/* Group header */}
-			<div className="flex items-center justify-between p-3 bg-muted/30 rounded-t-lg">
+			<div className="bg-muted/30 flex items-center justify-between rounded-t-lg p-3">
 				<button
 					type="button"
-					className="flex items-center gap-2 text-sm font-medium hover:text-foreground text-foreground/80"
+					className="hover:text-foreground text-foreground/80 flex items-center gap-2 text-sm font-medium"
 					onClick={() => setCollapsed(!collapsed)}
 				>
 					{collapsed ? <ChevronDown className="h-4 w-4" /> : <ChevronUp className="h-4 w-4" />}
 					<span>{group.name || `Group ${groupIndex + 1}`}</span>
-					<span className="text-muted-foreground font-normal">({group.targets.length} target{group.targets.length !== 1 ? "s" : ""})</span>
+					<span className="text-muted-foreground font-normal">
+						({group.targets.length} target{group.targets.length !== 1 ? "s" : ""})
+					</span>
 				</button>
 				<div className="flex items-center gap-1">
 					{onMoveUp && (
@@ -1096,7 +1126,13 @@ function RouteGroupEditor({ group, groupIndex, availableProviders, providersData
 							<ChevronDown className="h-3.5 w-3.5" />
 						</Button>
 					)}
-					<Button type="button" variant="ghost" size="sm" onClick={onRemove} className="h-7 w-7 p-0 text-destructive hover:text-destructive" aria-label="Remove group"
+					<Button
+						type="button"
+						variant="ghost"
+						size="sm"
+						onClick={onRemove}
+						className="text-destructive hover:text-destructive h-7 w-7 p-0"
+						aria-label="Remove group"
 						data-testid={`route-group-${groupIndex}-remove`}
 					>
 						<Trash2 className="h-3.5 w-3.5" />
@@ -1105,7 +1141,7 @@ function RouteGroupEditor({ group, groupIndex, availableProviders, providersData
 			</div>
 
 			{!collapsed && (
-				<div className="p-3 space-y-3">
+				<div className="space-y-3 p-3">
 					{/* Group name & retry limit */}
 					<div className="grid grid-cols-2 gap-3">
 						<div className="space-y-1.5">
@@ -1164,7 +1200,9 @@ function RouteGroupEditor({ group, groupIndex, availableProviders, providersData
 							/>
 						))}
 
-						<div className={`flex items-center justify-end gap-2 text-xs font-medium ${Math.abs(groupWeight - 1) > 0.001 ? "text-destructive" : "text-muted-foreground"}`}>
+						<div
+							className={`flex items-center justify-end gap-2 text-xs font-medium ${Math.abs(groupWeight - 1) > 0.001 ? "text-destructive" : "text-muted-foreground"}`}
+						>
 							Total: {groupWeight.toFixed(4)}
 							{Math.abs(groupWeight - 1) > 0.001 && <span className="text-destructive">(must equal 1)</span>}
 						</div>
@@ -1188,67 +1226,124 @@ interface GroupTargetRowProps {
 	onRemove: (index: number) => void;
 }
 
-function GroupTargetRow({ target, groupIndex, targetIndex, availableProviders, providersData, showRemove, onUpdate, onRemove }: GroupTargetRowProps) {
+function GroupTargetRow({
+	target,
+	groupIndex,
+	targetIndex,
+	availableProviders,
+	providersData,
+	showRemove,
+	onUpdate,
+	onRemove,
+}: GroupTargetRowProps) {
+	const availableKeys = getRouteGroupAvailableKeys(providersData, target.provider);
+
 	return (
-		<div className="flex items-center gap-2" data-testid={`route-group-${groupIndex}-target-${targetIndex}`}>
-			<div className="flex-1">
-				<Select
-					value={target.provider}
-					onValueChange={(value) => {
-						onUpdate(targetIndex, {
-							provider: value,
-							model: "",
-							key_id: "",
-						});
-					}}
-				>
-					<SelectTrigger className="h-9 text-sm">
-						<SelectValue placeholder="Provider..." />
-					</SelectTrigger>
-					<SelectContent>
-						{availableProviders.map((prov) => (
-							<SelectItem key={prov} value={prov}>
-								<div className="flex items-center gap-2">
-									<RenderProviderIcon provider={prov as ProviderIconType} size="sm" className="h-4 w-4" />
-									<span>{getProviderLabel(prov)}</span>
-								</div>
-							</SelectItem>
-						))}
-					</SelectContent>
-				</Select>
-			</div>
-			<div className="flex-1">
-				<ModelMultiselect
-					provider={target.provider || undefined}
-					value={target.model}
-					onChange={(value) => onUpdate(targetIndex, { model: value })}
-					placeholder="Model..."
-					isSingleSelect
-					disabled={!target.provider}
-					className="!h-9 !min-h-9"
+		<div className="space-y-2" data-testid={`route-group-${groupIndex}-target-${targetIndex}`}>
+			<div className="flex items-center gap-2">
+				<div className="flex-1">
+					<Select
+						value={target.provider}
+						onValueChange={(value) => {
+							onUpdate(targetIndex, {
+								provider: value,
+								model: "",
+								key_id: "",
+							});
+						}}
+					>
+						<SelectTrigger className="h-9 text-sm">
+							<SelectValue placeholder="Provider..." />
+						</SelectTrigger>
+						<SelectContent>
+							{availableProviders.map((prov) => (
+								<SelectItem key={prov} value={prov}>
+									<div className="flex items-center gap-2">
+										<RenderProviderIcon provider={prov as ProviderIconType} size="sm" className="h-4 w-4" />
+										<span>{getProviderLabel(prov)}</span>
+									</div>
+								</SelectItem>
+							))}
+						</SelectContent>
+					</Select>
+				</div>
+				<div className="flex-1">
+					<ModelMultiselect
+						provider={target.provider || undefined}
+						value={target.model}
+						onChange={(value) => onUpdate(targetIndex, { model: value })}
+						placeholder="Model..."
+						isSingleSelect
+						disabled={!target.provider}
+						className="!h-9 !min-h-9"
+					/>
+				</div>
+				<Input
+					type="number"
+					min={0.001}
+					max={1}
+					step={0.001}
+					value={target.weight}
+					onChange={(e) => onUpdate(targetIndex, { weight: parseFloat(e.target.value) || 0 })}
+					className="h-9 w-20 text-sm"
+					data-testid={`route-group-${groupIndex}-target-${targetIndex}-weight`}
 				/>
+				{showRemove && (
+					<Button
+						type="button"
+						variant="ghost"
+						size="sm"
+						onClick={() => onRemove(targetIndex)}
+						className="h-9 w-9 shrink-0 p-0"
+						aria-label={`Remove target ${targetIndex + 1} from group ${groupIndex + 1}`}
+					>
+						<Trash2 className="h-3.5 w-3.5" />
+					</Button>
+				)}
 			</div>
-			<Input
-				type="number"
-				min={0.001}
-				max={1}
-				step={0.001}
-				value={target.weight}
-				onChange={(e) => onUpdate(targetIndex, { weight: parseFloat(e.target.value) || 0 })}
-				className="h-9 w-20 text-sm"
-				data-testid={`route-group-${groupIndex}-target-${targetIndex}-weight`}
-			/>
-			{showRemove && (
-				<Button
-					type="button"
-					variant="ghost"
-					size="sm"
-					onClick={() => onRemove(targetIndex)}
-					className="h-9 w-9 p-0 shrink-0"
-					aria-label={`Remove target ${targetIndex + 1} from group ${groupIndex + 1}`}
-				>
-					<Trash2 className="h-3.5 w-3.5" />
-				</Button>
+			{shouldShowRouteGroupKeySelector(target, availableKeys) && (
+				<div className="space-y-1.5 pl-0.5">
+					<Label id={`route-group-${groupIndex}-target-${targetIndex}-apikey-label`} className="text-[11px]">
+						API Key <span className="text-muted-foreground">(optional — leave unset for load-balanced selection)</span>
+					</Label>
+					<div className="flex gap-1.5">
+						<Select value={target.key_id || ""} onValueChange={(value) => onUpdate(targetIndex, { key_id: value })}>
+							<SelectTrigger
+								id={`route-group-${groupIndex}-target-${targetIndex}-apikey-select`}
+								aria-labelledby={`route-group-${groupIndex}-target-${targetIndex}-apikey-label`}
+								className="h-9 flex-1 text-sm"
+								data-testid={`route-group-${groupIndex}-target-${targetIndex}-apikey-select`}
+							>
+								<SelectValue placeholder="Select key (optional)" />
+							</SelectTrigger>
+							<SelectContent>
+								{availableKeys.map((key) => (
+									<SelectItem key={key.id} value={key.id}>
+										{key.name}
+									</SelectItem>
+								))}
+								{target.key_id && !availableKeys.some((key) => key.id === target.key_id) && (
+									<SelectItem key={`pinned-${target.key_id}`} value={target.key_id}>
+										(pinned) {target.key_id}
+									</SelectItem>
+								)}
+							</SelectContent>
+						</Select>
+						{target.key_id && (
+							<Button
+								type="button"
+								variant="outline"
+								size="sm"
+								onClick={() => onUpdate(targetIndex, { key_id: "" })}
+								className="h-9 w-9 p-0"
+								aria-label={`Clear API key for target ${targetIndex + 1} from group ${groupIndex + 1}`}
+								data-testid={`route-group-${groupIndex}-target-${targetIndex}-apikey-clear`}
+							>
+								<X className="h-3.5 w-3.5" />
+							</Button>
+						)}
+					</div>
+				</div>
 			)}
 		</div>
 	);
