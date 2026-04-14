@@ -1,5 +1,6 @@
 "use client";
 
+import Head from "next/head";
 import FullPageLoader from "@/components/fullPageLoader";
 import NotAvailableBanner from "@/components/notAvailableBanner";
 import ProgressProvider from "@/components/progressBar";
@@ -10,11 +11,12 @@ import { useStoreSync } from "@/hooks/useStoreSync";
 import { WebSocketProvider } from "@/hooks/useWebSocket";
 import { getErrorMessage, ReduxProvider, useGetCoreConfigQuery } from "@/lib/store";
 import { BifrostConfig } from "@/lib/types/config";
+import { getDocumentTitle, syncDocumentTitle } from "@/lib/config/routeTitle";
 import { RbacProvider } from "@enterprise/lib/contexts/rbacContext";
 import dynamic from "next/dynamic";
 import { usePathname } from "next/navigation";
 import { NuqsAdapter } from "nuqs/adapters/next/app";
-import { useEffect } from "react";
+import { useEffect, useLayoutEffect } from "react";
 import { CookiesProvider } from "react-cookie";
 import { toast, Toaster } from "sonner";
 
@@ -24,6 +26,46 @@ const DevProfiler = dynamic(() => import("@/components/devProfiler").then((mod) 
 function StoreSyncInitializer() {
 	useStoreSync();
 	return null;
+}
+
+function DocumentTitleSync() {
+	const pathname = usePathname();
+	const title = getDocumentTitle(pathname);
+
+	useLayoutEffect(() => {
+		const applyTitle = () => syncDocumentTitle(title, document);
+
+		applyTitle();
+
+		const immediateTimer = window.setTimeout(applyTitle, 0);
+		const delayedTimer = window.setTimeout(applyTitle, 100);
+		const animationFrameId = window.requestAnimationFrame(() => {
+			applyTitle();
+			window.requestAnimationFrame(applyTitle);
+		});
+		const observer = new MutationObserver(() => {
+			applyTitle();
+		});
+
+		observer.observe(document.head, {
+			childList: true,
+			subtree: true,
+			characterData: true,
+		});
+
+		return () => {
+			window.clearTimeout(immediateTimer);
+			window.clearTimeout(delayedTimer);
+			window.cancelAnimationFrame(animationFrameId);
+			observer.disconnect();
+		};
+	}, [pathname, title]);
+
+	return (
+		<Head>
+			<title>{title}</title>
+		</Head>
+	);
 }
 
 function AppContent({ children }: { children: React.ReactNode }) {
@@ -39,6 +81,7 @@ function AppContent({ children }: { children: React.ReactNode }) {
 		<WebSocketProvider>
 			<CookiesProvider>
 				<StoreSyncInitializer />
+				<DocumentTitleSync />
 				<SidebarProvider>
 					<Sidebar />
 					<div className="dark:bg-card custom-scrollbar my-[0.5rem] mr-[0.5rem] h-[calc(100dvh-1rem)] w-full min-w-xl overflow-auto rounded-md border border-gray-200 bg-white px-10 dark:border-zinc-800 content-container">

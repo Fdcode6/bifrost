@@ -1,8 +1,10 @@
 import type { NextConfig } from "next";
 import fs from "node:fs";
 import path from "node:path";
+import { resolveCustomBuildId } from "./lib/config/buildId";
 
 const isEnterpriseBuild = fs.existsSync(path.join(__dirname, "app", "enterprise"));
+const customBuildId = resolveCustomBuildId(process.env);
 
 const nextConfig: NextConfig = {
 	output: "export",
@@ -13,7 +15,6 @@ const nextConfig: NextConfig = {
 		unoptimized: true,
 	},
 	basePath: "",
-	generateBuildId: () => "build",
 	typescript: {
 		ignoreBuildErrors: false,
 	},
@@ -48,5 +49,9 @@ const nextConfig: NextConfig = {
 		return config;
 	},
 };
+
+if (customBuildId) {
+	nextConfig.generateBuildId = async () => customBuildId;
+}
 
 export default nextConfig;
