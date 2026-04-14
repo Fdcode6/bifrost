@@ -52,6 +52,7 @@ import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { getProviderLabel } from "@/lib/constants/logs";
 import { Separator } from "@/components/ui/separator";
 import { getErrorMessage } from "@/lib/store";
+import { updateRouteGroupTarget as applyRouteGroupTargetPatch } from "./routeGroupState";
 import {
 	validateRoutingRules,
 	validateRateLimitAndBudgetRules
@@ -1058,11 +1059,8 @@ function RouteGroupEditor({ group, groupIndex, availableProviders, providersData
 		});
 	};
 
-	const updateGroupTarget = (index: number, field: keyof RoutingTargetFormData, value: string | number) => {
-		onUpdate({
-			...group,
-			targets: group.targets.map((t, i) => i === index ? { ...t, [field]: value } : t),
-		});
+	const updateGroupTarget = (index: number, patch: Partial<RoutingTargetFormData>) => {
+		onUpdate(applyRouteGroupTargetPatch(group, index, patch));
 	};
 
 	const removeGroupTarget = (index: number) => {
@@ -1186,7 +1184,7 @@ interface GroupTargetRowProps {
 	availableProviders: string[];
 	providersData: Array<{ name: string; keys: Array<{ id: string; name: string }> }>;
 	showRemove: boolean;
-	onUpdate: (index: number, field: keyof RoutingTargetFormData, value: string | number) => void;
+	onUpdate: (index: number, patch: Partial<RoutingTargetFormData>) => void;
 	onRemove: (index: number) => void;
 }
 
@@ -1197,9 +1195,11 @@ function GroupTargetRow({ target, groupIndex, targetIndex, availableProviders, p
 				<Select
 					value={target.provider}
 					onValueChange={(value) => {
-						onUpdate(targetIndex, "provider", value);
-						onUpdate(targetIndex, "model", "");
-						onUpdate(targetIndex, "key_id", "");
+						onUpdate(targetIndex, {
+							provider: value,
+							model: "",
+							key_id: "",
+						});
 					}}
 				>
 					<SelectTrigger className="h-9 text-sm">
@@ -1221,7 +1221,7 @@ function GroupTargetRow({ target, groupIndex, targetIndex, availableProviders, p
 				<ModelMultiselect
 					provider={target.provider || undefined}
 					value={target.model}
-					onChange={(value) => onUpdate(targetIndex, "model", value)}
+					onChange={(value) => onUpdate(targetIndex, { model: value })}
 					placeholder="Model..."
 					isSingleSelect
 					disabled={!target.provider}
@@ -1234,7 +1234,7 @@ function GroupTargetRow({ target, groupIndex, targetIndex, availableProviders, p
 				max={1}
 				step={0.001}
 				value={target.weight}
-				onChange={(e) => onUpdate(targetIndex, "weight", parseFloat(e.target.value) || 0)}
+				onChange={(e) => onUpdate(targetIndex, { weight: parseFloat(e.target.value) || 0 })}
 				className="h-9 w-20 text-sm"
 				data-testid={`route-group-${groupIndex}-target-${targetIndex}-weight`}
 			/>
