@@ -97,39 +97,53 @@ export default function HealthStatusView() {
 						</div>
 						<div className="rounded-md border">
 							<Table>
-								<TableHeader>
-									<TableRow>
-										<TableHead>Target</TableHead>
-										<TableHead className="w-28">Status</TableHead>
-										<TableHead className="w-28">Window Fail</TableHead>
-										<TableHead className="w-32">Consecutive</TableHead>
-										<TableHead>Cooldown Until</TableHead>
-										<TableHead>Last Failure</TableHead>
-									</TableRow>
-								</TableHeader>
-								<TableBody>
+									<TableHeader>
+										<TableRow>
+											<TableHead>Target</TableHead>
+											<TableHead className="w-28">Status</TableHead>
+											<TableHead className="w-28">Source</TableHead>
+											<TableHead className="w-28">Window Fail</TableHead>
+											<TableHead className="w-32">Consecutive</TableHead>
+											<TableHead>Last Observed</TableHead>
+											<TableHead>Cooldown Until</TableHead>
+											<TableHead>Last Failure</TableHead>
+										</TableRow>
+									</TableHeader>
+									<TableBody>
 									{rule.targets.map((t) => (
 										<TableRow key={t.key}>
 											<TableCell className="font-medium font-mono text-sm">{t.key}</TableCell>
-											<TableCell>
-												{t.status === "cooldown" ? (
-													<Badge variant="destructive" className="gap-1">
-														<ShieldAlert className="h-3 w-3" />
-														Cooldown
+												<TableCell>
+													{t.status === "cooldown" ? (
+														<Badge variant="destructive" className="gap-1">
+															<ShieldAlert className="h-3 w-3" />
+															Cooldown
 													</Badge>
 												) : (
 													<Badge variant="secondary" className="gap-1 bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400">
 														<ShieldCheck className="h-3 w-3" />
 														Available
-													</Badge>
-												)}
-											</TableCell>
-											<TableCell>{t.failure_count}</TableCell>
-											<TableCell>{t.consecutive_failures}</TableCell>
-											<TableCell className="text-sm text-muted-foreground">
-												{t.cooldown_until ? new Date(t.cooldown_until).toLocaleTimeString() : "—"}
-											</TableCell>
-											<TableCell className="text-sm text-muted-foreground max-w-64 truncate" title={t.last_failure_msg}>
+														</Badge>
+													)}
+												</TableCell>
+												<TableCell>
+													{t.last_observation_source ? (
+														<Badge variant="outline" className="text-xs uppercase">
+															{t.last_observation_source}
+														</Badge>
+													) : (
+														"—"
+													)}
+												</TableCell>
+												<TableCell>{t.failure_count}</TableCell>
+												<TableCell>{t.consecutive_failures}</TableCell>
+												<TableCell className="text-sm text-muted-foreground">
+													{t.last_observed_at ? new Date(t.last_observed_at).toLocaleTimeString() : "—"}
+												</TableCell>
+												<TableCell className="text-sm text-muted-foreground">
+													{t.cooldown_until ? new Date(t.cooldown_until).toLocaleTimeString() : "—"}
+												</TableCell>
+												<TableCell className="text-sm text-muted-foreground max-w-64 truncate" title={t.last_failure_msg}>
 												{t.last_failure_msg || "—"}
 											</TableCell>
 										</TableRow>

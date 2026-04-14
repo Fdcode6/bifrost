@@ -40,6 +40,9 @@ export interface HealthSnapshot {
 	cooldown_until?: string;
 	last_failure_time?: string;
 	last_failure_msg?: string;
+	last_observed_at?: string;
+	last_observed_request_type?: string;
+	last_observation_source?: "passive" | "active";
 }
 
 export interface RuleHealthStatus {
