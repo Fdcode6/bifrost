@@ -19,6 +19,7 @@ func (p *LoggerPlugin) insertInitialLogEntry(
 	parentRequestID string,
 	timestamp time.Time,
 	fallbackIndex int,
+	routeLayerIndex *int,
 	routingEnginesUsed []string, // list of routing engines used
 	data *InitialLogData,
 ) error {
@@ -29,6 +30,7 @@ func (p *LoggerPlugin) insertInitialLogEntry(
 		Provider:      data.Provider,
 		Model:         data.Model,
 		FallbackIndex: fallbackIndex,
+		RouteLayerIndex: routeLayerIndex,
 		Status:        "processing",
 		Stream:        false,
 		CreatedAt:     timestamp,
@@ -180,6 +182,7 @@ func (p *LoggerPlugin) updateLogEntry(
 	routingRuleID string,
 	routingRuleName string,
 	numberOfRetries int,
+	routeLayerIndex *int,
 	cacheDebug *schemas.BifrostCacheDebug,
 	routingEngineLogs string,
 	data *UpdateLogData,
@@ -205,6 +208,9 @@ func (p *LoggerPlugin) updateLogEntry(
 	}
 	if numberOfRetries != 0 {
 		updates["number_of_retries"] = numberOfRetries
+	}
+	if routeLayerIndex != nil {
+		updates["route_layer_index"] = *routeLayerIndex
 	}
 	if routingEngineLogs != "" {
 		updates["routing_engine_logs"] = routingEngineLogs
@@ -353,6 +359,7 @@ func (p *LoggerPlugin) updateStreamingLogEntry(
 	routingRuleID string,
 	routingRuleName string,
 	numberOfRetries int,
+	routeLayerIndex *int,
 	cacheDebug *schemas.BifrostCacheDebug,
 	routingEngineLogs string,
 	streamResponse *streaming.ProcessedStreamResponse,
@@ -379,6 +386,9 @@ func (p *LoggerPlugin) updateStreamingLogEntry(
 	if numberOfRetries != 0 {
 		updates["number_of_retries"] = numberOfRetries
 	}
+	if routeLayerIndex != nil {
+		updates["route_layer_index"] = *routeLayerIndex
+	}
 	if routingEngineLogs != "" {
 		updates["routing_engine_logs"] = routingEngineLogs
 	}
@@ -390,9 +400,13 @@ func (p *LoggerPlugin) updateStreamingLogEntry(
 			return fmt.Errorf("failed to serialize error details: %w", err)
 		}
 		errorUpdates := map[string]interface{}{
-			"status":        "error",
-			"latency":       float64(streamResponse.Data.Latency),
-			"error_details": tempEntry.ErrorDetails,
+			"status":            "error",
+			"latency":           float64(streamResponse.Data.Latency),
+			"error_details":     tempEntry.ErrorDetails,
+			"route_layer_index": nil,
+		}
+		if routeLayerIndex != nil {
+			errorUpdates["route_layer_index"] = *routeLayerIndex
 		}
 		if isLargePayloadRequest {
 			errorUpdates["is_large_payload_request"] = true
@@ -756,6 +770,10 @@ func (p *LoggerPlugin) GetLog(ctx context.Context, id string) (*logstore.Log, er
 // GetStats calculates statistics for logs matching the given filters
 func (p *LoggerPlugin) GetStats(ctx context.Context, filters logstore.SearchFilters) (*logstore.SearchStats, error) {
 	return p.store.GetStats(ctx, filters)
+}
+
+func (p *LoggerPlugin) GetFinalSuccessDistribution(ctx context.Context, filters logstore.SearchFilters, groupBy logstore.FinalSuccessDistributionDimension) (*logstore.FinalSuccessDistributionResult, error) {
+	return p.store.GetFinalSuccessDistribution(ctx, filters, groupBy)
 }
 
 // GetHistogram returns time-bucketed request counts for the given filters

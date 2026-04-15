@@ -962,6 +962,208 @@ func TestBuildGroupedRoutingDecision_TargetRecoversAfterActiveProbeSuccess(t *te
 	assert.Equal(t, "relay-a", decisionRecovered.KeyID)
 }
 
+func TestBuildGroupedRoutingDecision_AssignsLayerPlan(t *testing.T) {
+	healthTracker := NewHealthTracker()
+	routingCtx := &RoutingContext{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4.1",
+	}
+	rule := &configstoreTables.TableRoutingRule{
+		ID:   "rule-layer-plan",
+		Name: "Layer Plan Rule",
+		ParsedRouteGroups: []configstoreTables.RouteGroup{
+			{
+				Name:       "primary",
+				RetryLimit: 1,
+				Targets: []configstoreTables.RouteGroupTarget{
+					{
+						Provider: bifrost.Ptr("openai"),
+						Model:    bifrost.Ptr("gpt-4.1"),
+						KeyID:    bifrost.Ptr("relay-a"),
+						Weight:   1,
+					},
+					{
+						Provider: bifrost.Ptr("openai"),
+						Model:    bifrost.Ptr("gpt-4.1-mini"),
+						KeyID:    bifrost.Ptr("relay-b"),
+						Weight:   0,
+					},
+				},
+			},
+			{
+				Name:       "regional",
+				RetryLimit: 0,
+				Targets: []configstoreTables.RouteGroupTarget{
+					{
+						Provider: bifrost.Ptr("azure"),
+						Model:    bifrost.Ptr("gpt-4.1"),
+						KeyID:    bifrost.Ptr("relay-c"),
+						Weight:   1,
+					},
+				},
+			},
+		},
+	}
+
+	decision := buildGroupedRoutingDecision(
+		schemas.NewBifrostContext(context.Background(), time.Now()),
+		rule,
+		routingCtx,
+		healthTracker,
+		NewMockLogger(),
+	)
+	require.NotNil(t, decision)
+
+	assert.Equal(t, RoutingLayerPlan{
+		Provider:   "openai",
+		Model:      "gpt-4.1",
+		KeyID:      "relay-a",
+		LayerIndex: 0,
+		LayerName:  "primary",
+	}, decision.PrimaryLayer)
+	assert.Equal(t, []RoutingLayerPlan{
+		{
+			Provider:   "openai",
+			Model:      "gpt-4.1-mini",
+			KeyID:      "relay-b",
+			LayerIndex: 0,
+			LayerName:  "primary",
+		},
+		{
+			Provider:   "azure",
+			Model:      "gpt-4.1",
+			KeyID:      "relay-c",
+			LayerIndex: 1,
+			LayerName:  "regional",
+		},
+	}, decision.FallbackLayerPlan)
+}
+
+func TestApplyRoutingRules_GroupedRoutingStoresLayerPlanInContext(t *testing.T) {
+	plugin, store := newGovernancePluginForRoutingTests(t)
+	rule := &configstoreTables.TableRoutingRule{
+		ID:                    "grouped-rule",
+		Name:                  "Grouped Rule",
+		Enabled:               true,
+		Scope:                 "global",
+		Priority:              0,
+		CelExpression:         "model == 'gpt-4.1'",
+		GroupedRoutingEnabled: true,
+		ParsedRouteGroups: []configstoreTables.RouteGroup{
+			{
+				Name:       "primary",
+				RetryLimit: 1,
+				Targets: []configstoreTables.RouteGroupTarget{
+					{
+						Provider: bifrost.Ptr("openai"),
+						Model:    bifrost.Ptr("gpt-4.1"),
+						KeyID:    bifrost.Ptr("relay-a"),
+						Weight:   1,
+					},
+					{
+						Provider: bifrost.Ptr("openai"),
+						Model:    bifrost.Ptr("gpt-4.1-mini"),
+						KeyID:    bifrost.Ptr("relay-b"),
+						Weight:   0,
+					},
+				},
+			},
+			{
+				Name:       "regional",
+				RetryLimit: 0,
+				Targets: []configstoreTables.RouteGroupTarget{
+					{
+						Provider: bifrost.Ptr("azure"),
+						Model:    bifrost.Ptr("gpt-4.1"),
+						KeyID:    bifrost.Ptr("relay-c"),
+						Weight:   1,
+					},
+				},
+			},
+		},
+	}
+	require.NoError(t, store.UpdateRoutingRuleInMemory(rule))
+
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now())
+	ctx.SetValue(schemas.BifrostContextKeyHTTPRequestType, schemas.ChatCompletionRequest)
+	req := &schemas.HTTPRequest{
+		Method:  "POST",
+		Path:    "/v1/chat/completions",
+		Headers: map[string]string{"Content-Type": "application/json"},
+		Query:   map[string]string{},
+	}
+	body := map[string]any{"model": "gpt-4.1"}
+
+	updatedBody, decision, err := plugin.applyRoutingRules(ctx, req, body, nil)
+	require.NoError(t, err)
+	require.NotNil(t, decision)
+	assert.Equal(t, "openai/gpt-4.1", updatedBody["model"])
+
+	currentLayer, ok := ctx.Value(groupedRoutingCurrentLayerContextKey).(RoutingLayerPlan)
+	require.True(t, ok)
+	assert.Equal(t, decision.PrimaryLayer, currentLayer)
+
+	fallbackPlan, ok := ctx.Value(groupedRoutingFallbackLayerPlanContextKey).([]RoutingLayerPlan)
+	require.True(t, ok)
+	assert.Equal(t, decision.FallbackLayerPlan, fallbackPlan)
+}
+
+func TestPreLLMHook_GroupedRoutingFallbackIndexSwitchesCurrentLayer(t *testing.T) {
+	plugin, _ := newGovernancePluginForRoutingTests(t)
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now())
+	ctx.SetValue(groupedRoutingActiveContextKey, true)
+	ctx.SetValue(groupedRoutingCurrentLayerContextKey, RoutingLayerPlan{
+		Provider:   "openai",
+		Model:      "gpt-4.1",
+		KeyID:      "relay-a",
+		LayerIndex: 0,
+		LayerName:  "primary",
+	})
+	ctx.SetValue(groupedRoutingFallbackLayerPlanContextKey, []RoutingLayerPlan{
+		{
+			Provider:   "openai",
+			Model:      "gpt-4.1-mini",
+			KeyID:      "relay-b",
+			LayerIndex: 0,
+			LayerName:  "primary",
+		},
+		{
+			Provider:   "azure",
+			Model:      "gpt-4.1",
+			KeyID:      "relay-c",
+			LayerIndex: 1,
+			LayerName:  "regional",
+		},
+	})
+	ctx.SetValue(schemas.BifrostContextKeyFallbackKeyIDs, []string{"relay-b", "relay-c"})
+	ctx.SetValue(schemas.BifrostContextKeyFallbackIndex, 2)
+
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4.1",
+		},
+	}
+
+	_, shortCircuit, err := plugin.PreLLMHook(ctx, req)
+	require.NoError(t, err)
+	assert.Nil(t, shortCircuit)
+
+	currentLayer, ok := ctx.Value(groupedRoutingCurrentLayerContextKey).(RoutingLayerPlan)
+	require.True(t, ok)
+	assert.Equal(t, RoutingLayerPlan{
+		Provider:   "azure",
+		Model:      "gpt-4.1",
+		KeyID:      "relay-c",
+		LayerIndex: 1,
+		LayerName:  "regional",
+	}, currentLayer)
+
+	pinnedKeyID, _ := ctx.Value(groupedRoutingPinnedKeyIDContextKey).(string)
+	assert.Equal(t, "relay-c", pinnedKeyID)
+}
+
 // TestCompileAndCacheProgram_BudgetExpression tests compiling budget expression
 func TestCompileAndCacheProgram_BudgetExpression(t *testing.T) {
 	ctx := context.Background()
@@ -1679,4 +1881,29 @@ func getDefaultRouting(ctx *RoutingContext) *RoutingDecision {
 		Fallbacks:     ctx.Fallbacks,
 		MatchedRuleID: "0",
 	}
+}
+
+func newGovernancePluginForRoutingTests(t *testing.T) (*GovernancePlugin, GovernanceStore) {
+	t.Helper()
+
+	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
+	require.NoError(t, err)
+
+	plugin, err := InitFromStore(
+		context.Background(),
+		&Config{},
+		NewMockLogger(),
+		store,
+		nil,
+		nil,
+		nil,
+		nil,
+	)
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		require.NoError(t, plugin.Cleanup())
+	})
+
+	return plugin, store
 }

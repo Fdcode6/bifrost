@@ -427,6 +427,11 @@ export interface Annotation {
 // Main LogEntry interface matching backend
 export interface LogEntry {
 	id: string;
+	parent_request_id?: string;
+	group_id?: string;
+	attempt_sequence?: number;
+	is_final_attempt?: boolean;
+	route_layer_index?: number | null;
 	object: string; // text.completion, chat.completion, embedding, audio.speech, audio.transcription
 	timestamp: string; // ISO string format from Go time.Time
 	provider: string;
@@ -513,6 +518,27 @@ export interface LogStats {
 	average_latency: number;
 	total_tokens: number;
 	total_cost: number;
+	completed_attempts?: number;
+	successful_attempts?: number;
+	completed_request_groups?: number;
+	successful_request_groups?: number;
+	request_success_rate?: number;
+	average_final_latency?: number;
+}
+
+export type FinalSuccessDistributionDimension = "model" | "provider" | "key" | "layer";
+
+export interface FinalSuccessDistributionItem {
+	value: string;
+	label: string;
+	success_count: number;
+	success_ratio: number;
+}
+
+export interface FinalSuccessDistributionResponse {
+	dimension: FinalSuccessDistributionDimension;
+	total_success_count: number;
+	items: FinalSuccessDistributionItem[];
 }
 
 export interface HistogramBucket {

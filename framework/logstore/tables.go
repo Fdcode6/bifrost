@@ -68,24 +68,53 @@ type SearchResult struct {
 }
 
 type SearchStats struct {
-	TotalRequests  int64   `json:"total_requests"`
-	SuccessRate    float64 `json:"success_rate"`    // Percentage of successful requests
-	AverageLatency float64 `json:"average_latency"` // Average latency in milliseconds
-	TotalTokens    int64   `json:"total_tokens"`    // Total tokens used
-	TotalCost      float64 `json:"total_cost"`      // Total cost in dollars
+	TotalRequests           int64   `json:"total_requests"`
+	SuccessRate             float64 `json:"success_rate"` // Percentage of successful completed attempts
+	AverageLatency          float64 `json:"average_latency"`
+	TotalTokens             int64   `json:"total_tokens"`
+	TotalCost               float64 `json:"total_cost"`
+	CompletedAttempts       int64   `json:"completed_attempts"`
+	SuccessfulAttempts      int64   `json:"successful_attempts"`
+	CompletedRequestGroups  int64   `json:"completed_request_groups"`
+	SuccessfulRequestGroups int64   `json:"successful_request_groups"`
+	RequestSuccessRate      float64 `json:"request_success_rate"`
+	AverageFinalLatency     float64 `json:"average_final_latency"`
+}
+
+type FinalSuccessDistributionDimension string
+
+const (
+	FinalSuccessDistributionByModel    FinalSuccessDistributionDimension = "model"
+	FinalSuccessDistributionByProvider FinalSuccessDistributionDimension = "provider"
+	FinalSuccessDistributionByKey      FinalSuccessDistributionDimension = "key"
+	FinalSuccessDistributionByLayer    FinalSuccessDistributionDimension = "layer"
+)
+
+type FinalSuccessDistributionItem struct {
+	Value        string  `json:"value"`
+	Label        string  `json:"label"`
+	SuccessCount int64   `json:"success_count"`
+	SuccessRatio float64 `json:"success_ratio"`
+}
+
+type FinalSuccessDistributionResult struct {
+	Dimension         FinalSuccessDistributionDimension `json:"dimension"`
+	TotalSuccessCount int64                             `json:"total_success_count"`
+	Items             []FinalSuccessDistributionItem    `json:"items"`
 }
 
 // Log represents a complete log entry for a request/response cycle
 // This is the GORM model with appropriate tags
 type Log struct {
 	ID                     string    `gorm:"primaryKey;type:varchar(255)" json:"id"`
-	ParentRequestID        *string   `gorm:"type:varchar(255)" json:"parent_request_id"`
+	ParentRequestID        *string   `gorm:"type:varchar(255);index:idx_logs_parent_request_id" json:"parent_request_id"`
 	Timestamp              time.Time `gorm:"index;index:idx_logs_ts_provider_status,priority:1;not null" json:"timestamp"`
 	Object                 string    `gorm:"type:varchar(255);index;not null;column:object_type" json:"object"` // text.completion, chat.completion, or embedding
 	Provider               string    `gorm:"type:varchar(255);index;index:idx_logs_ts_provider_status,priority:2;not null" json:"provider"`
 	Model                  string    `gorm:"type:varchar(255);index;not null" json:"model"`
 	NumberOfRetries        int       `gorm:"default:0" json:"number_of_retries"`
 	FallbackIndex          int       `gorm:"default:0" json:"fallback_index"`
+	RouteLayerIndex        *int      `json:"route_layer_index"`
 	SelectedKeyID          string    `gorm:"type:varchar(255);index:idx_logs_selected_key_id" json:"selected_key_id"`
 	SelectedKeyName        string    `gorm:"type:varchar(255)" json:"selected_key_name"`
 	VirtualKeyID           *string   `gorm:"type:varchar(255);index:idx_logs_virtual_key_id" json:"virtual_key_id"`
@@ -170,6 +199,9 @@ type Log struct {
 	VideoDownloadOutputParsed   *schemas.BifrostVideoDownloadResponse   `gorm:"-" json:"video_download_output,omitempty"`
 	VideoListOutputParsed       *schemas.BifrostVideoListResponse       `gorm:"-" json:"video_list_output,omitempty"`
 	VideoDeleteOutputParsed     *schemas.BifrostVideoDeleteResponse     `gorm:"-" json:"video_delete_output,omitempty"`
+	GroupID                     string                                  `gorm:"-" json:"group_id,omitempty"`
+	AttemptSequence             int                                     `gorm:"-" json:"attempt_sequence,omitempty"`
+	IsFinalAttempt              bool                                    `gorm:"-" json:"is_final_attempt,omitempty"`
 	// Populated in handlers after find using the virtual key id and key id
 	VirtualKey  *tables.TableVirtualKey  `gorm:"-" json:"virtual_key,omitempty"`  // redacted
 	SelectedKey *schemas.Key             `gorm:"-" json:"selected_key,omitempty"` // redacted

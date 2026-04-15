@@ -261,6 +261,20 @@ func (s *RDBLogStore) getStatsFromMatView(ctx context.Context, filters SearchFil
 	}, nil
 }
 
+func (s *RDBLogStore) getCompletedAttemptStatsFromMatView(ctx context.Context, filters SearchFilters) (completedAttemptStats, error) {
+	var result completedAttemptStats
+	q := s.db.WithContext(ctx).Table("mv_logs_hourly")
+	q = applyMatViewFilters(q, filters)
+	err := q.Select(`
+		COALESCE(SUM(count), 0) AS completed_count,
+		COALESCE(SUM(success_count), 0) AS success_count,
+		CASE WHEN SUM(count) > 0 THEN SUM(avg_latency * count) / SUM(count) ELSE 0 END AS avg_latency,
+		COALESCE(SUM(total_tokens), 0) AS total_tokens,
+		COALESCE(SUM(total_cost), 0) AS total_cost
+	`).Scan(&result).Error
+	return result, err
+}
+
 // getHistogramFromMatView returns time-bucketed request counts (total,
 // success, error) by re-aggregating hourly buckets from mv_logs_hourly.
 func (s *RDBLogStore) getHistogramFromMatView(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*HistogramResult, error) {

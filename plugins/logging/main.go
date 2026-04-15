@@ -100,6 +100,20 @@ func applyLargePayloadPreviewsToEntry(ctx *schemas.BifrostContext, entry *logsto
 	}
 }
 
+func getRouteLayerIndexFromContext(ctx *schemas.BifrostContext) *int {
+	if ctx == nil {
+		return nil
+	}
+
+	value, ok := ctx.Value(schemas.BifrostContextKeyRouteLayerIndex).(int)
+	if !ok {
+		return nil
+	}
+
+	layerIndex := value
+	return &layerIndex
+}
+
 func (p *LoggerPlugin) scheduleDeferredUsageUpdate(ctx *schemas.BifrostContext, requestID string, usageAlreadyPresent bool) {
 	if usageAlreadyPresent || ctx == nil {
 		return
@@ -550,6 +564,7 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		ParentRequestID:    parentRequestID,
 		Timestamp:          createdTimestamp,
 		FallbackIndex:      fallbackIndex,
+		RouteLayerIndex:    getRouteLayerIndexFromContext(ctx),
 		RoutingEnginesUsed: routingEngines,
 		InitialData:        initialData,
 		CreatedAt:          time.Now(),
@@ -639,13 +654,14 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		if bifrostErr != nil {
 			p.logger.Warn("no pending log data found for request %s, writing minimal error entry", requestID)
 			entry := &logstore.Log{
-				ID:        requestID,
-				Provider:  string(bifrostErr.ExtraFields.Provider),
-				Model:     bifrostErr.ExtraFields.ModelRequested,
-				Status:    "error",
-				Stream:    bifrost.IsStreamRequestType(requestType),
-				Timestamp: time.Now().UTC(),
-				CreatedAt: time.Now().UTC(),
+				ID:              requestID,
+				Provider:        string(bifrostErr.ExtraFields.Provider),
+				Model:           bifrostErr.ExtraFields.ModelRequested,
+				RouteLayerIndex: getRouteLayerIndexFromContext(ctx),
+				Status:          "error",
+				Stream:          bifrost.IsStreamRequestType(requestType),
+				Timestamp:       time.Now().UTC(),
+				CreatedAt:       time.Now().UTC(),
 			}
 			if data, err := sonic.Marshal(bifrostErr); err == nil {
 				entry.ErrorDetails = string(data)
@@ -663,6 +679,13 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 
 	// Build the complete log entry with input (from PreLLMHook) + output (from PostLLMHook)
 	entry := buildCompleteLogEntryFromPending(pending)
+	// Governance updates grouped-routing layer metadata during fallback PreLLMHook,
+	// but logging's PreLLMHook runs earlier in the built-in plugin order. Refresh
+	// the final entry from the current context so fallback attempts land on the
+	// correct route layer instead of inheriting the primary layer from pending data.
+	if currentRouteLayer := getRouteLayerIndexFromContext(ctx); currentRouteLayer != nil {
+		entry.RouteLayerIndex = currentRouteLayer
+	}
 	// Apply common output fields
 	var latency int64
 	if result != nil {

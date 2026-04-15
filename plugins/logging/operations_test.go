@@ -41,6 +41,39 @@ func newTestStore(t *testing.T) logstore.LogStore {
 	return store
 }
 
+func newAsyncTestPlugin(t *testing.T, store logstore.LogStore) *LoggerPlugin {
+	t.Helper()
+
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	t.Cleanup(func() {
+		if err := plugin.Cleanup(); err != nil {
+			t.Fatalf("Cleanup() error = %v", err)
+		}
+	})
+
+	return plugin
+}
+
+func waitForLog(t *testing.T, store logstore.LogStore, id string) *logstore.Log {
+	t.Helper()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		logEntry, err := store.FindByID(context.Background(), id)
+		if err == nil {
+			return logEntry
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+
+	t.Fatalf("timed out waiting for log %s", id)
+	return nil
+}
+
 func TestUpdateLogEntryPreservesResponsesInputContentSummary(t *testing.T) {
 	store := newTestStore(t)
 	plugin := &LoggerPlugin{
@@ -62,7 +95,7 @@ func TestUpdateLogEntryPreservesResponsesInputContentSummary(t *testing.T) {
 		}},
 	}
 
-	if err := plugin.insertInitialLogEntry(context.Background(), requestID, "", now, 0, nil, initial); err != nil {
+	if err := plugin.insertInitialLogEntry(context.Background(), requestID, "", now, 0, nil, nil, initial); err != nil {
 		t.Fatalf("insertInitialLogEntry() error = %v", err)
 	}
 
@@ -76,7 +109,7 @@ func TestUpdateLogEntryPreservesResponsesInputContentSummary(t *testing.T) {
 		}},
 	}
 
-	if err := plugin.updateLogEntry(context.Background(), requestID, "", "", 10, "", "", "", "", 0, nil, "", update); err != nil {
+	if err := plugin.updateLogEntry(context.Background(), requestID, "", "", 10, "", "", "", "", 0, nil, nil, "", update); err != nil {
 		t.Fatalf("updateLogEntry() error = %v", err)
 	}
 
@@ -107,7 +140,7 @@ func TestUpdateLogEntryUpdatesContentSummaryForChatOutput(t *testing.T) {
 		Model:    "gpt-4o-mini",
 	}
 
-	if err := plugin.insertInitialLogEntry(context.Background(), requestID, "", now, 0, nil, initial); err != nil {
+	if err := plugin.insertInitialLogEntry(context.Background(), requestID, "", now, 0, nil, nil, initial); err != nil {
 		t.Fatalf("insertInitialLogEntry() error = %v", err)
 	}
 
@@ -122,7 +155,7 @@ func TestUpdateLogEntryUpdatesContentSummaryForChatOutput(t *testing.T) {
 		},
 	}
 
-	if err := plugin.updateLogEntry(context.Background(), requestID, "", "", 10, "", "", "", "", 0, nil, "", update); err != nil {
+	if err := plugin.updateLogEntry(context.Background(), requestID, "", "", 10, "", "", "", "", 0, nil, nil, "", update); err != nil {
 		t.Fatalf("updateLogEntry() error = %v", err)
 	}
 
@@ -152,7 +185,7 @@ func TestUpdateLogEntrySuppressesChatOutputWhenContentLoggingDisabled(t *testing
 		Model:    "gpt-4o-mini",
 	}
 
-	if err := plugin.insertInitialLogEntry(context.Background(), requestID, "", now, 0, nil, initial); err != nil {
+	if err := plugin.insertInitialLogEntry(context.Background(), requestID, "", now, 0, nil, nil, initial); err != nil {
 		t.Fatalf("insertInitialLogEntry() error = %v", err)
 	}
 
@@ -167,7 +200,7 @@ func TestUpdateLogEntrySuppressesChatOutputWhenContentLoggingDisabled(t *testing
 		},
 	}
 
-	if err := plugin.updateLogEntry(context.Background(), requestID, "", "", 10, "", "", "", "", 0, nil, "", update); err != nil {
+	if err := plugin.updateLogEntry(context.Background(), requestID, "", "", 10, "", "", "", "", 0, nil, nil, "", update); err != nil {
 		t.Fatalf("updateLogEntry() error = %v", err)
 	}
 
@@ -204,7 +237,7 @@ func TestUpdateStreamingLogEntryPreservesResponsesInputContentSummary(t *testing
 		}},
 	}
 
-	if err := plugin.insertInitialLogEntry(context.Background(), requestID, "", now, 0, nil, initial); err != nil {
+	if err := plugin.insertInitialLogEntry(context.Background(), requestID, "", now, 0, nil, nil, initial); err != nil {
 		t.Fatalf("insertInitialLogEntry() error = %v", err)
 	}
 
@@ -225,7 +258,7 @@ func TestUpdateStreamingLogEntryPreservesResponsesInputContentSummary(t *testing
 		},
 	}
 
-	if err := plugin.updateStreamingLogEntry(context.Background(), requestID, "", "", "", "", "", "", 0, nil, "", streamResponse, true, false, false); err != nil {
+	if err := plugin.updateStreamingLogEntry(context.Background(), requestID, "", "", "", "", "", "", 0, nil, nil, "", streamResponse, true, false, false); err != nil {
 		t.Fatalf("updateStreamingLogEntry() error = %v", err)
 	}
 
@@ -242,4 +275,122 @@ func TestUpdateStreamingLogEntryPreservesResponsesInputContentSummary(t *testing
 	if strings.Contains(logEntry.ContentSummary, responsesText) {
 		t.Fatalf("expected content summary to avoid overwriting with streamed responses output-only data, got %q", logEntry.ContentSummary)
 	}
+}
+
+func TestBuildInitialLogEntryCarriesRouteLayerIndex(t *testing.T) {
+	entry := buildInitialLogEntry(&PendingLogData{
+		RequestID:       "req-layer-initial",
+		Timestamp:       time.Date(2026, 4, 15, 10, 0, 0, 0, time.UTC),
+		FallbackIndex:   1,
+		RouteLayerIndex: intPtr(2),
+		InitialData: &InitialLogData{
+			Object:   "chat_completion",
+			Provider: "openai",
+			Model:    "gpt-4.1",
+		},
+	})
+
+	if entry.RouteLayerIndex == nil || *entry.RouteLayerIndex != 2 {
+		t.Fatalf("expected route_layer_index=2, got %+v", entry.RouteLayerIndex)
+	}
+}
+
+func TestBuildCompleteLogEntryFromPendingCarriesRouteLayerIndex(t *testing.T) {
+	entry := buildCompleteLogEntryFromPending(&PendingLogData{
+		RequestID:       "req-layer-complete",
+		Timestamp:       time.Date(2026, 4, 15, 10, 0, 0, 0, time.UTC),
+		FallbackIndex:   2,
+		RouteLayerIndex: intPtr(1),
+		InitialData: &InitialLogData{
+			Object:   "chat_completion",
+			Provider: "azure",
+			Model:    "gpt-4.1",
+		},
+	})
+
+	if entry.RouteLayerIndex == nil || *entry.RouteLayerIndex != 1 {
+		t.Fatalf("expected route_layer_index=1, got %+v", entry.RouteLayerIndex)
+	}
+}
+
+func TestPostLLMHook_MinimalErrorEntryCarriesRouteLayerIndex(t *testing.T) {
+	store := newTestStore(t)
+	plugin := newAsyncTestPlugin(t, store)
+
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(time.Minute))
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-layer-error")
+	ctx.SetValue(schemas.BifrostContextKeyRouteLayerIndex, 1)
+
+	_, _, err := plugin.PostLLMHook(ctx, nil, &schemas.BifrostError{
+		Error: &schemas.ErrorField{
+			Message: "upstream failed",
+		},
+		ExtraFields: schemas.BifrostErrorExtraFields{
+			Provider:       schemas.OpenAI,
+			ModelRequested: "gpt-4.1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("PostLLMHook() error = %v", err)
+	}
+
+	logEntry := waitForLog(t, store, "req-layer-error")
+	if logEntry.RouteLayerIndex == nil || *logEntry.RouteLayerIndex != 1 {
+		t.Fatalf("expected minimal error route_layer_index=1, got %+v", logEntry.RouteLayerIndex)
+	}
+}
+
+func TestPostLLMHook_UsesCurrentRouteLayerIndexForFallbackAttempt(t *testing.T) {
+	store := newTestStore(t)
+	plugin := newAsyncTestPlugin(t, store)
+
+	requestID := "req-layer-fallback"
+	plugin.pendingLogs.Store(requestID, &PendingLogData{
+		RequestID:       requestID,
+		ParentRequestID: "req-layer-primary",
+		Timestamp:       time.Date(2026, 4, 15, 10, 0, 0, 0, time.UTC),
+		FallbackIndex:   1,
+		RouteLayerIndex: intPtr(0),
+		InitialData: &InitialLogData{
+			Object:   "chat_completion",
+			Provider: "openrouter",
+			Model:    "gemma-4-31b-it",
+		},
+		CreatedAt: time.Now(),
+		Status:    "processing",
+	})
+
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(time.Minute))
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, requestID)
+	ctx.SetValue(schemas.BifrostContextKeyRouteLayerIndex, 1)
+
+	result := &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{
+			Model: "gemma-4-31b-it",
+			Choices: []schemas.BifrostResponseChoice{{
+				ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
+					Message: &schemas.ChatMessage{
+						Role: schemas.ChatMessageRoleAssistant,
+					},
+				},
+			}},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				Latency: 42,
+			},
+		},
+	}
+
+	_, _, err := plugin.PostLLMHook(ctx, result, nil)
+	if err != nil {
+		t.Fatalf("PostLLMHook() error = %v", err)
+	}
+
+	logEntry := waitForLog(t, store, requestID)
+	if logEntry.RouteLayerIndex == nil || *logEntry.RouteLayerIndex != 1 {
+		t.Fatalf("expected fallback route_layer_index=1, got %+v", logEntry.RouteLayerIndex)
+	}
+}
+
+func intPtr(value int) *int {
+	return &value
 }

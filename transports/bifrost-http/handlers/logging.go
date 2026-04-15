@@ -57,6 +57,7 @@ func (h *LoggingHandler) RegisterRoutes(r *router.Router, middlewares ...schemas
 	r.GET("/api/logs", lib.ChainMiddlewares(h.getLogs, middlewares...))
 	r.GET("/api/logs/{id}", lib.ChainMiddlewares(h.getLogByID, middlewares...))
 	r.GET("/api/logs/stats", lib.ChainMiddlewares(h.getLogsStats, middlewares...))
+	r.GET("/api/logs/final-distribution", lib.ChainMiddlewares(h.getLogsFinalSuccessDistribution, middlewares...))
 	r.GET("/api/logs/histogram", lib.ChainMiddlewares(h.getLogsHistogram, middlewares...))
 	r.GET("/api/logs/histogram/tokens", lib.ChainMiddlewares(h.getLogsTokenHistogram, middlewares...))
 	r.GET("/api/logs/histogram/cost", lib.ChainMiddlewares(h.getLogsCostHistogram, middlewares...))
@@ -83,84 +84,8 @@ func (h *LoggingHandler) RegisterRoutes(r *router.Router, middlewares ...schemas
 
 // getLogs handles GET /api/logs - Get logs with filtering, search, and pagination via query parameters
 func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
-	// Parse query parameters into filters
-	filters := &logstore.SearchFilters{}
+	filters := parseHistogramFilters(ctx)
 	pagination := &logstore.PaginationOptions{}
-
-	// Extract filters from query parameters
-	if providers := string(ctx.QueryArgs().Peek("providers")); providers != "" {
-		filters.Providers = parseCommaSeparated(providers)
-	}
-	if models := string(ctx.QueryArgs().Peek("models")); models != "" {
-		filters.Models = parseCommaSeparated(models)
-	}
-	if statuses := string(ctx.QueryArgs().Peek("status")); statuses != "" {
-		filters.Status = parseCommaSeparated(statuses)
-	}
-	if objects := string(ctx.QueryArgs().Peek("objects")); objects != "" {
-		filters.Objects = parseCommaSeparated(objects)
-	}
-	if selectedKeyIDs := string(ctx.QueryArgs().Peek("selected_key_ids")); selectedKeyIDs != "" {
-		filters.SelectedKeyIDs = parseCommaSeparated(selectedKeyIDs)
-	}
-	if virtualKeyIDs := string(ctx.QueryArgs().Peek("virtual_key_ids")); virtualKeyIDs != "" {
-		filters.VirtualKeyIDs = parseCommaSeparated(virtualKeyIDs)
-	}
-	if routingRuleIDs := string(ctx.QueryArgs().Peek("routing_rule_ids")); routingRuleIDs != "" {
-		filters.RoutingRuleIDs = parseCommaSeparated(routingRuleIDs)
-	}
-	if routingEngines := string(ctx.QueryArgs().Peek("routing_engine_used")); routingEngines != "" {
-		filters.RoutingEngineUsed = parseCommaSeparated(routingEngines)
-	}
-	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
-		if t, err := time.Parse(time.RFC3339, startTime); err == nil {
-			filters.StartTime = &t
-		}
-	}
-	if endTime := string(ctx.QueryArgs().Peek("end_time")); endTime != "" {
-		if t, err := time.Parse(time.RFC3339, endTime); err == nil {
-			filters.EndTime = &t
-		}
-	}
-	if minLatency := string(ctx.QueryArgs().Peek("min_latency")); minLatency != "" {
-		if f, err := strconv.ParseFloat(minLatency, 64); err == nil {
-			filters.MinLatency = &f
-		}
-	}
-	if maxLatency := string(ctx.QueryArgs().Peek("max_latency")); maxLatency != "" {
-		if val, err := strconv.ParseFloat(maxLatency, 64); err == nil {
-			filters.MaxLatency = &val
-		}
-	}
-	if minTokens := string(ctx.QueryArgs().Peek("min_tokens")); minTokens != "" {
-		if val, err := strconv.Atoi(minTokens); err == nil {
-			filters.MinTokens = &val
-		}
-	}
-	if maxTokens := string(ctx.QueryArgs().Peek("max_tokens")); maxTokens != "" {
-		if val, err := strconv.Atoi(maxTokens); err == nil {
-			filters.MaxTokens = &val
-		}
-	}
-	if cost := string(ctx.QueryArgs().Peek("min_cost")); cost != "" {
-		if val, err := strconv.ParseFloat(cost, 64); err == nil {
-			filters.MinCost = &val
-		}
-	}
-	if maxCost := string(ctx.QueryArgs().Peek("max_cost")); maxCost != "" {
-		if val, err := strconv.ParseFloat(maxCost, 64); err == nil {
-			filters.MaxCost = &val
-		}
-	}
-	if missingCost := string(ctx.QueryArgs().Peek("missing_cost_only")); missingCost != "" {
-		if val, err := strconv.ParseBool(missingCost); err == nil {
-			filters.MissingCostOnly = val
-		}
-	}
-	if contentSearch := string(ctx.QueryArgs().Peek("content_search")); contentSearch != "" {
-		filters.ContentSearch = contentSearch
-	}
-	parseMetadataFilters(ctx, filters)
 
 	// Extract pagination parameters
 	pagination.Limit = 50 // Default limit
@@ -295,83 +220,7 @@ func (h *LoggingHandler) getLogByID(ctx *fasthttp.RequestCtx) {
 
 // getLogsStats handles GET /api/logs/stats - Get statistics for logs with filtering
 func (h *LoggingHandler) getLogsStats(ctx *fasthttp.RequestCtx) {
-	// Parse query parameters into filters (same as getLogs)
-	filters := &logstore.SearchFilters{}
-
-	// Extract filters from query parameters
-	if providers := string(ctx.QueryArgs().Peek("providers")); providers != "" {
-		filters.Providers = parseCommaSeparated(providers)
-	}
-	if models := string(ctx.QueryArgs().Peek("models")); models != "" {
-		filters.Models = parseCommaSeparated(models)
-	}
-	if statuses := string(ctx.QueryArgs().Peek("status")); statuses != "" {
-		filters.Status = parseCommaSeparated(statuses)
-	}
-	if objects := string(ctx.QueryArgs().Peek("objects")); objects != "" {
-		filters.Objects = parseCommaSeparated(objects)
-	}
-	if selectedKeyIDs := string(ctx.QueryArgs().Peek("selected_key_ids")); selectedKeyIDs != "" {
-		filters.SelectedKeyIDs = parseCommaSeparated(selectedKeyIDs)
-	}
-	if virtualKeyIDs := string(ctx.QueryArgs().Peek("virtual_key_ids")); virtualKeyIDs != "" {
-		filters.VirtualKeyIDs = parseCommaSeparated(virtualKeyIDs)
-	}
-	if routingRuleIDs := string(ctx.QueryArgs().Peek("routing_rule_ids")); routingRuleIDs != "" {
-		filters.RoutingRuleIDs = parseCommaSeparated(routingRuleIDs)
-	}
-	if routingEngines := string(ctx.QueryArgs().Peek("routing_engine_used")); routingEngines != "" {
-		filters.RoutingEngineUsed = parseCommaSeparated(routingEngines)
-	}
-	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
-		if t, err := time.Parse(time.RFC3339, startTime); err == nil {
-			filters.StartTime = &t
-		}
-	}
-	if endTime := string(ctx.QueryArgs().Peek("end_time")); endTime != "" {
-		if t, err := time.Parse(time.RFC3339, endTime); err == nil {
-			filters.EndTime = &t
-		}
-	}
-	if minLatency := string(ctx.QueryArgs().Peek("min_latency")); minLatency != "" {
-		if f, err := strconv.ParseFloat(minLatency, 64); err == nil {
-			filters.MinLatency = &f
-		}
-	}
-	if maxLatency := string(ctx.QueryArgs().Peek("max_latency")); maxLatency != "" {
-		if val, err := strconv.ParseFloat(maxLatency, 64); err == nil {
-			filters.MaxLatency = &val
-		}
-	}
-	if minTokens := string(ctx.QueryArgs().Peek("min_tokens")); minTokens != "" {
-		if val, err := strconv.Atoi(minTokens); err == nil {
-			filters.MinTokens = &val
-		}
-	}
-	if maxTokens := string(ctx.QueryArgs().Peek("max_tokens")); maxTokens != "" {
-		if val, err := strconv.Atoi(maxTokens); err == nil {
-			filters.MaxTokens = &val
-		}
-	}
-	if cost := string(ctx.QueryArgs().Peek("min_cost")); cost != "" {
-		if val, err := strconv.ParseFloat(cost, 64); err == nil {
-			filters.MinCost = &val
-		}
-	}
-	if maxCost := string(ctx.QueryArgs().Peek("max_cost")); maxCost != "" {
-		if val, err := strconv.ParseFloat(maxCost, 64); err == nil {
-			filters.MaxCost = &val
-		}
-	}
-	if missingCost := string(ctx.QueryArgs().Peek("missing_cost_only")); missingCost != "" {
-		if val, err := strconv.ParseBool(missingCost); err == nil {
-			filters.MissingCostOnly = val
-		}
-	}
-	if contentSearch := string(ctx.QueryArgs().Peek("content_search")); contentSearch != "" {
-		filters.ContentSearch = contentSearch
-	}
-	parseMetadataFilters(ctx, filters)
+	filters := parseHistogramFilters(ctx)
 
 	stats, err := h.logManager.GetStats(ctx, filters)
 	if err != nil {
@@ -381,6 +230,33 @@ func (h *LoggingHandler) getLogsStats(ctx *fasthttp.RequestCtx) {
 	}
 
 	SendJSON(ctx, stats)
+}
+
+func (h *LoggingHandler) getLogsFinalSuccessDistribution(ctx *fasthttp.RequestCtx) {
+	filters := parseHistogramFilters(ctx)
+	groupBy := logstore.FinalSuccessDistributionDimension(string(ctx.QueryArgs().Peek("group_by")))
+	if groupBy == "" {
+		groupBy = logstore.FinalSuccessDistributionByModel
+	}
+
+	switch groupBy {
+	case logstore.FinalSuccessDistributionByModel,
+		logstore.FinalSuccessDistributionByProvider,
+		logstore.FinalSuccessDistributionByKey,
+		logstore.FinalSuccessDistributionByLayer:
+	default:
+		SendError(ctx, fasthttp.StatusBadRequest, "group_by must be one of: model, provider, key, layer")
+		return
+	}
+
+	result, err := h.logManager.GetFinalSuccessDistribution(ctx, filters, groupBy)
+	if err != nil {
+		logger.Error("failed to get final success distribution: %v", err)
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Final distribution calculation failed: %v", err))
+		return
+	}
+
+	SendJSON(ctx, result)
 }
 
 // getLogsHistogram handles GET /api/logs/histogram - Get time-bucketed request counts

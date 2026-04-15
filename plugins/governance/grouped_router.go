@@ -13,21 +13,35 @@ const routingGroupEngine = "routing-group"
 
 // resolvedTarget holds provider/model/keyID after resolving optional fields against defaults
 type resolvedTarget struct {
-	provider string
-	model    string
-	keyID    string
-	key      string // TargetKey for dedup
+	provider   string
+	model      string
+	keyID      string
+	key        string // TargetKey for dedup
+	layerIndex int
+	layerName  string
 }
 
-func resolveRouteGroupTarget(target configstoreTables.RouteGroupTarget, routingCtx *RoutingContext) resolvedTarget {
+func resolveRouteGroupTarget(target configstoreTables.RouteGroupTarget, routingCtx *RoutingContext, layerIndex int, layerName string) resolvedTarget {
 	provider := derefOr(target.Provider, string(routingCtx.Provider))
 	model := derefOr(target.Model, routingCtx.Model)
 	keyID := derefOr(target.KeyID, "")
 	return resolvedTarget{
-		provider: provider,
-		model:    model,
-		keyID:    keyID,
-		key:      TargetKey(provider, model, keyID),
+		provider:   provider,
+		model:      model,
+		keyID:      keyID,
+		key:        TargetKey(provider, model, keyID),
+		layerIndex: layerIndex,
+		layerName:  layerName,
+	}
+}
+
+func (target resolvedTarget) toLayerPlan() RoutingLayerPlan {
+	return RoutingLayerPlan{
+		Provider:   target.provider,
+		Model:      target.model,
+		KeyID:      target.keyID,
+		LayerIndex: target.layerIndex,
+		LayerName:  target.layerName,
 	}
 }
 
@@ -75,7 +89,7 @@ func buildGroupedRoutingDecision(
 		available := make([]configstoreTables.RouteGroupTarget, 0, len(group.Targets))
 		cooldownCount := 0
 		for _, t := range group.Targets {
-			resolved := resolveRouteGroupTarget(t, routingCtx)
+			resolved := resolveRouteGroupTarget(t, routingCtx, gi, group.Name)
 			if _, dup := seen[resolved.key]; dup {
 				continue
 			}
@@ -103,17 +117,17 @@ func buildGroupedRoutingDecision(
 			if !ok {
 				break
 			}
-			rt := resolveRouteGroupTarget(target, routingCtx)
+			rt := resolveRouteGroupTarget(target, routingCtx, gi, group.Name)
 			chain = append(chain, rt)
 			seen[rt.key] = struct{}{}
 
 			ctx.AppendRoutingEngineLog(routingGroupEngine,
-				fmt.Sprintf("Selected slot %d from group %s: provider=%s model=%s", len(chain), group.Name, rt.provider, rt.model))
+				fmt.Sprintf("Selected slot %d from group %s (layer=%d): provider=%s model=%s", len(chain), group.Name, rt.layerIndex, rt.provider, rt.model))
 
 			// Remove selected target for next pick (without replacement)
 			remaining := available[:0]
 			for _, a := range available {
-				if resolveRouteGroupTarget(a, routingCtx).key != rt.key {
+				if resolveRouteGroupTarget(a, routingCtx, gi, group.Name).key != rt.key {
 					remaining = append(remaining, a)
 				}
 			}
@@ -130,24 +144,28 @@ func buildGroupedRoutingDecision(
 	primary := chain[0]
 	fallbacks := make([]string, 0, len(chain)-1)
 	fallbackKeyIDs := make([]string, 0, len(chain)-1)
+	fallbackLayerPlan := make([]RoutingLayerPlan, 0, len(chain)-1)
 	for _, rt := range chain[1:] {
 		fb := rt.provider + "/" + rt.model
 		fallbacks = append(fallbacks, fb)
 		fallbackKeyIDs = append(fallbackKeyIDs, rt.keyID)
+		fallbackLayerPlan = append(fallbackLayerPlan, rt.toLayerPlan())
 	}
 
 	ctx.AppendRoutingEngineLog(routingGroupEngine,
-		fmt.Sprintf("Decision: primary=%s/%s (keyID=%s), fallbacks=%v, fallbackKeyIDs=%v", primary.provider, primary.model, primary.keyID, fallbacks, fallbackKeyIDs))
+		fmt.Sprintf("Decision: primary=%s/%s (keyID=%s, layer=%d), fallbacks=%v, fallbackKeyIDs=%v", primary.provider, primary.model, primary.keyID, primary.layerIndex, fallbacks, fallbackKeyIDs))
 
 	return &RoutingDecision{
-		Provider:         primary.provider,
-		Model:            primary.model,
-		KeyID:            primary.keyID,
-		Fallbacks:        fallbacks,
-		FallbackKeyIDs:   fallbackKeyIDs,
-		MatchedRuleID:    rule.ID,
-		MatchedRuleName:  rule.Name,
-		IsGroupedRouting: true,
+		Provider:          primary.provider,
+		Model:             primary.model,
+		KeyID:             primary.keyID,
+		Fallbacks:         fallbacks,
+		FallbackKeyIDs:    fallbackKeyIDs,
+		PrimaryLayer:      primary.toLayerPlan(),
+		FallbackLayerPlan: fallbackLayerPlan,
+		MatchedRuleID:     rule.ID,
+		MatchedRuleName:   rule.Name,
+		IsGroupedRouting:  true,
 	}
 }
 

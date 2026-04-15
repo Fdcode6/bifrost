@@ -1,3 +1,4 @@
+import { LOGS_COLLAPSIBLE_EXPANDED_MAX_HEIGHT } from "@/app/workspace/logs/layoutConfig";
 import { Button } from "@/components/ui/button";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import { ChevronDown, ChevronUp, Copy } from "lucide-react";
@@ -11,7 +12,13 @@ interface CollapsibleBoxProps {
 	onCopy?: () => string;
 }
 
-export default function CollapsibleBox({ title, children, collapsedHeight = 60, expandedMaxHeight = 450, onCopy }: CollapsibleBoxProps) {
+export default function CollapsibleBox({
+	title,
+	children,
+	collapsedHeight = 60,
+	expandedMaxHeight = LOGS_COLLAPSIBLE_EXPANDED_MAX_HEIGHT,
+	onCopy,
+}: CollapsibleBoxProps) {
 	const [isExpanded, setIsExpanded] = useState(false);
 	const [needsExpansion, setNeedsExpansion] = useState(false);
 	const innerContentRef = useRef<HTMLDivElement>(null);

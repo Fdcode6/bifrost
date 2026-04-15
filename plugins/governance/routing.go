@@ -29,17 +29,28 @@ type ScopeLevel struct {
 	ScopeID   string // empty string for global scope
 }
 
+// RoutingLayerPlan describes a grouped routing attempt and the route layer it belongs to.
+type RoutingLayerPlan struct {
+	Provider   string
+	Model      string
+	KeyID      string
+	LayerIndex int
+	LayerName  string
+}
+
 // RoutingDecision is the output of routing rule evaluation
 // Represents which provider/model to route to and fallback chain
 type RoutingDecision struct {
-	Provider        string   // Primary provider (e.g., "openai", "azure")
-	Model           string   // Model to use (or empty to use original)
-	KeyID           string   // Optional: pin a specific API key by UUID ("" = no pin)
-	Fallbacks       []string // Fallback chain: ["provider/model", ...]
-	FallbackKeyIDs  []string // Key IDs for each fallback target (1:1 with Fallbacks, "" = no pin)
-	MatchedRuleID   string   // ID of the rule that matched
-	MatchedRuleName string   // Name of the rule that matched
-	IsGroupedRouting bool    // True when this decision was built by grouped health routing
+	Provider          string             // Primary provider (e.g., "openai", "azure")
+	Model             string             // Model to use (or empty to use original)
+	KeyID             string             // Optional: pin a specific API key by UUID ("" = no pin)
+	Fallbacks         []string           // Fallback chain: ["provider/model", ...]
+	FallbackKeyIDs    []string           // Key IDs for each fallback target (1:1 with Fallbacks, "" = no pin)
+	PrimaryLayer      RoutingLayerPlan   // Grouped routing primary layer metadata
+	FallbackLayerPlan []RoutingLayerPlan // Grouped routing fallback layer metadata (1:1 with Fallbacks/FallbackKeyIDs)
+	MatchedRuleID     string             // ID of the rule that matched
+	MatchedRuleName   string             // Name of the rule that matched
+	IsGroupedRouting  bool               // True when this decision was built by grouped health routing
 }
 
 // RoutingContext holds all data needed for routing rule evaluation

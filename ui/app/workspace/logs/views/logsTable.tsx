@@ -1,14 +1,23 @@
 "use client";
 
 import { Button } from "@/components/ui/button";
-import { buildPinStyle, ColumnConfigDropdown, DraggableColumnHeader, PIN_SHADOW_LEFT, PIN_SHADOW_RIGHT, useColumnConfig, useHeaderCellRefs, usePinOffsets } from "@/components/table";
+import {
+	buildPinStyle,
+	ColumnConfigDropdown,
+	DraggableColumnHeader,
+	PIN_SHADOW_LEFT,
+	PIN_SHADOW_RIGHT,
+	useColumnConfig,
+	useHeaderCellRefs,
+	usePinOffsets,
+} from "@/components/table";
 import { Table, TableBody, TableCell, TableRow } from "@/components/ui/table";
 import { useTablePageSize } from "@/hooks/useTablePageSize";
 import type { LogEntry, LogFilters, Pagination } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
-import { ColumnDef, flexRender, getCoreRowModel, SortingState, useReactTable } from "@tanstack/react-table";
+import { ColumnDef, flexRender, getCoreRowModel, SortingState, Table as TanstackTable, useReactTable } from "@tanstack/react-table";
 import { ChevronLeft, ChevronRight, Pause, RefreshCw, X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LogFilters as LogFiltersComponent } from "./filters";
 
 const COLUMN_LABELS: Record<string, string> = {
@@ -21,7 +30,6 @@ const COLUMN_LABELS: Record<string, string> = {
 	tokens: "Tokens",
 	cost: "Cost",
 };
-
 
 interface DataTableProps {
 	columns: ColumnDef<LogEntry>[];
@@ -38,6 +46,14 @@ interface DataTableProps {
 	onLiveToggle: (enabled: boolean) => void;
 	fetchLogs: () => Promise<void>;
 	fetchStats: () => Promise<void>;
+	bodyRenderer?: (args: {
+		table: TanstackTable<LogEntry>;
+		columnsCount: number;
+		pinOffsets: ReturnType<typeof usePinOffsets>;
+		lastLeftPinId?: string;
+		firstRightPinId?: string;
+		onRowClick?: (log: LogEntry, columnId: string) => void;
+	}) => ReactNode;
 	metadataKeys?: string[];
 }
 
@@ -56,6 +72,7 @@ export function LogsDataTable({
 	onLiveToggle,
 	fetchLogs,
 	fetchStats,
+	bodyRenderer,
 	metadataKeys = [],
 }: DataTableProps) {
 	const [sorting, setSorting] = useState<SortingState>([{ id: pagination.sort_by, desc: pagination.order === "desc" }]);
@@ -178,17 +195,12 @@ export function LogsDataTable({
 						fetchStats={fetchStats}
 					/>
 				</div>
-				<ColumnConfigDropdown
-					entries={entries}
-					labels={columnLabels}
-					onToggleVisibility={toggleVisibility}
-					onReset={reset}
-				/>
+				<ColumnConfigDropdown entries={entries} labels={columnLabels} onToggleVisibility={toggleVisibility} onReset={reset} />
 			</div>
 
-			<div ref={tableContainerRef} className="min-h-0 flex-1 overflow-hidden rounded-sm border">
+			<div ref={tableContainerRef} className="min-h-0 flex-1 overflow-hidden rounded-sm border" data-testid="logs-table">
 				<Table containerClassName="h-full overflow-auto">
-					<thead className={cn("[&_tr]:border-b px-2 sticky top-0 z-10 bg-[#f9f9f9] dark:bg-[#27272a]")}>
+					<thead className={cn("sticky top-0 z-10 bg-[#f9f9f9] px-2 dark:bg-[#27272a] [&_tr]:border-b")}>
 						{table.getHeaderGroups().map((headerGroup) => (
 							<tr
 								key={headerGroup.id}
@@ -248,9 +260,18 @@ export function LogsDataTable({
 										</div>
 									</TableCell>
 								</TableRow>
-								{table.getRowModel().rows.length ? (
+								{bodyRenderer ? (
+									bodyRenderer({
+										table,
+										columnsCount: columns.length,
+										pinOffsets,
+										lastLeftPinId,
+										firstRightPinId,
+										onRowClick,
+									})
+								) : table.getRowModel().rows.length ? (
 									table.getRowModel().rows.map((row) => (
-										<TableRow key={row.id} className="hover:bg-muted/50 h-12 cursor-pointer group/table-row">
+										<TableRow key={row.id} className="hover:bg-muted/50 group/table-row h-12 cursor-pointer">
 											{row.getVisibleCells().map((cell) => {
 												const pinned = cell.column.getIsPinned();
 												return (
@@ -291,7 +312,14 @@ export function LogsDataTable({
 				</div>
 
 				<div className="flex items-center gap-2">
-					<Button variant="ghost" size="sm" onClick={() => goToPage(currentPage - 1)} disabled={currentPage <= 1} data-testid="prev-page" aria-label="Previous page">
+					<Button
+						variant="ghost"
+						size="sm"
+						onClick={() => goToPage(currentPage - 1)}
+						disabled={currentPage <= 1}
+						data-testid="prev-page"
+						aria-label="Previous page"
+					>
 						<ChevronLeft className="size-3" />
 					</Button>
 

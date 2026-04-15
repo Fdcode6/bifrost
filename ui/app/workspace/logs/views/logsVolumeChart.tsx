@@ -1,5 +1,6 @@
 "use client";
 
+import { LOGS_VOLUME_CHART_HEIGHT_CLASS, LOGS_VOLUME_CHART_LOADING_HEIGHT } from "@/app/workspace/logs/layoutConfig";
 import { Card } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -301,7 +302,7 @@ export function LogsVolumeChart({
 
 	if (loading) {
 		return (
-			<Card className="gap-0 rounded-sm px-2 py-2 shadow-none">
+			<Card className="gap-0 rounded-sm px-2 py-1.5 shadow-none">
 				<div className="flex items-center justify-between">
 					<div className="flex items-center gap-2">
 						<ChevronDown className="text-muted-foreground h-4 w-4" />
@@ -320,7 +321,7 @@ export function LogsVolumeChart({
 						</div>
 					</div>
 				</div>
-				<div className="" style={{ height: "131px", marginTop: 4 }}>
+				<div style={{ height: `${LOGS_VOLUME_CHART_LOADING_HEIGHT}px`, marginTop: 4 }}>
 					<Skeleton className="h-full w-full" />
 				</div>
 			</Card>
@@ -331,7 +332,7 @@ export function LogsVolumeChart({
 	const hasValidData = data && startTime && endTime && chartData.length >= 2;
 
 	return (
-		<Card className="rounded-sm px-2 py-2 shadow-none">
+		<Card className="rounded-sm px-2 py-1.5 shadow-none">
 			<Collapsible open={isOpen} onOpenChange={onOpenChange}>
 				<div className="flex items-center justify-between">
 					<CollapsibleTrigger className="flex items-center gap-2 hover:opacity-80">
@@ -363,7 +364,7 @@ export function LogsVolumeChart({
 					</div>
 				</div>
 				<CollapsibleContent className="data-[state=closed]:animate-collapse-up data-[state=open]:animate-collapse-down overflow-hidden">
-					<div className="mt-2 h-32 select-none">
+					<div className={`mt-1.5 select-none ${LOGS_VOLUME_CHART_HEIGHT_CLASS}`}>
 						{hasValidData ? (
 							<ChartErrorBoundary resetKey={`${startTime}-${endTime}-${chartData.length}`}>
 								<ResponsiveContainer width="100%" height="100%">

@@ -385,33 +385,25 @@ func (s *RDBLogStore) SearchLogs(ctx context.Context, filters SearchFilters, pag
 	}
 	pagination.Limit = limit
 
-	// Run COUNT and data fetch concurrently — the COUNT on large tables is the
-	// bottleneck, so overlapping it with the (fast) data query halves wall time.
-	// Each goroutine builds its own *gorm.DB because Count() mutates the session.
 	var totalCount int64
-	var logs []Log
+	var rows []rankedLogProjection
 
 	g, gCtx := errgroup.WithContext(ctx)
 
 	g.Go(func() error {
-		if s.db.Dialector.Name() == "postgres" && canUseMatView(filters) {
-			var err error
-			totalCount, err = s.getCountFromMatView(gCtx, filters)
-			return err
-		}
-		countQuery := s.db.WithContext(gCtx).Model(&Log{})
-		countQuery = s.applyFilters(countQuery, filters)
+		countQuery := s.filteredAttemptRowsQuery(gCtx, filters)
 		return countQuery.Count(&totalCount).Error
 	})
 
 	g.Go(func() error {
-		dataQuery := s.db.WithContext(gCtx).Model(&Log{})
-		dataQuery = s.applyFilters(dataQuery, filters)
-		dataQuery = dataQuery.Order(orderClause).Select(s.listSelectColumns()).Limit(limit)
+		dataQuery := s.filteredAttemptRowsQuery(gCtx, filters).
+			Select(s.listSelectColumns() + ", group_id, attempt_sequence, is_final_attempt").
+			Order(orderClause).
+			Limit(limit)
 		if pagination.Offset > 0 {
 			dataQuery = dataQuery.Offset(pagination.Offset)
 		}
-		err := dataQuery.Find(&logs).Error
+		err := dataQuery.Scan(&rows).Error
 		if err != nil && errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil
 		}
@@ -419,6 +411,13 @@ func (s *RDBLogStore) SearchLogs(ctx context.Context, filters SearchFilters, pag
 	})
 
 	if err := g.Wait(); err != nil {
+		return nil, err
+	}
+
+	pagination.TotalCount = totalCount
+
+	logs, err := mapRankedLogProjections(rows)
+	if err != nil {
 		return nil, err
 	}
 
@@ -447,7 +446,7 @@ func (s *RDBLogStore) SearchLogs(ctx context.Context, filters SearchFilters, pag
 func (s *RDBLogStore) listSelectColumns() string {
 	baseCols := strings.Join([]string{
 		"id", "parent_request_id", "timestamp", "object_type", "provider", "model",
-		"number_of_retries", "fallback_index",
+		"number_of_retries", "fallback_index", "route_layer_index",
 		"selected_key_id", "selected_key_name",
 		"virtual_key_id", "virtual_key_name",
 		"routing_engines_used", "routing_rule_id", "routing_rule_name",
@@ -483,62 +482,130 @@ func (s *RDBLogStore) listSelectColumns() string {
 
 // GetStats calculates statistics for logs matching the given filters.
 func (s *RDBLogStore) GetStats(ctx context.Context, filters SearchFilters) (*SearchStats, error) {
-	if s.db.Dialector.Name() == "postgres" && canUseMatView(filters) {
-		return s.getStatsFromMatView(ctx, filters)
-	}
-	baseQuery := s.db.WithContext(ctx).Model(&Log{})
-	baseQuery = s.applyFilters(baseQuery, filters)
+	var (
+		totalCount          int64
+		attemptStats        completedAttemptStats
+		requestStats        completedRequestStats
+	)
 
-	// Get total count (includes processing status)
-	var totalCount int64
-	if err := baseQuery.Count(&totalCount).Error; err != nil {
+	g, gCtx := errgroup.WithContext(ctx)
+
+	g.Go(func() error {
+		return s.applyFilters(s.db.WithContext(gCtx).Model(&Log{}), filters).Count(&totalCount).Error
+	})
+
+	g.Go(func() error {
+		var err error
+		if s.db.Dialector.Name() == "postgres" && canUseMatView(filters) {
+			attemptStats, err = s.getCompletedAttemptStatsFromMatView(gCtx, filters)
+			return err
+		}
+		return s.applyFilters(s.db.WithContext(gCtx).Model(&Log{}), filters).
+			Where("status IN ?", []string{"success", "error"}).
+			Select(`
+				COUNT(*) AS completed_count,
+				SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success_count,
+				AVG(latency) AS avg_latency,
+				SUM(total_tokens) AS total_tokens,
+				SUM(cost) AS total_cost
+			`).
+			Scan(&attemptStats).Error
+	})
+
+	g.Go(func() error {
+		return s.filteredFinalAttemptsQuery(gCtx, filters).
+			Where("status IN ?", []string{"success", "error"}).
+			Select(`
+				COUNT(*) AS completed_count,
+				SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success_count,
+				AVG(latency) AS avg_latency
+			`).
+			Scan(&requestStats).Error
+	})
+
+	if err := g.Wait(); err != nil {
 		return nil, err
 	}
 
 	stats := &SearchStats{
-		TotalRequests: totalCount,
+		TotalRequests:           totalCount,
+		CompletedAttempts:       attemptStats.CompletedCount.Int64,
+		SuccessfulAttempts:      attemptStats.SuccessCount.Int64,
+		CompletedRequestGroups:  requestStats.CompletedCount.Int64,
+		SuccessfulRequestGroups: requestStats.SuccessCount.Int64,
 	}
 
-	if totalCount > 0 {
-		// Single query for all completed-request stats: counts, latency, tokens, cost
-		var result struct {
-			CompletedCount sql.NullInt64   `gorm:"column:completed_count"`
-			SuccessCount   sql.NullInt64   `gorm:"column:success_count"`
-			AvgLatency     sql.NullFloat64 `gorm:"column:avg_latency"`
-			TotalTokens    sql.NullInt64   `gorm:"column:total_tokens"`
-			TotalCost      sql.NullFloat64 `gorm:"column:total_cost"`
+	if attemptStats.CompletedCount.Int64 > 0 {
+		stats.SuccessRate = float64(attemptStats.SuccessCount.Int64) / float64(attemptStats.CompletedCount.Int64) * 100
+		if attemptStats.AvgLatency.Valid {
+			stats.AverageLatency = attemptStats.AvgLatency.Float64
 		}
-
-		statsQuery := s.db.WithContext(ctx).Model(&Log{})
-		statsQuery = s.applyFilters(statsQuery, filters)
-		statsQuery = statsQuery.Where("status IN ?", []string{"success", "error"})
-
-		if err := statsQuery.Select(`
-			COUNT(*) as completed_count,
-			SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success_count,
-			AVG(latency) as avg_latency,
-			SUM(total_tokens) as total_tokens,
-			SUM(cost) as total_cost
-		`).Scan(&result).Error; err != nil {
-			return nil, err
-		}
-
-		completedCount := result.CompletedCount.Int64
-		if completedCount > 0 {
-			stats.SuccessRate = float64(result.SuccessCount.Int64) / float64(completedCount) * 100
-			if result.AvgLatency.Valid {
-				stats.AverageLatency = result.AvgLatency.Float64
-			}
-			if result.TotalTokens.Valid {
-				stats.TotalTokens = result.TotalTokens.Int64
-			}
-			if result.TotalCost.Valid {
-				stats.TotalCost = result.TotalCost.Float64
-			}
+	}
+	if attemptStats.TotalTokens.Valid {
+		stats.TotalTokens = attemptStats.TotalTokens.Int64
+	}
+	if attemptStats.TotalCost.Valid {
+		stats.TotalCost = attemptStats.TotalCost.Float64
+	}
+	if requestStats.CompletedCount.Int64 > 0 {
+		stats.RequestSuccessRate = float64(requestStats.SuccessCount.Int64) / float64(requestStats.CompletedCount.Int64) * 100
+		if requestStats.AvgLatency.Valid {
+			stats.AverageFinalLatency = requestStats.AvgLatency.Float64
 		}
 	}
 
 	return stats, nil
+}
+
+func (s *RDBLogStore) GetFinalSuccessDistribution(ctx context.Context, filters SearchFilters, groupBy FinalSuccessDistributionDimension) (*FinalSuccessDistributionResult, error) {
+	valueExpr, labelExpr, err := distributionValueAndLabelExpressions(groupBy)
+	if err != nil {
+		return nil, err
+	}
+
+	type distributionRow struct {
+		Value        string `gorm:"column:value"`
+		Label        string `gorm:"column:label"`
+		SuccessCount int64  `gorm:"column:success_count"`
+	}
+
+	var rows []distributionRow
+	query := s.filteredFinalAttemptsQuery(ctx, filters).
+		Where("status = ?", "success").
+		Select(fmt.Sprintf(`
+			%s AS value,
+			%s AS label,
+			COUNT(*) AS success_count
+		`, valueExpr, labelExpr)).
+		Group("value, label").
+		Order("success_count DESC").
+		Order("label ASC")
+
+	if err := query.Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+
+	result := &FinalSuccessDistributionResult{
+		Dimension: groupBy,
+		Items:     make([]FinalSuccessDistributionItem, 0, len(rows)),
+	}
+
+	for _, row := range rows {
+		result.TotalSuccessCount += row.SuccessCount
+		result.Items = append(result.Items, FinalSuccessDistributionItem{
+			Value:        row.Value,
+			Label:        row.Label,
+			SuccessCount: row.SuccessCount,
+		})
+	}
+
+	if result.TotalSuccessCount > 0 {
+		for i := range result.Items {
+			result.Items[i].SuccessRatio = float64(result.Items[i].SuccessCount) / float64(result.TotalSuccessCount) * 100
+		}
+	}
+
+	return result, nil
 }
 
 // GetHistogram returns time-bucketed request counts for the given filters.
@@ -1957,14 +2024,21 @@ func (s *RDBLogStore) HasLogs(ctx context.Context) (bool, error) {
 
 // FindByID gets a log entry from the database by its ID.
 func (s *RDBLogStore) FindByID(ctx context.Context, id string) (*Log, error) {
-	var log Log
-	if err := s.db.WithContext(ctx).Where("id = ?", id).First(&log).Error; err != nil {
+	var row rankedLogProjection
+	if err := s.db.WithContext(ctx).
+		Table("(?) AS ranked", s.rankedAttemptsBaseQuery(ctx)).
+		Where("id = ?", id).
+		Take(&row).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
 		}
 		return nil, err
 	}
-	return &log, nil
+	logEntry, err := mapRankedLogProjection(row)
+	if err != nil {
+		return nil, err
+	}
+	return &logEntry, nil
 }
 
 // FindFirst gets a log entry from the database.

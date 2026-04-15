@@ -30,6 +30,7 @@ type PendingLogData struct {
 	ParentRequestID    string
 	Timestamp          time.Time
 	FallbackIndex      int
+	RouteLayerIndex    *int
 	Status             string
 	RoutingEnginesUsed []string
 	InitialData        *InitialLogData
@@ -261,6 +262,7 @@ func buildInitialLogEntry(pending *PendingLogData) *logstore.Log {
 		Provider:                    pending.InitialData.Provider,
 		Model:                       pending.InitialData.Model,
 		FallbackIndex:               pending.FallbackIndex,
+		RouteLayerIndex:             pending.RouteLayerIndex,
 		Status:                      "processing",
 		Stream:                      false,
 		CreatedAt:                   pending.Timestamp,
@@ -289,6 +291,7 @@ func buildCompleteLogEntryFromPending(pending *PendingLogData) *logstore.Log {
 		Provider:      pending.InitialData.Provider,
 		Model:         pending.InitialData.Model,
 		FallbackIndex: pending.FallbackIndex,
+		RouteLayerIndex: pending.RouteLayerIndex,
 		Status:        "success",
 		CreatedAt:     pending.Timestamp,
 		// Set parsed fields for serialization via GORM hooks

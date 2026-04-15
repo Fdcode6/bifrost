@@ -34,9 +34,11 @@ const (
 	governanceIsBatchContextKey     schemas.BifrostContextKey = "bf-governance-is-batch"
 
 	// Grouped health routing context keys — set by HTTPTransportPreHook, read by PreLLMHook/PostLLMHook
-	groupedRoutingActiveContextKey      schemas.BifrostContextKey = "bf-grouped-routing-active"        // bool: true when this request was routed by grouped routing
-	groupedRoutingRuleIDContextKey      schemas.BifrostContextKey = "bf-grouped-routing-rule-id"       // string: matched grouped routing rule id
-	groupedRoutingPinnedKeyIDContextKey schemas.BifrostContextKey = "bf-grouped-routing-pinned-key-id" // string: key_id pinned for current attempt (for PostLLMHook health tracking)
+	groupedRoutingActiveContextKey            schemas.BifrostContextKey = "bf-grouped-routing-active"              // bool: true when this request was routed by grouped routing
+	groupedRoutingRuleIDContextKey            schemas.BifrostContextKey = "bf-grouped-routing-rule-id"             // string: matched grouped routing rule id
+	groupedRoutingCurrentLayerContextKey      schemas.BifrostContextKey = "bf-grouped-routing-current-layer"       // RoutingLayerPlan: current grouped routing attempt metadata
+	groupedRoutingFallbackLayerPlanContextKey schemas.BifrostContextKey = "bf-grouped-routing-fallback-layer-plan" // []RoutingLayerPlan: grouped routing fallback layer plan aligned with fallback_index
+	groupedRoutingPinnedKeyIDContextKey       schemas.BifrostContextKey = "bf-grouped-routing-pinned-key-id"       // string: key_id pinned for current attempt (for PostLLMHook health tracking)
 
 	VirtualKeyPrefix = "sk-bf-"
 )
@@ -863,7 +865,10 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 		if decision.IsGroupedRouting {
 			ctx.SetValue(groupedRoutingActiveContextKey, true)
 			ctx.SetValue(groupedRoutingRuleIDContextKey, decision.MatchedRuleID)
+			ctx.SetValue(groupedRoutingCurrentLayerContextKey, decision.PrimaryLayer)
+			ctx.SetValue(groupedRoutingFallbackLayerPlanContextKey, decision.FallbackLayerPlan)
 			ctx.SetValue(groupedRoutingPinnedKeyIDContextKey, decision.KeyID)
+			ctx.SetValue(schemas.BifrostContextKeyRouteLayerIndex, decision.PrimaryLayer.LayerIndex)
 			ctx.SetValue(schemas.BifrostContextKeyDisableProviderRetries, true)
 			if len(decision.FallbackKeyIDs) > 0 {
 				ctx.SetValue(schemas.BifrostContextKeyFallbackKeyIDs, decision.FallbackKeyIDs)
@@ -1076,10 +1081,20 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 	if isGrouped, _ := ctx.Value(groupedRoutingActiveContextKey).(bool); isGrouped {
 		fallbackIndex, _ := ctx.Value(schemas.BifrostContextKeyFallbackIndex).(int)
 		if fallbackIndex > 0 {
+			idx := fallbackIndex - 1
 			ctx.SetValue(groupedRoutingPinnedKeyIDContextKey, "")
-			if keyIDs, ok := ctx.Value(schemas.BifrostContextKeyFallbackKeyIDs).([]string); ok {
-				if idx := fallbackIndex - 1; idx < len(keyIDs) {
-					ctx.SetValue(groupedRoutingPinnedKeyIDContextKey, keyIDs[idx])
+			if fallbackPlan, ok := ctx.Value(groupedRoutingFallbackLayerPlanContextKey).([]RoutingLayerPlan); ok {
+				if idx >= 0 && idx < len(fallbackPlan) {
+					ctx.SetValue(groupedRoutingCurrentLayerContextKey, fallbackPlan[idx])
+					ctx.SetValue(groupedRoutingPinnedKeyIDContextKey, fallbackPlan[idx].KeyID)
+					ctx.SetValue(schemas.BifrostContextKeyRouteLayerIndex, fallbackPlan[idx].LayerIndex)
+				}
+			}
+			if pinnedKeyID, _ := ctx.Value(groupedRoutingPinnedKeyIDContextKey).(string); pinnedKeyID == "" {
+				if keyIDs, ok := ctx.Value(schemas.BifrostContextKeyFallbackKeyIDs).([]string); ok {
+					if idx >= 0 && idx < len(keyIDs) {
+						ctx.SetValue(groupedRoutingPinnedKeyIDContextKey, keyIDs[idx])
+					}
 				}
 			}
 		}
@@ -1135,11 +1150,24 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	// Record health only for grouped routing requests — prevents unrelated traffic from
 	// polluting health buckets. Use the pinned key_id (not SelectedKeyID) so the health
 	// key matches the configured route group target identity.
-	if isGrouped, _ := ctx.Value(groupedRoutingActiveContextKey).(bool); isGrouped && provider != "" && model != "" {
+	if isGrouped, _ := ctx.Value(groupedRoutingActiveContextKey).(bool); isGrouped {
 		ruleID, _ := ctx.Value(groupedRoutingRuleIDContextKey).(string)
 		pinnedKeyID, _ := ctx.Value(groupedRoutingPinnedKeyIDContextKey).(string)
-		if ruleID != "" {
-			targetKey := TargetKey(string(provider), model, pinnedKeyID)
+		currentLayer, _ := ctx.Value(groupedRoutingCurrentLayerContextKey).(RoutingLayerPlan)
+		trackedProvider := string(provider)
+		trackedModel := model
+		trackedKeyID := pinnedKeyID
+		if currentLayer.Provider != "" {
+			trackedProvider = currentLayer.Provider
+		}
+		if currentLayer.Model != "" {
+			trackedModel = currentLayer.Model
+		}
+		if currentLayer.KeyID != "" || trackedKeyID == "" {
+			trackedKeyID = currentLayer.KeyID
+		}
+		if ruleID != "" && trackedProvider != "" && trackedModel != "" {
+			targetKey := TargetKey(trackedProvider, trackedModel, trackedKeyID)
 			p.healthTracker.RecordRealAccess(targetKey, requestType, time.Now())
 			if err != nil {
 				failureMsg := "unknown error"

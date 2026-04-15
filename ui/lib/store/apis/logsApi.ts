@@ -1,6 +1,8 @@
 import { RedactedDBKey, VirtualKey } from "@/lib/types/governance";
 import {
 	CostHistogramResponse,
+	FinalSuccessDistributionDimension,
+	FinalSuccessDistributionResponse,
 	LatencyHistogramResponse,
 	LogEntry,
 	LogFilters,
@@ -316,6 +318,23 @@ export const logsApi = baseApi.injectEndpoints({
 			providesTags: ["Logs"],
 		}),
 
+		getFinalSuccessDistribution: builder.query<
+			FinalSuccessDistributionResponse,
+			{
+				filters: LogFilters;
+				groupBy: FinalSuccessDistributionDimension;
+			}
+		>({
+			query: ({ filters, groupBy }) => ({
+				url: "/logs/final-distribution",
+				params: {
+					...buildFilterParams(filters),
+					group_by: groupBy,
+				},
+			}),
+			providesTags: ["Logs"],
+		}),
+
 		// Get dropped requests count
 		getDroppedRequests: builder.query<{ dropped_requests: number }, void>({
 			query: () => "/logs/dropped",
@@ -389,6 +408,8 @@ export const {
 	useLazyGetLogsProviderTokenHistogramQuery,
 	useLazyGetLogsProviderLatencyHistogramQuery,
 	useLazyGetModelRankingsQuery,
+	useGetFinalSuccessDistributionQuery,
+	useLazyGetFinalSuccessDistributionQuery,
 	useLazyGetDroppedRequestsQuery,
 	useLazyGetAvailableFilterDataQuery,
 	useDeleteLogsMutation,
