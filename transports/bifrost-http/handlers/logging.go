@@ -70,6 +70,7 @@ func (h *LoggingHandler) RegisterRoutes(r *router.Router, middlewares ...schemas
 	r.GET("/api/logs/filterdata", lib.ChainMiddlewares(h.getAvailableFilterData, middlewares...))
 	r.GET("/api/logs/rankings", lib.ChainMiddlewares(h.getModelRankings, middlewares...))
 	r.DELETE("/api/logs", lib.ChainMiddlewares(h.deleteLogs, middlewares...))
+	r.POST("/api/logs/clear-all", lib.ChainMiddlewares(h.clearAllLogs, middlewares...))
 	r.POST("/api/logs/recalculate-cost", lib.ChainMiddlewares(h.recalculateLogCosts, middlewares...))
 
 	// MCP Tool Log retrieval with filtering, search, and pagination
@@ -682,6 +683,19 @@ func (h *LoggingHandler) deleteLogs(ctx *fasthttp.RequestCtx) {
 
 	SendJSON(ctx, map[string]interface{}{
 		"message": "Logs deleted successfully",
+	})
+}
+
+// clearAllLogs handles POST /api/logs/clear-all - Delete all request logs and MCP tool logs.
+func (h *LoggingHandler) clearAllLogs(ctx *fasthttp.RequestCtx) {
+	if err := h.logManager.ClearAllLogs(ctx); err != nil {
+		logger.Error("failed to clear logs: %v", err)
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to clear logs")
+		return
+	}
+
+	SendJSON(ctx, map[string]interface{}{
+		"message": "Logs cleared successfully",
 	})
 }
 

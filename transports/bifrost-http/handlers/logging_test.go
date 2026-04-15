@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -27,6 +28,8 @@ type stubLogManager struct {
 	lastFilters       *logstore.SearchFilters
 	lastPagination    *logstore.PaginationOptions
 	lastGroupBy       logstore.FinalSuccessDistributionDimension
+	clearAllCalls     int
+	clearAllErr       error
 }
 
 func (s *stubLogManager) Search(_ context.Context, filters *logstore.SearchFilters, pagination *logstore.PaginationOptions) (*logstore.SearchResult, error) {
@@ -48,6 +51,11 @@ func (s *stubLogManager) GetFinalSuccessDistribution(_ context.Context, filters 
 	s.lastFilters = filters
 	s.lastGroupBy = groupBy
 	return s.finalDistribution, s.finalErr
+}
+
+func (s *stubLogManager) ClearAllLogs(_ context.Context) error {
+	s.clearAllCalls++
+	return s.clearAllErr
 }
 
 type stubRedactedKeysManager struct{}
@@ -184,12 +192,12 @@ func TestGetLogsStatsIncludesRequestSuccessFields(t *testing.T) {
 	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
 
 	var resp struct {
-		CompletedAttempts      int64   `json:"completed_attempts"`
-		SuccessfulAttempts     int64   `json:"successful_attempts"`
-		CompletedRequestGroups int64   `json:"completed_request_groups"`
-		SuccessfulRequestGroups int64  `json:"successful_request_groups"`
-		RequestSuccessRate     float64 `json:"request_success_rate"`
-		AverageFinalLatency    float64 `json:"average_final_latency"`
+		CompletedAttempts       int64   `json:"completed_attempts"`
+		SuccessfulAttempts      int64   `json:"successful_attempts"`
+		CompletedRequestGroups  int64   `json:"completed_request_groups"`
+		SuccessfulRequestGroups int64   `json:"successful_request_groups"`
+		RequestSuccessRate      float64 `json:"request_success_rate"`
+		AverageFinalLatency     float64 `json:"average_final_latency"`
 	}
 	require.NoError(t, json.Unmarshal(ctx.Response.Body(), &resp))
 	require.Equal(t, int64(4), resp.CompletedAttempts)
@@ -248,6 +256,42 @@ func TestGetLogsFinalSuccessDistributionRejectsInvalidGroupBy(t *testing.T) {
 	handler.getLogsFinalSuccessDistribution(ctx)
 
 	require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+}
+
+func TestClearAllLogsClearsStoredLogs(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	manager := &stubLogManager{}
+	handler := NewLoggingHandler(manager, stubRedactedKeysManager{}, nil)
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.SetRequestURI("/api/logs/clear-all")
+
+	handler.clearAllLogs(ctx)
+
+	require.Equal(t, 1, manager.clearAllCalls)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+
+	var resp struct {
+		Message string `json:"message"`
+	}
+	require.NoError(t, json.Unmarshal(ctx.Response.Body(), &resp))
+	require.Equal(t, "Logs cleared successfully", resp.Message)
+}
+
+func TestClearAllLogsReturnsServerErrorWhenClearFails(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	handler := NewLoggingHandler(&stubLogManager{clearAllErr: errors.New("boom")}, stubRedactedKeysManager{}, nil)
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.SetRequestURI("/api/logs/clear-all")
+
+	handler.clearAllLogs(ctx)
+
+	require.Equal(t, fasthttp.StatusInternalServerError, ctx.Response.StatusCode(), string(ctx.Response.Body()))
 }
 
 func stringPtr(value string) *string {

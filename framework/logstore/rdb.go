@@ -483,9 +483,9 @@ func (s *RDBLogStore) listSelectColumns() string {
 // GetStats calculates statistics for logs matching the given filters.
 func (s *RDBLogStore) GetStats(ctx context.Context, filters SearchFilters) (*SearchStats, error) {
 	var (
-		totalCount          int64
-		attemptStats        completedAttemptStats
-		requestStats        completedRequestStats
+		totalCount   int64
+		attemptStats completedAttemptStats
+		requestStats completedRequestStats
 	)
 
 	g, gCtx := errgroup.WithContext(ctx)
@@ -2331,6 +2331,38 @@ func (s *RDBLogStore) DeleteLogs(ctx context.Context, ids []string) error {
 		return err
 	}
 	return nil
+}
+
+// ClearAllLogs deletes all request logs and MCP tool logs, then refreshes derived dashboard data.
+func (s *RDBLogStore) ClearAllLogs(ctx context.Context) error {
+	dialect := s.db.Dialector.Name()
+
+	if dialect == "postgres" {
+		if err := ensureMatViews(ctx, s.db); err != nil {
+			return err
+		}
+		return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			if err := tx.Exec("TRUNCATE TABLE mcp_tool_logs, logs").Error; err != nil {
+				return err
+			}
+			for _, view := range []string{"mv_logs_hourly", "mv_logs_filterdata"} {
+				if err := tx.Exec("REFRESH MATERIALIZED VIEW " + view).Error; err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+	}
+
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&MCPToolLog{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&Log{}).Error; err != nil {
+			return err
+		}
+		return nil
+	})
 }
 
 // ============================================================================

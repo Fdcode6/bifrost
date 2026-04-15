@@ -1,11 +1,21 @@
 "use client";
 
+import {
+	AlertDialog,
+	AlertDialogAction,
+	AlertDialogCancel,
+	AlertDialogContent,
+	AlertDialogDescription,
+	AlertDialogFooter,
+	AlertDialogHeader,
+	AlertDialogTitle,
+} from "@/components/ui/alertDialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { getErrorMessage, useGetCoreConfigQuery, useUpdateCoreConfigMutation } from "@/lib/store";
+import { getErrorMessage, useClearAllLogsMutation, useGetCoreConfigQuery, useUpdateCoreConfigMutation } from "@/lib/store";
 import { CoreConfig, DefaultCoreConfig } from "@/lib/types/config";
 import { parseArrayFromText } from "@/lib/utils/array";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
@@ -17,9 +27,11 @@ export default function LoggingView() {
 	const { data: bifrostConfig } = useGetCoreConfigQuery({ fromDB: true });
 	const config = bifrostConfig?.client_config;
 	const [updateCoreConfig, { isLoading }] = useUpdateCoreConfigMutation();
+	const [clearAllLogs, { isLoading: isClearingLogs }] = useClearAllLogsMutation();
 	const [localConfig, setLocalConfig] = useState<CoreConfig>(DefaultCoreConfig);
 	const [needsRestart, setNeedsRestart] = useState<boolean>(false);
 	const [loggingHeadersText, setLoggingHeadersText] = useState<string>("");
+	const [isClearDialogOpen, setIsClearDialogOpen] = useState(false);
 
 	useEffect(() => {
 		if (config) {
@@ -70,6 +82,16 @@ export default function LoggingView() {
 			toast.error(getErrorMessage(error));
 		}
 	}, [bifrostConfig, localConfig, updateCoreConfig]);
+
+	const handleClearAllLogs = useCallback(async () => {
+		try {
+			await clearAllLogs().unwrap();
+			setIsClearDialogOpen(false);
+			toast.success("All request logs and MCP tool logs were cleared.");
+		} catch (error) {
+			toast.error(getErrorMessage(error));
+		}
+	}, [clearAllLogs]);
 
 	return (
 		<div className="mx-auto w-full max-w-4xl space-y-4">
@@ -196,6 +218,26 @@ export default function LoggingView() {
 						/>
 					</div>
 				)}
+
+				{bifrostConfig?.is_logs_connected && (
+					<div className="border-destructive/30 bg-destructive/5 space-y-3 rounded-lg border p-4">
+						<div className="space-y-0.5">
+							<h3 className="text-sm font-medium">Danger Zone</h3>
+							<p className="text-muted-foreground text-sm">
+								Clear all stored request logs and MCP tool logs. Success rates, distributions, and related dashboard statistics will restart
+								from new traffic after this action.
+							</p>
+						</div>
+						<Button
+							variant="destructive"
+							data-testid="clear-all-logs-button"
+							disabled={!hasSettingsUpdateAccess || isClearingLogs}
+							onClick={() => setIsClearDialogOpen(true)}
+						>
+							{isClearingLogs ? "Clearing..." : "Clear All Logs"}
+						</Button>
+					</div>
+				)}
 			</div>
 
 			<div className="flex justify-end pt-2">
@@ -203,6 +245,33 @@ export default function LoggingView() {
 					{isLoading ? "Saving..." : "Save Changes"}
 				</Button>
 			</div>
+
+			<AlertDialog open={isClearDialogOpen} onOpenChange={setIsClearDialogOpen}>
+				<AlertDialogContent>
+					<AlertDialogHeader>
+						<AlertDialogTitle>Clear all logs?</AlertDialogTitle>
+						<AlertDialogDescription>
+							This permanently removes all stored request logs and MCP tool logs. Existing success rates, distributions, and related
+							statistics will be reset. This action cannot be undone.
+						</AlertDialogDescription>
+					</AlertDialogHeader>
+					<AlertDialogFooter>
+						<AlertDialogCancel data-testid="clear-all-logs-cancel" disabled={isClearingLogs}>
+							Cancel
+						</AlertDialogCancel>
+						<AlertDialogAction
+							data-testid="clear-all-logs-confirm"
+							onClick={(event) => {
+								event.preventDefault();
+								void handleClearAllLogs();
+							}}
+							disabled={isClearingLogs}
+						>
+							{isClearingLogs ? "Clearing..." : "Clear All Logs"}
+						</AlertDialogAction>
+					</AlertDialogFooter>
+				</AlertDialogContent>
+			</AlertDialog>
 		</div>
 	);
 }

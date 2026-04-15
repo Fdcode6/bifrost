@@ -87,6 +87,9 @@ type LogManager interface {
 	// DeleteLogs deletes multiple log entries by their IDs
 	DeleteLogs(ctx context.Context, ids []string) error
 
+	// ClearAllLogs deletes all request logs and MCP tool logs, and resets derived dashboard data
+	ClearAllLogs(ctx context.Context) error
+
 	// RecalculateCosts recomputes missing costs for logs matching the filters
 	RecalculateCosts(ctx context.Context, filters *logstore.SearchFilters, limit int) (*RecalculateCostResult, error)
 
@@ -262,6 +265,13 @@ func (p *PluginLogManager) DeleteLogs(ctx context.Context, ids []string) error {
 		return fmt.Errorf("log store not initialized")
 	}
 	return p.plugin.store.DeleteLogs(ctx, ids)
+}
+
+func (p *PluginLogManager) ClearAllLogs(ctx context.Context) error {
+	if p.plugin == nil || p.plugin.store == nil {
+		return fmt.Errorf("log store not initialized")
+	}
+	return p.plugin.store.ClearAllLogs(ctx)
 }
 
 func (p *PluginLogManager) RecalculateCosts(ctx context.Context, filters *logstore.SearchFilters, limit int) (*RecalculateCostResult, error) {

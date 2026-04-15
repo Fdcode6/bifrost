@@ -46,6 +46,7 @@ type LogStore interface {
 	Close(ctx context.Context) error
 	DeleteLog(ctx context.Context, id string) error
 	DeleteLogs(ctx context.Context, ids []string) error
+	ClearAllLogs(ctx context.Context) error
 	DeleteLogsBatch(ctx context.Context, cutoff time.Time, batchSize int) (deletedCount int64, err error)
 
 	// Distinct value methods for filter data

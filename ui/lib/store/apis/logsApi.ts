@@ -367,6 +367,14 @@ export const logsApi = baseApi.injectEndpoints({
 			invalidatesTags: ["Logs"],
 		}),
 
+		clearAllLogs: builder.mutation<{ message: string }, void>({
+			query: () => ({
+				url: "/logs/clear-all",
+				method: "POST",
+			}),
+			invalidatesTags: ["Logs", "MCPLogs"],
+		}),
+
 		recalculateLogCosts: builder.mutation<RecalculateCostResponse, { filters: LogFilters; limit?: number }>({
 			query: ({ filters, limit }) => ({
 				url: "/logs/recalculate-cost",
@@ -413,6 +421,7 @@ export const {
 	useLazyGetDroppedRequestsQuery,
 	useLazyGetAvailableFilterDataQuery,
 	useDeleteLogsMutation,
+	useClearAllLogsMutation,
 	useRecalculateLogCostsMutation,
 	useLazyGetLogByIdQuery,
 	useGetLogByIdQuery,
