@@ -12,29 +12,29 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestBuildActiveProbePlans_SkipsFreshObservations(t *testing.T) {
+func TestBuildActiveProbePlans_IncludesPendingFirstProbeWithoutRealAccess(t *testing.T) {
 	ht := NewHealthTracker()
 	now := time.Now()
 	targetKey := TargetKey("openai", "gpt-4.1", "relay-a")
-	ht.RecordObservation(targetKey, schemas.ChatCompletionRequest, HealthObservationSourcePassive, now)
+	ht.SetPendingFirstProbe(targetKey, true)
 
 	plans := buildActiveProbePlans([]*configstoreTables.TableRoutingRule{
 		testGroupedProbeRule("rule-a", "openai", "gpt-4.1", "relay-a"),
-	}, ht, now.Add(5*time.Second), 10*time.Second)
+	}, ht, map[string]bool{targetKey: true}, now, 10*time.Minute)
 
-	require.Len(t, plans, 0)
+	require.Len(t, plans, 1)
+	assert.Equal(t, schemas.ChatCompletionRequest, plans[0].RequestType)
 }
 
 func TestBuildActiveProbePlans_DeduplicatesTargetsAcrossRules(t *testing.T) {
 	ht := NewHealthTracker()
 	now := time.Now()
 	targetKey := TargetKey("openai", "gpt-4.1", "relay-a")
-	ht.RecordObservation(targetKey, schemas.ChatCompletionRequest, HealthObservationSourcePassive, now)
 
 	plans := buildActiveProbePlans([]*configstoreTables.TableRoutingRule{
 		testGroupedProbeRule("rule-a", "openai", "gpt-4.1", "relay-a"),
 		testGroupedProbeRule("rule-b", "openai", "gpt-4.1", "relay-a"),
-	}, ht, now.Add(11*time.Second), 10*time.Second)
+	}, ht, map[string]bool{targetKey: true}, now, 10*time.Minute)
 
 	require.Len(t, plans, 1)
 	assert.Equal(t, targetKey, plans[0].TargetKey)
@@ -52,7 +52,6 @@ func TestBuildActiveProbePlans_DeduplicatesRuleIDsWithinSameTarget(t *testing.T)
 	ht := NewHealthTracker()
 	now := time.Now()
 	targetKey := TargetKey("openai", "gpt-4.1", "relay-a")
-	ht.RecordObservation(targetKey, schemas.ChatCompletionRequest, HealthObservationSourcePassive, now)
 
 	rule := testGroupedProbeRule("rule-a", "openai", "gpt-4.1", "relay-a")
 	rule.ParsedRouteGroups = append(rule.ParsedRouteGroups, configstoreTables.RouteGroup{
@@ -68,10 +67,49 @@ func TestBuildActiveProbePlans_DeduplicatesRuleIDsWithinSameTarget(t *testing.T)
 		},
 	})
 
-	plans := buildActiveProbePlans([]*configstoreTables.TableRoutingRule{rule}, ht, now.Add(11*time.Second), 10*time.Second)
+	plans := buildActiveProbePlans([]*configstoreTables.TableRoutingRule{rule}, ht, map[string]bool{targetKey: true}, now, 10*time.Minute)
 
 	require.Len(t, plans, 1)
 	assert.Equal(t, []string{"rule-a"}, plans[0].RuleIDs)
+}
+
+func TestBuildActiveProbePlans_SkipsTargetsPastIdlePause(t *testing.T) {
+	ht := NewHealthTracker()
+	now := time.Now()
+	targetKey := TargetKey("openai", "gpt-4.1", "relay-a")
+	ht.RecordRealAccess(targetKey, schemas.ChatCompletionRequest, now.Add(-6*time.Minute))
+
+	plans := buildActiveProbePlans([]*configstoreTables.TableRoutingRule{
+		testGroupedProbeRule("rule-a", "openai", "gpt-4.1", "relay-a"),
+	}, ht, map[string]bool{targetKey: true}, now, 5*time.Minute)
+
+	require.Len(t, plans, 0)
+}
+
+func TestBuildActiveProbePlans_UsesBootstrapChatRequestTypeForFirstProbe(t *testing.T) {
+	ht := NewHealthTracker()
+	now := time.Now()
+	targetKey := TargetKey("openai", "gpt-4.1", "relay-a")
+
+	plans := buildActiveProbePlans([]*configstoreTables.TableRoutingRule{
+		testGroupedProbeRule("rule-a", "openai", "gpt-4.1", "relay-a"),
+	}, ht, map[string]bool{targetKey: true}, now, 5*time.Minute)
+
+	require.Len(t, plans, 1)
+	assert.Equal(t, schemas.ChatCompletionRequest, plans[0].RequestType)
+}
+
+func TestBuildActiveProbePlans_PausesAfterInitialProbeUntilRealTraffic(t *testing.T) {
+	ht := NewHealthTracker()
+	now := time.Now()
+	targetKey := TargetKey("openai", "gpt-4.1", "relay-a")
+	ht.RecordProbeResult(targetKey, schemas.ChatCompletionRequest, true, "", now.Add(-time.Minute))
+
+	plans := buildActiveProbePlans([]*configstoreTables.TableRoutingRule{
+		testGroupedProbeRule("rule-a", "openai", "gpt-4.1", "relay-a"),
+	}, ht, map[string]bool{targetKey: true}, now, 5*time.Minute)
+
+	require.Len(t, plans, 0)
 }
 
 func TestBuildActiveProbePlans_SkipsTargetsWithoutSupportedProbeShape(t *testing.T) {
@@ -79,12 +117,12 @@ func TestBuildActiveProbePlans_SkipsTargetsWithoutSupportedProbeShape(t *testing
 	now := time.Now()
 
 	unsupportedKey := TargetKey("openai", "gpt-4.1", "relay-b")
-	ht.RecordObservation(unsupportedKey, schemas.EmbeddingRequest, HealthObservationSourcePassive, now)
+	ht.RecordRealAccess(unsupportedKey, schemas.EmbeddingRequest, now)
 
 	plans := buildActiveProbePlans([]*configstoreTables.TableRoutingRule{
 		testGroupedProbeRule("rule-no-key", "openai", "gpt-4.1", ""),
 		testGroupedProbeRule("rule-unsupported", "openai", "gpt-4.1", "relay-b"),
-	}, ht, now.Add(20*time.Second), 10*time.Second)
+	}, ht, map[string]bool{unsupportedKey: true}, now, 10*time.Minute)
 
 	require.Len(t, plans, 0)
 }
@@ -98,6 +136,7 @@ func TestApplyActiveProbeResult_FansOutFailureAndObservation(t *testing.T) {
 		FailureWindowSeconds: 30,
 		CooldownSeconds:      30,
 	}
+	ht.SetPendingFirstProbe(targetKey, true)
 
 	applyActiveProbeResult(ht, activeProbePlan{
 		TargetKey:   targetKey,
@@ -116,9 +155,14 @@ func TestApplyActiveProbeResult_FansOutFailureAndObservation(t *testing.T) {
 	assert.Equal(t, "timeout", snapB.LastFailureMsg)
 	assert.Equal(t, string(HealthObservationSourceActive), snapA.LastObservationSource)
 	assert.Equal(t, string(HealthObservationSourceActive), snapB.LastObservationSource)
+	activity := ht.GetTargetActivity(targetKey)
+	assert.False(t, activity.PendingFirstProbe)
+	assert.Equal(t, "failure", activity.LastProbeResult)
+	assert.Equal(t, "timeout", activity.LastProbeError)
+	assert.True(t, activity.LastRealAccessAt.IsZero())
 }
 
-func TestApplyActiveProbeResult_SuccessClearsRuleCooldown(t *testing.T) {
+func TestApplyActiveProbeResult_ClearsPendingFirstProbe(t *testing.T) {
 	ht := NewHealthTracker()
 	now := time.Now()
 	targetKey := TargetKey("openai", "gpt-4.1", "relay-a")
@@ -130,6 +174,7 @@ func TestApplyActiveProbeResult_SuccessClearsRuleCooldown(t *testing.T) {
 
 	ht.RecordFailureForRule("rule-a", targetKey, "timeout", now)
 	ht.RecordFailureForRule("rule-b", targetKey, "timeout", now)
+	ht.SetPendingFirstProbe(targetKey, true)
 	require.True(t, ht.IsInCooldownForRule("rule-a", targetKey, policy, now))
 	require.True(t, ht.IsInCooldownForRule("rule-b", targetKey, policy, now))
 
@@ -149,6 +194,28 @@ func TestApplyActiveProbeResult_SuccessClearsRuleCooldown(t *testing.T) {
 	assert.Equal(t, 0, snapB.FailureCount)
 	assert.Equal(t, string(HealthObservationSourceActive), snapA.LastObservationSource)
 	assert.Equal(t, string(HealthObservationSourceActive), snapB.LastObservationSource)
+	activity := ht.GetTargetActivity(targetKey)
+	assert.False(t, activity.PendingFirstProbe)
+	assert.Equal(t, "success", activity.LastProbeResult)
+	assert.True(t, activity.LastRealAccessAt.IsZero())
+}
+
+func TestApplyActiveProbeResult_DoesNotInventRealAccess(t *testing.T) {
+	ht := NewHealthTracker()
+	now := time.Now()
+	targetKey := TargetKey("openai", "gpt-4.1", "relay-a")
+
+	applyActiveProbeResult(ht, activeProbePlan{
+		TargetKey:   targetKey,
+		RequestType: schemas.ChatCompletionRequest,
+		RuleIDs:     []string{"rule-a"},
+	}, activeProbeResult{
+		Success: true,
+	}, now)
+
+	activity := ht.GetTargetActivity(targetKey)
+	assert.True(t, activity.LastRealAccessAt.IsZero())
+	assert.Equal(t, "success", activity.LastProbeResult)
 }
 
 func testGroupedProbeRule(ruleID, provider, model, keyID string) *configstoreTables.TableRoutingRule {

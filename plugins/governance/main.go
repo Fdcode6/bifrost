@@ -48,6 +48,7 @@ type Config struct {
 	IsEnterprise                             bool      `json:"is_enterprise"`
 	ActiveHealthProbeEnabled                 *bool     `json:"active_health_probe_enabled,omitempty"`
 	ActiveHealthProbeIntervalSeconds         *int      `json:"active_health_probe_interval_seconds,omitempty"`
+	ActiveHealthProbeIdlePauseMinutes        *int      `json:"active_health_probe_idle_pause_minutes,omitempty"`
 	ActiveHealthProbePassiveFreshnessSeconds *int      `json:"active_health_probe_passive_freshness_seconds,omitempty"`
 	ActiveHealthProbeTimeoutSeconds          *int      `json:"active_health_probe_timeout_seconds,omitempty"`
 	ActiveHealthProbeMaxConcurrency          *int      `json:"active_health_probe_max_concurrency,omitempty"`
@@ -1139,7 +1140,7 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		pinnedKeyID, _ := ctx.Value(groupedRoutingPinnedKeyIDContextKey).(string)
 		if ruleID != "" {
 			targetKey := TargetKey(string(provider), model, pinnedKeyID)
-			p.healthTracker.RecordObservation(targetKey, requestType, HealthObservationSourcePassive, time.Now())
+			p.healthTracker.RecordRealAccess(targetKey, requestType, time.Now())
 			if err != nil {
 				failureMsg := "unknown error"
 				if err.Error != nil {
@@ -1407,6 +1408,17 @@ func (p *GovernancePlugin) GetGovernanceStore() GovernanceStore {
 // GetHealthTracker returns the health tracker for grouped routing targets
 func (p *GovernancePlugin) GetHealthTracker() *HealthTracker {
 	return p.healthTracker
+}
+
+// SetHealthTracker reuses an existing in-memory tracker across plugin reloads.
+func (p *GovernancePlugin) SetHealthTracker(tracker *HealthTracker) {
+	if p == nil || tracker == nil {
+		return
+	}
+	p.healthTracker = tracker
+	if p.engine != nil {
+		p.engine.healthTracker = tracker
+	}
 }
 
 // GenerateVirtualKey is a helper function

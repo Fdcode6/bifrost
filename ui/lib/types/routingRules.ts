@@ -61,8 +61,8 @@ export type HealthDetectionMode = "passive" | "hybrid";
 
 export interface HealthDetectionConfigResponse {
 	mode: HealthDetectionMode;
+	idle_pause_minutes: number;
 	active_health_probe_interval_seconds: number;
-	active_health_probe_passive_freshness_seconds: number;
 	active_health_probe_timeout_seconds: number;
 	active_health_probe_max_concurrency: number;
 	editable: boolean;
@@ -70,6 +70,43 @@ export interface HealthDetectionConfigResponse {
 }
 
 export type UpdateHealthDetectionConfigRequest = Omit<HealthDetectionConfigResponse, "editable" | "read_only_reason">;
+
+export type HealthDetectionSupportStatus = "supported" | "unsupported";
+
+export type HealthDetectionProbeState = "unsupported" | "off" | "pending_first_probe" | "eligible" | "paused_idle";
+
+export interface HealthDetectionRuleHealthSummary {
+	total_rule_count: number;
+	cooldown_rule_count: number;
+}
+
+export interface HealthDetectionTarget {
+	target_id: string;
+	provider: string;
+	model: string;
+	key_id?: string;
+	referenced_rule_ids: string[];
+	referenced_rule_names: string[];
+	support_status: HealthDetectionSupportStatus;
+	support_reason?: string;
+	detection_enabled: boolean;
+	probe_state: HealthDetectionProbeState;
+	rule_health_summary: HealthDetectionRuleHealthSummary;
+	last_real_access_at?: string;
+	last_probe_at?: string;
+	last_probe_result?: string;
+	last_probe_error?: string;
+	runtime_scope: string;
+}
+
+export interface HealthDetectionTargetsResponse {
+	targets: HealthDetectionTarget[];
+	count: number;
+}
+
+export interface UpdateHealthDetectionTargetRequest {
+	detection_enabled: boolean;
+}
 
 export interface RoutingRule {
 	id: string;

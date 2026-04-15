@@ -1,7 +1,15 @@
 package server
 
 import (
+	"context"
 	"testing"
+	"time"
+
+	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/plugins/governance"
+	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/stretchr/testify/require"
 )
 
 // TestConfig is a sample config struct for testing
@@ -9,6 +17,104 @@ type TestConfig struct {
 	Name    string `json:"name"`
 	Enabled bool   `json:"enabled"`
 	Count   int    `json:"count"`
+}
+
+type testClientAwarePlugin struct {
+	name       string
+	gotClient  *bifrost.Bifrost
+	calledOnce int
+}
+
+func (p *testClientAwarePlugin) GetName() string { return p.name }
+func (p *testClientAwarePlugin) Cleanup() error  { return nil }
+func (p *testClientAwarePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	return req, nil, nil
+}
+func (p *testClientAwarePlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	return resp, bifrostErr, nil
+}
+func (p *testClientAwarePlugin) SetBifrostClient(client *bifrost.Bifrost) {
+	p.gotClient = client
+	p.calledOnce++
+}
+
+type testHealthTrackerAwarePlugin struct {
+	testClientAwarePlugin
+	tracker *governance.HealthTracker
+}
+
+func (p *testHealthTrackerAwarePlugin) GetHealthTracker() *governance.HealthTracker {
+	return p.tracker
+}
+
+func (p *testHealthTrackerAwarePlugin) SetHealthTracker(tracker *governance.HealthTracker) {
+	p.tracker = tracker
+}
+
+type testEmptyAccount struct{}
+
+func (testEmptyAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+	return nil, nil
+}
+
+func (testEmptyAccount) GetKeysForProvider(ctx context.Context, providerKey schemas.ModelProvider) ([]schemas.Key, error) {
+	return nil, nil
+}
+
+func (testEmptyAccount) GetConfigForProvider(providerKey schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	return nil, nil
+}
+
+func TestSyncLoadedPlugin_SetsBifrostClientOnClientAwarePlugin(t *testing.T) {
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: testEmptyAccount{},
+	})
+	require.NoError(t, err)
+	defer client.Shutdown()
+
+	server := &BifrostHTTPServer{
+		Client: client,
+		Config: &lib.Config{},
+	}
+	plugin := &testClientAwarePlugin{name: "client-aware"}
+
+	err = server.SyncLoadedPlugin(context.Background(), plugin.GetName(), plugin, nil, nil)
+	require.NoError(t, err)
+	require.Same(t, client, plugin.gotClient)
+	require.Equal(t, 1, plugin.calledOnce)
+}
+
+func TestSyncLoadedPlugin_PreservesHealthTrackerOnReload(t *testing.T) {
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: testEmptyAccount{},
+	})
+	require.NoError(t, err)
+	defer client.Shutdown()
+
+	server := &BifrostHTTPServer{
+		Client: client,
+		Config: &lib.Config{},
+	}
+
+	originalTracker := governance.NewHealthTracker()
+	targetKey := governance.TargetKey("openai", "gpt-4.1", "relay-a")
+	seenAt := time.Now().UTC().Truncate(time.Second)
+	originalTracker.RecordRealAccess(targetKey, schemas.ChatCompletionRequest, seenAt)
+
+	firstPlugin := &testHealthTrackerAwarePlugin{
+		testClientAwarePlugin: testClientAwarePlugin{name: "governance"},
+		tracker:               originalTracker,
+	}
+	require.NoError(t, server.SyncLoadedPlugin(context.Background(), firstPlugin.GetName(), firstPlugin, nil, nil))
+
+	reloadedPlugin := &testHealthTrackerAwarePlugin{
+		testClientAwarePlugin: testClientAwarePlugin{name: "governance"},
+		tracker:               governance.NewHealthTracker(),
+	}
+	require.NoError(t, server.SyncLoadedPlugin(context.Background(), reloadedPlugin.GetName(), reloadedPlugin, nil, nil))
+
+	require.Same(t, originalTracker, reloadedPlugin.tracker)
+	require.Equal(t, seenAt.Format(time.RFC3339), reloadedPlugin.GetHealthTracker().GetTargetActivity(targetKey).LastRealAccessAt.UTC().Format(time.RFC3339))
 }
 
 func TestMarshalPluginConfig_WithPointerType(t *testing.T) {

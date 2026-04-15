@@ -216,6 +216,70 @@ func TestHealthTracker_GetTargetStatusForRule_UsesGlobalObservationMetadata(t *t
 	assert.Equal(t, string(schemas.ResponsesRequest), snap.LastObservedRequestType)
 }
 
+func TestHealthTracker_RecordRealAccess_DoesNotOverwriteLastProbe(t *testing.T) {
+	ht := NewHealthTracker()
+	key := TargetKey("openai", "gpt-4.1", "relay-a")
+	probeAt := time.Now().Add(-time.Minute)
+	realAt := time.Now()
+
+	ht.RecordProbeResult(key, schemas.ResponsesRequest, false, "timeout", probeAt)
+	ht.RecordRealAccess(key, schemas.ChatCompletionRequest, realAt)
+
+	activity := ht.GetTargetActivity(key)
+	assert.Equal(t, probeAt.UTC().Format(time.RFC3339), activity.LastProbeAt.UTC().Format(time.RFC3339))
+	assert.Equal(t, string(schemas.ResponsesRequest), string(activity.LastProbeRequestType))
+	assert.Equal(t, "failure", activity.LastProbeResult)
+	assert.Equal(t, "timeout", activity.LastProbeError)
+	assert.Equal(t, realAt.UTC().Format(time.RFC3339), activity.LastRealAccessAt.UTC().Format(time.RFC3339))
+	assert.Equal(t, string(schemas.ChatCompletionRequest), string(activity.LastRealAccessRequestType))
+}
+
+func TestHealthTracker_RecordProbeResult_DoesNotOverwriteLastRealAccess(t *testing.T) {
+	ht := NewHealthTracker()
+	key := TargetKey("openai", "gpt-4.1", "relay-a")
+	realAt := time.Now().Add(-time.Minute)
+	probeAt := time.Now()
+
+	ht.RecordRealAccess(key, schemas.ChatCompletionRequest, realAt)
+	ht.RecordProbeResult(key, schemas.ResponsesRequest, true, "", probeAt)
+
+	activity := ht.GetTargetActivity(key)
+	assert.Equal(t, realAt.UTC().Format(time.RFC3339), activity.LastRealAccessAt.UTC().Format(time.RFC3339))
+	assert.Equal(t, string(schemas.ChatCompletionRequest), string(activity.LastRealAccessRequestType))
+	assert.Equal(t, probeAt.UTC().Format(time.RFC3339), activity.LastProbeAt.UTC().Format(time.RFC3339))
+	assert.Equal(t, string(schemas.ResponsesRequest), string(activity.LastProbeRequestType))
+	assert.Equal(t, "success", activity.LastProbeResult)
+	assert.Empty(t, activity.LastProbeError)
+}
+
+func TestHealthTracker_SetPendingFirstProbe_VisibleInSnapshot(t *testing.T) {
+	ht := NewHealthTracker()
+	key := TargetKey("openai", "gpt-4.1", "relay-a")
+
+	ht.SetPendingFirstProbe(key, true)
+	activity := ht.GetTargetActivity(key)
+	assert.True(t, activity.PendingFirstProbe)
+
+	ht.SetPendingFirstProbe(key, false)
+	activity = ht.GetTargetActivity(key)
+	assert.False(t, activity.PendingFirstProbe)
+}
+
+func TestHealthTracker_GetTargetStatusForRule_PreservesLegacyObservedFields(t *testing.T) {
+	ht := NewHealthTracker()
+	now := time.Now()
+	key := TargetKey("openai", "gpt-4.1", "relay-a")
+
+	ht.RecordRealAccess(key, schemas.ChatCompletionRequest, now.Add(-time.Minute))
+	ht.RecordProbeResult(key, schemas.ResponsesRequest, true, "", now)
+
+	snap := ht.GetTargetStatusForRule("rule-a", key, testPolicy(), now)
+	require.NotNil(t, snap.LastObservedAt)
+	assert.Equal(t, now.UTC().Format(time.RFC3339), *snap.LastObservedAt)
+	assert.Equal(t, string(HealthObservationSourceActive), snap.LastObservationSource)
+	assert.Equal(t, string(schemas.ResponsesRequest), snap.LastObservedRequestType)
+}
+
 func TestHealthTracker_ConsecutiveDefault_FallsBackToThreshold(t *testing.T) {
 	ht := NewHealthTracker()
 	// ConsecutiveFailures=0 means use FailureThreshold as default

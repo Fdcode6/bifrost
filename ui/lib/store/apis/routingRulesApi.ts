@@ -12,8 +12,23 @@ import {
 	HealthStatusResponse,
 	HealthDetectionConfigResponse,
 	UpdateHealthDetectionConfigRequest,
+	HealthDetectionTargetsResponse,
+	HealthDetectionTarget,
+	UpdateHealthDetectionTargetRequest,
 } from "@/lib/types/routingRules";
 import { baseApi } from "./baseApi";
+
+type RoutingRulesQueryCacheEntry = {
+	endpointName?: string;
+	status?: string;
+	originalArgs?: GetRoutingRulesParams | void;
+};
+
+type RoutingRulesApiState = {
+	api: {
+		queries: Record<string, RoutingRulesQueryCacheEntry>;
+	};
+};
 
 export const routingRulesApi = baseApi.injectEndpoints({
 	endpoints: (builder) => ({
@@ -51,8 +66,8 @@ export const routingRulesApi = baseApi.injectEndpoints({
 			async onQueryStarted(arg, { dispatch, getState, queryFulfilled }) {
 				try {
 					const { data: newRule } = await queryFulfilled;
-					const queries = (getState() as any).api.queries;
-					for (const entry of Object.values(queries) as any[]) {
+					const queries = (getState() as RoutingRulesApiState).api.queries;
+					for (const entry of Object.values(queries)) {
 						if (entry?.endpointName !== "getRoutingRules" || entry?.status !== "fulfilled") continue;
 						const search = entry.originalArgs?.search as string | undefined;
 						if (search && !newRule.name.toLowerCase().includes(search.toLowerCase())) continue;
@@ -81,8 +96,8 @@ export const routingRulesApi = baseApi.injectEndpoints({
 			async onQueryStarted({ id }, { dispatch, getState, queryFulfilled }) {
 				try {
 					const { data: updatedRule } = await queryFulfilled;
-					const queries = (getState() as any).api.queries;
-					for (const entry of Object.values(queries) as any[]) {
+					const queries = (getState() as RoutingRulesApiState).api.queries;
+					for (const entry of Object.values(queries)) {
 						if (entry?.endpointName !== "getRoutingRules" || entry?.status !== "fulfilled") continue;
 						dispatch(
 							routingRulesApi.util.updateQueryData("getRoutingRules", entry.originalArgs, (draft) => {
@@ -108,8 +123,8 @@ export const routingRulesApi = baseApi.injectEndpoints({
 			async onQueryStarted(ruleId, { dispatch, getState, queryFulfilled }) {
 				try {
 					await queryFulfilled;
-					const queries = (getState() as any).api.queries;
-					for (const entry of Object.values(queries) as any[]) {
+					const queries = (getState() as RoutingRulesApiState).api.queries;
+					for (const entry of Object.values(queries)) {
 						if (entry?.endpointName !== "getRoutingRules" || entry?.status !== "fulfilled") continue;
 						dispatch(
 							routingRulesApi.util.updateQueryData("getRoutingRules", entry.originalArgs, (draft) => {
@@ -138,12 +153,39 @@ export const routingRulesApi = baseApi.injectEndpoints({
 			providesTags: ["RoutingRules"],
 		}),
 
+		getHealthDetectionTargets: builder.query<HealthDetectionTargetsResponse, void>({
+			query: () => "/governance/health-detection-targets",
+			providesTags: ["RoutingRules"],
+		}),
+
 		updateHealthDetectionConfig: builder.mutation<HealthDetectionConfigResponse, UpdateHealthDetectionConfigRequest>({
 			query: (body) => ({
 				url: "/governance/health-detection-config",
 				method: "PUT",
 				body,
 			}),
+			invalidatesTags: ["RoutingRules"],
+		}),
+
+		updateHealthDetectionTarget: builder.mutation<HealthDetectionTarget, { targetId: string; data: UpdateHealthDetectionTargetRequest }>({
+			query: ({ targetId, data }) => ({
+				url: `/governance/health-detection-targets/${targetId}`,
+				method: "PUT",
+				body: data,
+			}),
+			async onQueryStarted({ targetId }, { dispatch, queryFulfilled }) {
+				try {
+					const { data: updatedTarget } = await queryFulfilled;
+					dispatch(
+						routingRulesApi.util.updateQueryData("getHealthDetectionTargets", undefined, (draft) => {
+							const index = draft.targets.findIndex((target) => target.target_id === targetId);
+							if (index !== -1) {
+								draft.targets[index] = updatedTarget;
+							}
+						}),
+					);
+				} catch {}
+			},
 			invalidatesTags: ["RoutingRules"],
 		}),
 	}),
@@ -158,5 +200,7 @@ export const {
 	useLazyGetRoutingRulesQuery,
 	useGetHealthStatusQuery,
 	useGetHealthDetectionConfigQuery,
+	useGetHealthDetectionTargetsQuery,
 	useUpdateHealthDetectionConfigMutation,
+	useUpdateHealthDetectionTargetMutation,
 } = routingRulesApi;

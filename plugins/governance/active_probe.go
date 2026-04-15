@@ -1,6 +1,7 @@
 package governance
 
 import (
+	"context"
 	"strings"
 	"sync"
 	"time"
@@ -11,11 +12,11 @@ import (
 )
 
 type ActiveHealthProbeConfig struct {
-	Enabled          bool
-	Interval         time.Duration
-	PassiveFreshness time.Duration
-	Timeout          time.Duration
-	MaxConcurrency   int
+	Enabled        bool
+	Interval       time.Duration
+	IdlePause      time.Duration
+	Timeout        time.Duration
+	MaxConcurrency int
 }
 
 type BifrostClientAwareGovernancePlugin interface {
@@ -46,13 +47,17 @@ type activeProbeResult struct {
 	FailureMsg string
 }
 
+type activeProbeTargetPreferenceReader interface {
+	GetHealthDetectionTargetPreferences(ctx context.Context) ([]configstoreTables.TableHealthDetectionTargetPreference, error)
+}
+
 func defaultActiveHealthProbeConfig(cfg *Config) ActiveHealthProbeConfig {
 	resolved := ActiveHealthProbeConfig{
-		Enabled:          false,
-		Interval:         15 * time.Second,
-		PassiveFreshness: 30 * time.Second,
-		Timeout:          5 * time.Second,
-		MaxConcurrency:   4,
+		Enabled:        false,
+		Interval:       15 * time.Second,
+		IdlePause:      30 * time.Minute,
+		Timeout:        5 * time.Second,
+		MaxConcurrency: 4,
 	}
 	if cfg == nil {
 		return resolved
@@ -63,8 +68,10 @@ func defaultActiveHealthProbeConfig(cfg *Config) ActiveHealthProbeConfig {
 	if cfg.ActiveHealthProbeIntervalSeconds != nil && *cfg.ActiveHealthProbeIntervalSeconds > 0 {
 		resolved.Interval = time.Duration(*cfg.ActiveHealthProbeIntervalSeconds) * time.Second
 	}
-	if cfg.ActiveHealthProbePassiveFreshnessSeconds != nil && *cfg.ActiveHealthProbePassiveFreshnessSeconds > 0 {
-		resolved.PassiveFreshness = time.Duration(*cfg.ActiveHealthProbePassiveFreshnessSeconds) * time.Second
+	if cfg.ActiveHealthProbeIdlePauseMinutes != nil && *cfg.ActiveHealthProbeIdlePauseMinutes > 0 {
+		resolved.IdlePause = time.Duration(*cfg.ActiveHealthProbeIdlePauseMinutes) * time.Minute
+	} else if cfg.ActiveHealthProbePassiveFreshnessSeconds != nil && *cfg.ActiveHealthProbePassiveFreshnessSeconds > 0 {
+		resolved.IdlePause = time.Duration(*cfg.ActiveHealthProbePassiveFreshnessSeconds) * time.Second
 	}
 	if cfg.ActiveHealthProbeTimeoutSeconds != nil && *cfg.ActiveHealthProbeTimeoutSeconds > 0 {
 		resolved.Timeout = time.Duration(*cfg.ActiveHealthProbeTimeoutSeconds) * time.Second
@@ -87,8 +94,9 @@ func supportsActiveProbeRequestType(requestType schemas.RequestType) bool {
 func buildActiveProbePlans(
 	rules []*configstoreTables.TableRoutingRule,
 	tracker *HealthTracker,
+	enabledTargets map[string]bool,
 	now time.Time,
-	passiveFreshness time.Duration,
+	idlePause time.Duration,
 ) []activeProbePlan {
 	if tracker == nil {
 		return nil
@@ -112,14 +120,30 @@ func buildActiveProbePlans(
 				}
 
 				targetKey := RouteGroupTargetKey(target)
-				observation := tracker.GetObservation(targetKey)
-				if observation.LastObservedAt.IsZero() {
+				if !enabledTargets[targetKey] {
 					continue
 				}
-				if passiveFreshness > 0 && now.Sub(observation.LastObservedAt) < passiveFreshness {
+
+				activity := tracker.GetTargetActivity(targetKey)
+				requestType, ok := resolveActiveProbeRequestType(activity)
+				if !ok {
 					continue
 				}
-				if !supportsActiveProbeRequestType(observation.LastObservedRequestType) {
+
+				shouldProbe := false
+				switch {
+				case activity.PendingFirstProbe:
+					shouldProbe = true
+				case activity.LastRealAccessAt.IsZero() && activity.LastProbeAt.IsZero():
+					shouldProbe = true
+				case activity.LastRealAccessAt.IsZero():
+					shouldProbe = false
+				case idlePause > 0 && now.Sub(activity.LastRealAccessAt) > idlePause:
+					shouldProbe = false
+				default:
+					shouldProbe = true
+				}
+				if !shouldProbe {
 					continue
 				}
 
@@ -130,7 +154,7 @@ func buildActiveProbePlans(
 						Provider:    schemas.ModelProvider(*target.Provider),
 						Model:       *target.Model,
 						KeyID:       *target.KeyID,
-						RequestType: observation.LastObservedRequestType,
+						RequestType: requestType,
 						RuleIDs:     make([]string, 0, 1),
 					}
 					plansByTarget[targetKey] = plan
@@ -147,6 +171,19 @@ func buildActiveProbePlans(
 		plans = append(plans, *plan)
 	}
 	return plans
+}
+
+func resolveActiveProbeRequestType(activity TargetActivitySnapshot) (schemas.RequestType, bool) {
+	if supportsActiveProbeRequestType(activity.LastRealAccessRequestType) {
+		return activity.LastRealAccessRequestType, true
+	}
+	if supportsActiveProbeRequestType(activity.LastProbeRequestType) {
+		return activity.LastProbeRequestType, true
+	}
+	if activity.LastRealAccessRequestType != "" || activity.LastProbeRequestType != "" {
+		return "", false
+	}
+	return schemas.ChatCompletionRequest, true
 }
 
 func containsString(values []string, want string) bool {
@@ -167,7 +204,7 @@ func applyActiveProbeResult(
 	if tracker == nil || plan.TargetKey == "" {
 		return
 	}
-	tracker.RecordObservation(plan.TargetKey, plan.RequestType, HealthObservationSourceActive, now)
+	tracker.RecordProbeResult(plan.TargetKey, plan.RequestType, result.Success, result.FailureMsg, now)
 	for _, ruleID := range plan.RuleIDs {
 		if result.Success {
 			tracker.RecordSuccessForRule(ruleID, plan.TargetKey)
@@ -231,7 +268,12 @@ func (p *GovernancePlugin) runActiveProbeCycle() {
 		return
 	}
 
-	plans := buildActiveProbePlans(p.store.GetAllRoutingRules(), p.healthTracker, time.Now(), cfg.PassiveFreshness)
+	enabledTargets, err := loadEnabledActiveProbeTargets(p.ctx, p.configStore)
+	if err != nil && p.logger != nil {
+		p.logger.Warn("failed to load active probe target preferences: %v", err)
+	}
+
+	plans := buildActiveProbePlans(p.store.GetAllRoutingRules(), p.healthTracker, enabledTargets, time.Now(), cfg.IdlePause)
 	if len(plans) == 0 {
 		return
 	}
@@ -257,6 +299,32 @@ func (p *GovernancePlugin) runActiveProbeCycle() {
 		}(plan)
 	}
 	wg.Wait()
+}
+
+func loadEnabledActiveProbeTargets(ctx context.Context, store any) (map[string]bool, error) {
+	enabledTargets := make(map[string]bool)
+	reader, ok := store.(activeProbeTargetPreferenceReader)
+	if !ok || reader == nil {
+		return enabledTargets, nil
+	}
+
+	prefs, err := reader.GetHealthDetectionTargetPreferences(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, pref := range prefs {
+		if !pref.DetectionEnabled {
+			continue
+		}
+		keyID := ""
+		if pref.KeyID != nil {
+			keyID = *pref.KeyID
+		}
+		enabledTargets[TargetKey(pref.Provider, pref.Model, keyID)] = true
+	}
+
+	return enabledTargets, nil
 }
 
 func (p *GovernancePlugin) executeActiveProbe(plan activeProbePlan, now time.Time) activeProbeResult {

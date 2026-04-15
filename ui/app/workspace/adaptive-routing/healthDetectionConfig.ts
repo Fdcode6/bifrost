@@ -14,8 +14,8 @@ export function createHealthDetectionFormState(config: HealthDetectionConfigResp
 export function buildHealthDetectionUpdatePayload(form: HealthDetectionFormState): UpdateHealthDetectionConfigRequest {
 	return {
 		mode: form.mode,
+		idle_pause_minutes: form.idle_pause_minutes,
 		active_health_probe_interval_seconds: form.active_health_probe_interval_seconds,
-		active_health_probe_passive_freshness_seconds: form.active_health_probe_passive_freshness_seconds,
 		active_health_probe_timeout_seconds: form.active_health_probe_timeout_seconds,
 		active_health_probe_max_concurrency: form.active_health_probe_max_concurrency,
 	};

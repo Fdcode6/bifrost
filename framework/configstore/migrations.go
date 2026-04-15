@@ -338,6 +338,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddFlexTierPricingColumns(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddHealthDetectionTargetPreferencesTable(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -5075,6 +5078,36 @@ func migrationAddWhitelistedRoutesJSONColumn(ctx context.Context, db *gorm.DB) e
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running whitelisted_routes_json migration: %s", err.Error())
+	}
+	return nil
+}
+
+func migrationAddHealthDetectionTargetPreferencesTable(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_health_detection_target_preferences_table",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if !mg.HasTable(&tables.TableHealthDetectionTargetPreference{}) {
+				if err := mg.CreateTable(&tables.TableHealthDetectionTargetPreference{}); err != nil {
+					return fmt.Errorf("failed to create health_detection_target_preferences table: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if mg.HasTable(&tables.TableHealthDetectionTargetPreference{}) {
+				if err := mg.DropTable(&tables.TableHealthDetectionTargetPreference{}); err != nil {
+					return fmt.Errorf("failed to drop health_detection_target_preferences table: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running health_detection_target_preferences migration: %s", err.Error())
 	}
 	return nil
 }

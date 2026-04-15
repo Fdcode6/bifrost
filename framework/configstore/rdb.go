@@ -1486,6 +1486,35 @@ func (s *RDBConfigStore) DeletePlugin(ctx context.Context, name string, tx ...*g
 	return txDB.WithContext(ctx).Delete(&tables.TablePlugin{}, "name = ?", name).Error
 }
 
+func (s *RDBConfigStore) GetHealthDetectionTargetPreferences(ctx context.Context) ([]tables.TableHealthDetectionTargetPreference, error) {
+	var prefs []tables.TableHealthDetectionTargetPreference
+	if err := s.db.WithContext(ctx).Order("provider ASC, model ASC, key_id ASC").Find(&prefs).Error; err != nil {
+		return nil, err
+	}
+	return prefs, nil
+}
+
+func (s *RDBConfigStore) UpsertHealthDetectionTargetPreference(ctx context.Context, pref *tables.TableHealthDetectionTargetPreference) error {
+	if pref == nil {
+		return fmt.Errorf("health detection target preference is required")
+	}
+	if err := s.db.WithContext(ctx).Clauses(
+		clause.OnConflict{
+			Columns: []clause.Column{{Name: "target_key"}},
+			DoUpdates: clause.AssignmentColumns([]string{
+				"provider",
+				"model",
+				"key_id",
+				"detection_enabled",
+				"updated_at",
+			}),
+		},
+	).Create(pref).Error; err != nil {
+		return s.parseGormError(err)
+	}
+	return nil
+}
+
 // GOVERNANCE METHODS
 
 func (s *RDBConfigStore) GetRedactedVirtualKeys(ctx context.Context, ids []string) ([]tables.TableVirtualKey, error) {

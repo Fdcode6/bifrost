@@ -50,6 +50,15 @@ var enterprisePlugins = []string{
 	"datadog",
 }
 
+type bifrostClientAwarePlugin interface {
+	SetBifrostClient(client *bifrost.Bifrost)
+}
+
+type healthTrackerAwarePlugin interface {
+	GetHealthTracker() *governance.HealthTracker
+	SetHealthTracker(tracker *governance.HealthTracker)
+}
+
 // ServerCallbacks is a interface that defines the callbacks for the server.
 type ServerCallbacks interface {
 	// Plugins callbacks
@@ -880,6 +889,15 @@ func (s *BifrostHTTPServer) updatePluginErrorStatus(name, step string, originalE
 
 // SyncLoadedPlugin syncs a loaded plugin to the Bifrost client and updates the plugin status
 func (s *BifrostHTTPServer) SyncLoadedPlugin(ctx context.Context, name string, plugin schemas.BasePlugin, placement *schemas.PluginPlacement, order *int) error {
+	if trackerAware, ok := plugin.(healthTrackerAwarePlugin); ok {
+		if existingPlugin, err := s.Config.FindPluginByName(name); err == nil {
+			if existingTrackerAware, ok := existingPlugin.(healthTrackerAwarePlugin); ok {
+				if existingTracker := existingTrackerAware.GetHealthTracker(); existingTracker != nil {
+					trackerAware.SetHealthTracker(existingTracker)
+				}
+			}
+		}
+	}
 	// 2. Register (replaces old version atomically)
 	if err := s.Config.ReloadPlugin(plugin); err != nil {
 		return s.updatePluginErrorStatus(plugin.GetName(), "registering", err)
@@ -890,6 +908,9 @@ func (s *BifrostHTTPServer) SyncLoadedPlugin(ctx context.Context, name string, p
 	// 3. Update Bifrost client
 	if err := s.Client.ReloadPlugin(plugin, InferPluginTypes(plugin)); err != nil {
 		return s.updatePluginErrorStatus(plugin.GetName(), "reloading bifrost config for", err)
+	}
+	if clientAware, ok := plugin.(bifrostClientAwarePlugin); ok {
+		clientAware.SetBifrostClient(s.Client)
 	}
 	// 3b. Sync plugin execution order from config to core
 	s.Client.ReorderPlugins(s.Config.GetPluginOrder())

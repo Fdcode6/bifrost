@@ -56,11 +56,25 @@ const (
 	HealthObservationSourceActive  HealthObservationSource = "active"
 )
 
-type TargetObservationState struct {
-	mu                      sync.Mutex
-	lastObservedAt          time.Time
-	lastObservedRequestType schemas.RequestType
-	lastObservationSource   HealthObservationSource
+type TargetActivityState struct {
+	mu                        sync.Mutex
+	lastRealAccessAt          time.Time
+	lastRealAccessRequestType schemas.RequestType
+	lastProbeAt               time.Time
+	lastProbeRequestType      schemas.RequestType
+	lastProbeResult           string
+	lastProbeError            string
+	pendingFirstProbe         bool
+}
+
+type TargetActivitySnapshot struct {
+	LastRealAccessAt          time.Time
+	LastRealAccessRequestType schemas.RequestType
+	LastProbeAt               time.Time
+	LastProbeRequestType      schemas.RequestType
+	LastProbeResult           string
+	LastProbeError            string
+	PendingFirstProbe         bool
 }
 
 type TargetObservationSnapshot struct {
@@ -75,16 +89,16 @@ type TargetObservationSnapshot struct {
 // - RecordFailure just appends a timestamp (cheap, called from PostLLMHook for every failure)
 // - IsInCooldown evaluates the policy lazily during chain building
 type HealthTracker struct {
-	mu           sync.RWMutex
-	targets      map[string]*TargetHealthState      // key = TargetKey
-	observations map[string]*TargetObservationState // key = concrete TargetKey (provider:model[:key_id])
+	mu         sync.RWMutex
+	targets    map[string]*TargetHealthState   // key = TargetKey
+	activities map[string]*TargetActivityState // key = concrete TargetKey (provider:model[:key_id])
 }
 
 // NewHealthTracker creates a new in-process HealthTracker
 func NewHealthTracker() *HealthTracker {
 	return &HealthTracker{
-		targets:      make(map[string]*TargetHealthState),
-		observations: make(map[string]*TargetObservationState),
+		targets:    make(map[string]*TargetHealthState),
+		activities: make(map[string]*TargetActivityState),
 	}
 }
 
@@ -107,20 +121,20 @@ func (ht *HealthTracker) getOrCreate(key string) *TargetHealthState {
 	return s
 }
 
-func (ht *HealthTracker) getOrCreateObservation(key string) *TargetObservationState {
+func (ht *HealthTracker) getOrCreateActivity(key string) *TargetActivityState {
 	ht.mu.RLock()
-	s, ok := ht.observations[key]
+	s, ok := ht.activities[key]
 	ht.mu.RUnlock()
 	if ok {
 		return s
 	}
 	ht.mu.Lock()
 	defer ht.mu.Unlock()
-	if s, ok = ht.observations[key]; ok {
+	if s, ok = ht.activities[key]; ok {
 		return s
 	}
-	s = &TargetObservationState{}
-	ht.observations[key] = s
+	s = &TargetActivityState{}
+	ht.activities[key] = s
 	return s
 }
 
@@ -162,31 +176,108 @@ func (ht *HealthTracker) RecordSuccessForRule(ruleID, targetKey string) {
 	ht.RecordSuccess(scopedTargetKey(ruleID, targetKey))
 }
 
+func (ht *HealthTracker) RecordRealAccess(targetKey string, requestType schemas.RequestType, now time.Time) {
+	if targetKey == "" {
+		return
+	}
+	s := ht.getOrCreateActivity(targetKey)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastRealAccessAt = now
+	s.lastRealAccessRequestType = requestType
+}
+
+func (ht *HealthTracker) RecordProbeResult(targetKey string, requestType schemas.RequestType, success bool, failureMsg string, now time.Time) {
+	if targetKey == "" {
+		return
+	}
+	s := ht.getOrCreateActivity(targetKey)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastProbeAt = now
+	s.lastProbeRequestType = requestType
+	if success {
+		s.lastProbeResult = "success"
+		s.lastProbeError = ""
+	} else {
+		s.lastProbeResult = "failure"
+		s.lastProbeError = failureMsg
+	}
+	s.pendingFirstProbe = false
+}
+
+func (ht *HealthTracker) SetPendingFirstProbe(targetKey string, pending bool) {
+	if targetKey == "" {
+		return
+	}
+	s := ht.getOrCreateActivity(targetKey)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pendingFirstProbe = pending
+}
+
+func (ht *HealthTracker) GetTargetActivity(targetKey string) TargetActivitySnapshot {
+	ht.mu.RLock()
+	s, ok := ht.activities[targetKey]
+	ht.mu.RUnlock()
+	if !ok {
+		return TargetActivitySnapshot{}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return TargetActivitySnapshot{
+		LastRealAccessAt:          s.lastRealAccessAt,
+		LastRealAccessRequestType: s.lastRealAccessRequestType,
+		LastProbeAt:               s.lastProbeAt,
+		LastProbeRequestType:      s.lastProbeRequestType,
+		LastProbeResult:           s.lastProbeResult,
+		LastProbeError:            s.lastProbeError,
+		PendingFirstProbe:         s.pendingFirstProbe,
+	}
+}
+
 func (ht *HealthTracker) RecordObservation(targetKey string, requestType schemas.RequestType, source HealthObservationSource, now time.Time) {
 	if targetKey == "" {
 		return
 	}
-	s := ht.getOrCreateObservation(targetKey)
+	s := ht.getOrCreateActivity(targetKey)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.lastObservedAt = now
-	s.lastObservedRequestType = requestType
-	s.lastObservationSource = source
+	if source == HealthObservationSourceActive {
+		s.lastProbeAt = now
+		s.lastProbeRequestType = requestType
+		return
+	}
+	s.lastRealAccessAt = now
+	s.lastRealAccessRequestType = requestType
 }
 
 func (ht *HealthTracker) GetObservation(targetKey string) TargetObservationSnapshot {
-	ht.mu.RLock()
-	s, ok := ht.observations[targetKey]
-	ht.mu.RUnlock()
-	if !ok {
+	activity := ht.GetTargetActivity(targetKey)
+	if activity.LastRealAccessAt.IsZero() && activity.LastProbeAt.IsZero() {
 		return TargetObservationSnapshot{}
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
+
+	if activity.LastProbeAt.After(activity.LastRealAccessAt) {
+		return TargetObservationSnapshot{
+			LastObservedAt:          activity.LastProbeAt,
+			LastObservedRequestType: activity.LastProbeRequestType,
+			LastObservationSource:   HealthObservationSourceActive,
+		}
+	}
+
+	if !activity.LastRealAccessAt.IsZero() {
+		return TargetObservationSnapshot{
+			LastObservedAt:          activity.LastRealAccessAt,
+			LastObservedRequestType: activity.LastRealAccessRequestType,
+			LastObservationSource:   HealthObservationSourcePassive,
+		}
+	}
+
 	return TargetObservationSnapshot{
-		LastObservedAt:          s.lastObservedAt,
-		LastObservedRequestType: s.lastObservedRequestType,
-		LastObservationSource:   s.lastObservationSource,
+		LastObservedAt:          activity.LastProbeAt,
+		LastObservedRequestType: activity.LastProbeRequestType,
+		LastObservationSource:   HealthObservationSourceActive,
 	}
 }
 

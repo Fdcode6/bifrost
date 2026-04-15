@@ -31,8 +31,8 @@ interface HealthDetectionSettingsCardProps {
 }
 
 const fieldDescriptions = {
-	active_health_probe_interval_seconds: "How often the background loop checks for stale targets.",
-	active_health_probe_passive_freshness_seconds: "If passive traffic touched a target recently, active probing stays quiet.",
+	active_health_probe_interval_seconds: "How often the background loop scans enabled targets for probing work.",
+	idle_pause_minutes: "If a target goes this many minutes without real traffic, background probing pauses until traffic returns.",
 	active_health_probe_timeout_seconds: "Maximum time allowed for one lightweight probe request.",
 	active_health_probe_max_concurrency: "How many targets can be probed at the same time in one scan.",
 } as const;
@@ -62,8 +62,8 @@ export default function HealthDetectionSettingsCard({ config, error, isLoading, 
 	const hasInvalidNumbers =
 		form !== null &&
 		[
+			form.idle_pause_minutes,
 			form.active_health_probe_interval_seconds,
-			form.active_health_probe_passive_freshness_seconds,
 			form.active_health_probe_timeout_seconds,
 			form.active_health_probe_max_concurrency,
 		].some((value) => value < 1);
@@ -73,8 +73,8 @@ export default function HealthDetectionSettingsCard({ config, error, isLoading, 
 
 	const setNumericField = (
 		field:
+			| "idle_pause_minutes"
 			| "active_health_probe_interval_seconds"
-			| "active_health_probe_passive_freshness_seconds"
 			| "active_health_probe_timeout_seconds"
 			| "active_health_probe_max_concurrency",
 		value: string,
@@ -100,12 +100,11 @@ export default function HealthDetectionSettingsCard({ config, error, isLoading, 
 			baselineRef.current = next;
 			setForm(next);
 			toast({
-				title: "Health detection updated",
-				description: "Adaptive Routing will use the new detection settings immediately.",
+				title: "Health detection settings updated",
 			});
 		} catch (saveError) {
 			toast({
-				title: "Failed to update health detection",
+				title: "Failed to update health detection settings",
 				description: getErrorMessage(saveError),
 				variant: "destructive",
 			});
@@ -134,8 +133,7 @@ export default function HealthDetectionSettingsCard({ config, error, isLoading, 
 							) : null}
 						</div>
 						<CardDescription>
-							Global detection mode for Adaptive Routing. Passive signals stay first. Active probes only fill the gap when a target has not
-							been observed recently.
+							Global detection mode for Adaptive Routing. Only targets enabled in the unified list can participate in background probing.
 						</CardDescription>
 					</div>
 					<div className="flex flex-wrap items-center gap-2">
@@ -210,13 +208,25 @@ export default function HealthDetectionSettingsCard({ config, error, isLoading, 
 									</div>
 									<p className="text-muted-foreground text-xs">
 										{form.mode === "hybrid"
-											? "Use passive signals first. When a target has not been observed recently, run a lightweight active probe."
+											? "Use passive signals first. When a target has not been reached by real traffic, the gateway can validate it with a lightweight probe."
 											: "Use real request outcomes only. No background probes."}
 									</p>
 								</div>
 							</div>
 
 							<div className="grid gap-4 sm:grid-cols-2">
+								<div className="space-y-2">
+									<label className="text-sm font-medium">Idle pause (minutes)</label>
+									<Input
+										type="number"
+										min={1}
+										value={form.idle_pause_minutes}
+										disabled={parametersDisabled || isSaving}
+										onChange={(event) => setNumericField("idle_pause_minutes", event.target.value)}
+										data-testid="adaptive-routing-idle-pause"
+									/>
+									<p className="text-muted-foreground text-xs">{fieldDescriptions.idle_pause_minutes}</p>
+								</div>
 								<div className="space-y-2">
 									<label className="text-sm font-medium">Probe interval (seconds)</label>
 									<Input
@@ -228,18 +238,6 @@ export default function HealthDetectionSettingsCard({ config, error, isLoading, 
 										data-testid="adaptive-routing-probe-interval"
 									/>
 									<p className="text-muted-foreground text-xs">{fieldDescriptions.active_health_probe_interval_seconds}</p>
-								</div>
-								<div className="space-y-2">
-									<label className="text-sm font-medium">Passive freshness window (seconds)</label>
-									<Input
-										type="number"
-										min={1}
-										value={form.active_health_probe_passive_freshness_seconds}
-										disabled={parametersDisabled || isSaving}
-										onChange={(event) => setNumericField("active_health_probe_passive_freshness_seconds", event.target.value)}
-										data-testid="adaptive-routing-passive-freshness"
-									/>
-									<p className="text-muted-foreground text-xs">{fieldDescriptions.active_health_probe_passive_freshness_seconds}</p>
 								</div>
 								<div className="space-y-2">
 									<label className="text-sm font-medium">Probe timeout (seconds)</label>

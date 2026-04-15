@@ -42,6 +42,7 @@ func setupRDBTestStore(t *testing.T) *RDBConfigStore {
 		&tables.TablePromptVersionMessage{},
 		&tables.TablePromptSession{},
 		&tables.TablePromptSessionMessage{},
+		&tables.TableHealthDetectionTargetPreference{},
 	)
 	require.NoError(t, err, "Failed to migrate test database")
 
@@ -876,6 +877,79 @@ func TestUpsertPlugin(t *testing.T) {
 	result, err := store.GetPlugin(ctx, "upsert-plugin")
 	require.NoError(t, err)
 	assert.Equal(t, int16(2), result.Version)
+}
+
+func TestHealthDetectionTargetPreferenceCRUD(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	keyID := "relay-a"
+
+	err := store.UpsertHealthDetectionTargetPreference(ctx, &tables.TableHealthDetectionTargetPreference{
+		TargetKey:        `["openai","gpt-4.1","relay-a"]`,
+		Provider:         "openai",
+		Model:            "gpt-4.1",
+		KeyID:            &keyID,
+		DetectionEnabled: true,
+	})
+	require.NoError(t, err)
+
+	result, err := store.GetHealthDetectionTargetPreferences(ctx)
+	require.NoError(t, err)
+	require.Len(t, result, 1)
+	assert.Equal(t, `["openai","gpt-4.1","relay-a"]`, result[0].TargetKey)
+	assert.Equal(t, "openai", result[0].Provider)
+	assert.Equal(t, "gpt-4.1", result[0].Model)
+	require.NotNil(t, result[0].KeyID)
+	assert.Equal(t, "relay-a", *result[0].KeyID)
+	assert.True(t, result[0].DetectionEnabled)
+}
+
+func TestHealthDetectionTargetPreferenceUpsertOverwritesToggle(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	keyID := "relay-a"
+
+	err := store.UpsertHealthDetectionTargetPreference(ctx, &tables.TableHealthDetectionTargetPreference{
+		TargetKey:        `["openai","gpt-4.1","relay-a"]`,
+		Provider:         "openai",
+		Model:            "gpt-4.1",
+		KeyID:            &keyID,
+		DetectionEnabled: false,
+	})
+	require.NoError(t, err)
+
+	err = store.UpsertHealthDetectionTargetPreference(ctx, &tables.TableHealthDetectionTargetPreference{
+		TargetKey:        `["openai","gpt-4.1","relay-a"]`,
+		Provider:         "openai",
+		Model:            "gpt-4.1",
+		KeyID:            &keyID,
+		DetectionEnabled: true,
+	})
+	require.NoError(t, err)
+
+	result, err := store.GetHealthDetectionTargetPreferences(ctx)
+	require.NoError(t, err)
+	require.Len(t, result, 1)
+	assert.True(t, result[0].DetectionEnabled)
+}
+
+func TestHealthDetectionTargetPreferenceAllowsNilKeyID(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	err := store.UpsertHealthDetectionTargetPreference(ctx, &tables.TableHealthDetectionTargetPreference{
+		TargetKey:        `["openai","gpt-4.1",""]`,
+		Provider:         "openai",
+		Model:            "gpt-4.1",
+		DetectionEnabled: false,
+	})
+	require.NoError(t, err)
+
+	result, err := store.GetHealthDetectionTargetPreferences(ctx)
+	require.NoError(t, err)
+	require.Len(t, result, 1)
+	assert.Nil(t, result[0].KeyID)
+	assert.False(t, result[0].DetectionEnabled)
 }
 
 // =============================================================================

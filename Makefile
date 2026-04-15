@@ -168,7 +168,8 @@ build: build-ui ## Build bifrost-http binary
 		$(ECHO) "$(YELLOW)Note: This will create a statically linked build.$(NC)"; \
 	fi
 	@mkdir -p ./tmp
-	@TARGET_OS="$(GOOS)"; \
+	@set -e; \
+	TARGET_OS="$(GOOS)"; \
 	TARGET_ARCH="$(GOARCH)"; \
 	ACTUAL_OS=$$(uname -s | tr '[:upper:]' '[:lower:]' | sed 's/darwin/darwin/;s/linux/linux/;s/mingw.*/windows/'); \
 	ACTUAL_ARCH=$$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/;s/arm64/arm64/'); \
@@ -221,7 +222,8 @@ build-cli: ## Build bifrost CLI binary
 	@$(ECHO) "$(GREEN)Built: tmp/bifrost$(NC)"
 
 _build-with-docker: # Internal target for Docker-based cross-compilation
-	@$(ECHO) "$(CYAN)Using Docker for cross-compilation...$(NC)"; \
+	@set -e; \
+	$(ECHO) "$(CYAN)Using Docker for cross-compilation...$(NC)"; \
 	if [ "$(TARGET_OS)" = "linux" ]; then \
 		if [ -n "$(DYNAMIC)" ]; then \
 			$(ECHO) "$(CYAN)Building for $(TARGET_OS)/$(TARGET_ARCH) in Docker container with dynamic linking...$(NC)"; \
