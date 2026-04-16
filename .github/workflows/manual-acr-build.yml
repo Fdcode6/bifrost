@@ -2,19 +2,9 @@ name: Manual Build and Push to Aliyun ACR
 
 on:
   workflow_dispatch:
-    inputs:
-      image_tag:
-        description: "Image tag to push. Leave empty to use <branch>-<short_sha>."
-        required: false
-        type: string
-      push_latest:
-        description: "Also push the latest tag."
-        required: false
-        default: true
-        type: boolean
 
 concurrency:
-  group: manual-acr-build-${{ github.ref }}
+  group: manual-acr-build
   cancel-in-progress: true
 
 permissions:
@@ -49,38 +39,18 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          ref: feature/grouped-health-routing
           fetch-depth: 0
 
       - name: Set image metadata
         id: meta
         shell: bash
         run: |
-          REF_SLUG="$(echo "${GITHUB_REF_NAME}" | tr '[:upper:]' '[:lower:]' | sed 's#[^a-z0-9._-]#-#g')"
-          SHORT_SHA="${GITHUB_SHA::7}"
           IMAGE="${{ env.ACR_REGISTRY }}/${{ env.ACR_NAMESPACE }}/${{ env.IMAGE_NAME }}"
-          VERSION_INPUT="${{ inputs.image_tag }}"
-
-          if [ -n "${VERSION_INPUT}" ]; then
-            VERSION="${VERSION_INPUT}"
-          else
-            VERSION="${REF_SLUG}-${SHORT_SHA}"
-          fi
-
-          if ! [[ "${VERSION}" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
-            echo "Invalid image tag: ${VERSION}"
-            echo "Use only letters, numbers, underscore, dot, or dash."
-            exit 1
-          fi
-
           {
             echo "image=${IMAGE}"
-            echo "version=${VERSION}"
-            echo "tags<<EOF"
-            echo "${IMAGE}:${VERSION}"
-            if [ "${{ inputs.push_latest }}" = "true" ]; then
-              echo "${IMAGE}:latest"
-            fi
-            echo "EOF"
+            echo "version=latest"
+            echo "tags=${IMAGE}:latest"
           } >> "${GITHUB_OUTPUT}"
 
       - name: Log in to Aliyun ACR
