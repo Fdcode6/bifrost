@@ -1,0 +1,86 @@
+name: Manual Build and Push to Aliyun ACR
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: manual-acr-build
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  ACR_REGISTRY: crpi-1nlet4g61989v2tx.cn-shenzhen.personal.cr.aliyuncs.com
+  ACR_NAMESPACE: fdcode
+  IMAGE_NAME: bifrost
+  DOCKERFILE_PATH: ./transports/Dockerfile.local
+  BUILD_PLATFORM: linux/amd64
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        with:
+          egress-policy: audit
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          docker image prune --all --force
+          df -h
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: feature/grouped-health-routing
+          fetch-depth: 0
+
+      - name: Set image metadata
+        id: meta
+        shell: bash
+        run: |
+          IMAGE="${{ env.ACR_REGISTRY }}/${{ env.ACR_NAMESPACE }}/${{ env.IMAGE_NAME }}"
+          {
+            echo "image=${IMAGE}"
+            echo "version=latest"
+            echo "tags=${IMAGE}:latest"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Log in to Aliyun ACR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ${{ env.ACR_REGISTRY }}
+          username: ${{ secrets.ALIYUN_REGISTRY_USER }}
+          password: ${{ secrets.ALIYUN_REGISTRY_PASSWORD }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Build and push amd64 image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          file: ${{ env.DOCKERFILE_PATH }}
+          push: true
+          pull: true
+          provenance: false
+          sbom: false
+          platforms: ${{ env.BUILD_PLATFORM }}
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
+            GOPROXY=https://proxy.golang.org,direct
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha,scope=manual-acr-build-amd64
+          cache-to: type=gha,mode=max,scope=manual-acr-build-amd64
+
+      - name: Print pushed tags
+        run: |
+          echo "Pushed image tags:"
+          echo "${{ steps.meta.outputs.tags }}"
