@@ -114,6 +114,26 @@ func getRouteLayerIndexFromContext(ctx *schemas.BifrostContext) *int {
 	return &layerIndex
 }
 
+func shouldPreservePendingLogForStreamingRetry(ctx *schemas.BifrostContext, requestType schemas.RequestType, bifrostErr *schemas.BifrostError) bool {
+	if ctx == nil || bifrostErr == nil {
+		return false
+	}
+	if !bifrost.IsStreamRequestType(requestType) {
+		return false
+	}
+	if preludeErr, _ := ctx.Value(schemas.BifrostContextKeyStreamPreludeError).(bool); !preludeErr {
+		return false
+	}
+
+	currentRetry := bifrost.GetIntFromContext(ctx, schemas.BifrostContextKeyNumberOfRetries)
+	maxRetries := bifrost.GetIntFromContext(ctx, schemas.BifrostContextKeyProviderMaxRetries)
+	if currentRetry >= maxRetries {
+		return false
+	}
+
+	return bifrost.ShouldRetryProviderError(bifrostErr)
+}
+
 func (p *LoggerPlugin) scheduleDeferredUsageUpdate(ctx *schemas.BifrostContext, requestID string, usageAlreadyPresent bool) {
 	if usageAlreadyPresent || ctx == nil {
 		return
@@ -646,11 +666,23 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	routingEngineLogs := formatRoutingEngineLogs(ctx.GetRoutingEngineLogs())
 
 	// Retrieve pending input data from PreLLMHook
-	pendingVal, hasPending := p.pendingLogs.LoadAndDelete(requestID)
+	preservePendingForRetry := shouldPreservePendingLogForStreamingRetry(ctx, requestType, bifrostErr)
+	var (
+		pendingVal any
+		hasPending bool
+	)
+	if preservePendingForRetry {
+		pendingVal, hasPending = p.pendingLogs.Load(requestID)
+	} else {
+		pendingVal, hasPending = p.pendingLogs.LoadAndDelete(requestID)
+	}
 	if !hasPending {
 		// If we have an error (e.g., cancellation/timeout), still write a minimal error entry
 		// so the error is visible in logs. Without PreLLMHook's DB insert, silently returning
 		// here means the error is completely lost.
+		if preservePendingForRetry {
+			return result, bifrostErr, nil
+		}
 		if bifrostErr != nil {
 			p.logger.Warn("no pending log data found for request %s, writing minimal error entry", requestID)
 			entry := &logstore.Log{
@@ -699,6 +731,9 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 
 	// Path A: Error with nil result
 	if result == nil && bifrostErr != nil {
+		if preservePendingForRetry {
+			return result, bifrostErr, nil
+		}
 		entry.Status = "error"
 		if bifrost.IsStreamRequestType(requestType) {
 			entry.Stream = true

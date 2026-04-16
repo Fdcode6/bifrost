@@ -1862,6 +1862,10 @@ func ProcessAndSendResponse(
 		return
 	}
 
+	if isEffectiveBifrostResponse(processedResponse) {
+		ctx.SetValue(schemas.BifrostContextKeyStreamEffectiveOutputSeen, true)
+	}
+
 	streamResponse := BuildClientStreamChunk(ctx, processedResponse, processedError)
 
 	select {
@@ -1890,6 +1894,8 @@ func ProcessAndSendBifrostError(
 	responseChan chan *schemas.BifrostStreamChunk,
 	logger schemas.Logger,
 ) {
+	markPreludeStreamError(ctx)
+
 	// Run post hooks first so span reflects post-processed data
 	processedResponse, processedError := postHookRunner(ctx, nil, bifrostErr)
 
@@ -1916,6 +1922,30 @@ func ProcessAndSendBifrostError(
 			completeDeferredSpan(ctx, processedResponse, processedError)
 		}
 	}
+}
+
+func isEffectiveBifrostResponse(response *schemas.BifrostResponse) bool {
+	if response == nil {
+		return false
+	}
+
+	return isEffectiveStreamChunk(&schemas.BifrostStreamChunk{
+		BifrostTextCompletionResponse:      response.TextCompletionResponse,
+		BifrostChatResponse:                response.ChatResponse,
+		BifrostResponsesStreamResponse:     response.ResponsesStreamResponse,
+		BifrostSpeechStreamResponse:        response.SpeechStreamResponse,
+		BifrostTranscriptionStreamResponse: response.TranscriptionStreamResponse,
+	})
+}
+
+func markPreludeStreamError(ctx *schemas.BifrostContext) {
+	if ctx == nil {
+		return
+	}
+	if seen, _ := ctx.Value(schemas.BifrostContextKeyStreamEffectiveOutputSeen).(bool); seen {
+		return
+	}
+	ctx.SetValue(schemas.BifrostContextKeyStreamPreludeError, true)
 }
 
 // SetupStreamCancellation spawns a goroutine that closes the body stream when

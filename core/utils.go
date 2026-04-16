@@ -433,6 +433,38 @@ func GetErrorMessage(err *schemas.BifrostError) string {
 	}
 }
 
+// ShouldRetryProviderError reports whether a provider error qualifies for the
+// built-in retry path. This mirrors the retry gate used by executeRequestWithRetries.
+func ShouldRetryProviderError(bifrostErr *schemas.BifrostError) bool {
+	if bifrostErr == nil {
+		return false
+	}
+
+	if bifrostErr.Error != nil && (bifrostErr.Error.Message == schemas.ErrProviderDoRequest || bifrostErr.Error.Message == schemas.ErrProviderNetworkError) {
+		return true
+	}
+
+	if bifrostErr.StatusCode != nil && retryableStatusCodes[*bifrostErr.StatusCode] {
+		return true
+	}
+
+	if bifrostErr.Error == nil {
+		return false
+	}
+
+	if IsRateLimitErrorMessage(bifrostErr.Error.Message) {
+		return true
+	}
+	if bifrostErr.Error.Type != nil && IsRateLimitErrorMessage(*bifrostErr.Error.Type) {
+		return true
+	}
+	if bifrostErr.Error.Code != nil && IsRateLimitErrorMessage(*bifrostErr.Error.Code) {
+		return true
+	}
+
+	return false
+}
+
 // GetStringFromContext safely extracts a string value from context
 func GetStringFromContext(ctx context.Context, key any) string {
 	if value := ctx.Value(key); value != nil {

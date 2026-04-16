@@ -391,6 +391,79 @@ func TestPostLLMHook_UsesCurrentRouteLayerIndexForFallbackAttempt(t *testing.T) 
 	}
 }
 
+func TestPostLLMHook_PreludeRetryPreservesPendingForFinalSuccess(t *testing.T) {
+	store := newTestStore(t)
+	plugin := newAsyncTestPlugin(t, store)
+
+	requestID := "req-stream-retry"
+	plugin.pendingLogs.Store(requestID, &PendingLogData{
+		RequestID: requestID,
+		Timestamp: time.Date(2026, 4, 16, 10, 0, 0, 0, time.UTC),
+		InitialData: &InitialLogData{
+			Object:   "responses",
+			Provider: "openai",
+			Model:    "gpt-4.1",
+		},
+		CreatedAt: time.Now(),
+		Status:    "processing",
+	})
+
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(time.Minute))
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, requestID)
+	ctx.SetValue(schemas.BifrostContextKeyNumberOfRetries, 0)
+	ctx.SetValue(schemas.BifrostContextKeyProviderMaxRetries, 1)
+	ctx.SetValue(schemas.BifrostContextKeyStreamPreludeError, true)
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+
+	_, _, err := plugin.PostLLMHook(ctx, nil, &schemas.BifrostError{
+		StatusCode: schemas.Ptr(429),
+		Error: &schemas.ErrorField{
+			Message: "rate limit exceeded",
+		},
+		ExtraFields: schemas.BifrostErrorExtraFields{
+			RequestType:    schemas.ResponsesStreamRequest,
+			Provider:       schemas.OpenAI,
+			ModelRequested: "gpt-4.1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("PostLLMHook() prelude error = %v", err)
+	}
+
+	if _, ok := plugin.pendingLogs.Load(requestID); !ok {
+		t.Fatal("expected pending log to survive retryable prelude error")
+	}
+
+	ctx.ClearValue(schemas.BifrostContextKeyStreamPreludeError)
+	ctx.SetValue(schemas.BifrostContextKeyNumberOfRetries, 1)
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+
+	result := &schemas.BifrostResponse{
+		ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+			Type: schemas.ResponsesStreamResponseTypeCompleted,
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType:    schemas.ResponsesStreamRequest,
+				Provider:       schemas.OpenAI,
+				ModelRequested: "gpt-4.1",
+				Latency:        42,
+			},
+		},
+	}
+
+	_, _, err = plugin.PostLLMHook(ctx, result, nil)
+	if err != nil {
+		t.Fatalf("PostLLMHook() final success = %v", err)
+	}
+
+	logEntry := waitForLog(t, store, requestID)
+	if logEntry.Status != "success" {
+		t.Fatalf("expected final log status=success, got %q", logEntry.Status)
+	}
+	if logEntry.NumberOfRetries != 1 {
+		t.Fatalf("expected number_of_retries=1, got %d", logEntry.NumberOfRetries)
+	}
+}
+
 func intPtr(value int) *int {
 	return &value
 }

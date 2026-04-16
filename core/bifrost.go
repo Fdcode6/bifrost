@@ -97,6 +97,8 @@ type ProviderQueue struct {
 	closeOnce  sync.Once
 }
 
+const streamPreludeErrorPostHooksAppliedContextKey schemas.BifrostContextKey = "bifrost-stream-prelude-error-posthooks-applied"
+
 func isLargePayloadPassthrough(ctx *schemas.BifrostContext) bool {
 	if ctx == nil {
 		return false
@@ -4706,6 +4708,10 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 		bifrost.releaseChannelMessage(msg)
 		return stream, nil
 	case bifrostErrVal := <-msg.Err:
+		if postHooksAlreadyApplied, _ := msg.Context.Value(streamPreludeErrorPostHooksAppliedContextKey).(bool); postHooksAlreadyApplied {
+			bifrost.releaseChannelMessage(msg)
+			return nil, &bifrostErrVal
+		}
 		if bifrostErrVal.Error != nil {
 			bifrost.logger.Debug("error while executing stream request: %s", bifrostErrVal.Error.Message)
 		} else {
@@ -4746,9 +4752,14 @@ func executeRequestWithRetries[T any](
 	if disableProviderRetries, _ := ctx.Value(schemas.BifrostContextKeyDisableProviderRetries).(bool); disableProviderRetries {
 		effectiveMaxRetries = 0
 	}
+	ctx.SetValue(schemas.BifrostContextKeyProviderMaxRetries, effectiveMaxRetries)
 
 	for attempts = 0; attempts <= effectiveMaxRetries; attempts++ {
 		ctx.SetValue(schemas.BifrostContextKeyNumberOfRetries, attempts)
+		ctx.ClearValue(schemas.BifrostContextKeyStreamEndIndicator)
+		ctx.ClearValue(schemas.BifrostContextKeyStreamEffectiveOutputSeen)
+		ctx.ClearValue(schemas.BifrostContextKeyStreamPreludeError)
+		ctx.ClearValue(streamPreludeErrorPostHooksAppliedContextKey)
 		if attempts > 0 {
 			// Log retry attempt
 			var retryMsg string
@@ -4851,6 +4862,7 @@ func executeRequestWithRetries[T any](
 				checkedStream, drainDone, firstChunkErr := providerUtils.CheckFirstStreamChunkForError(streamChan)
 				if firstChunkErr != nil {
 					<-drainDone
+					ctx.SetValue(streamPreludeErrorPostHooksAppliedContextKey, true)
 					bifrostError = firstChunkErr
 				} else {
 					result = any(checkedStream).(T)
@@ -4903,20 +4915,16 @@ func executeRequestWithRetries[T any](
 		}
 
 		// Check if we should retry based on status code or error message
-		shouldRetry := false
+		shouldRetry := ShouldRetryProviderError(bifrostError)
 
-		if bifrostError.Error != nil && (bifrostError.Error.Message == schemas.ErrProviderDoRequest || bifrostError.Error.Message == schemas.ErrProviderNetworkError) {
-			shouldRetry = true
+		if bifrostError != nil && bifrostError.Error != nil && (bifrostError.Error.Message == schemas.ErrProviderDoRequest || bifrostError.Error.Message == schemas.ErrProviderNetworkError) {
 			logger.Debug("detected request HTTP/network error, will retry: %s", bifrostError.Error.Message)
 		}
-
-		// Retry if status code or error object indicates rate limiting
-		if (bifrostError.StatusCode != nil && retryableStatusCodes[*bifrostError.StatusCode]) ||
-			(bifrostError.Error != nil &&
-				(IsRateLimitErrorMessage(bifrostError.Error.Message) ||
-					(bifrostError.Error.Type != nil && IsRateLimitErrorMessage(*bifrostError.Error.Type)) ||
-					(bifrostError.Error.Code != nil && IsRateLimitErrorMessage(*bifrostError.Error.Code)))) {
-			shouldRetry = true
+		if shouldRetry && bifrostError != nil && bifrostError.Error != nil &&
+			(bifrostError.StatusCode != nil ||
+				IsRateLimitErrorMessage(bifrostError.Error.Message) ||
+				(bifrostError.Error.Type != nil && IsRateLimitErrorMessage(*bifrostError.Error.Type)) ||
+				(bifrostError.Error.Code != nil && IsRateLimitErrorMessage(*bifrostError.Error.Code))) {
 			logger.Debug("detected rate limit error in message, will retry: %s", bifrostError.Error.Message)
 		}
 

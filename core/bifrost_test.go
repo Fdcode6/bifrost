@@ -9,6 +9,7 @@ import (
 	"time"
 
 	mistralprovider "github.com/maximhq/bifrost/core/providers/mistral"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
@@ -45,6 +46,75 @@ func createBifrostError(message string, statusCode *int, errorType *string, isBi
 			Type:    errorType,
 		},
 	}
+}
+
+func createStreamErrorChunk(message string, statusCode *int) *schemas.BifrostStreamChunk {
+	return &schemas.BifrostStreamChunk{
+		BifrostError: &schemas.BifrostError{
+			StatusCode:     statusCode,
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: message,
+			},
+		},
+	}
+}
+
+func createResponsesStreamChunk(respType schemas.ResponsesStreamResponseType, delta *string) *schemas.BifrostStreamChunk {
+	return &schemas.BifrostStreamChunk{
+		BifrostResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+			Type:  respType,
+			Delta: delta,
+		},
+	}
+}
+
+func createChatStreamChunk(delta *schemas.ChatStreamResponseChoiceDelta) *schemas.BifrostStreamChunk {
+	return &schemas.BifrostStreamChunk{
+		BifrostChatResponse: &schemas.BifrostChatResponse{
+			ID: "chatcmpl-123",
+			Choices: []schemas.BifrostResponseChoice{
+				{
+					Index: 0,
+					ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+						Delta: delta,
+					},
+				},
+			},
+		},
+	}
+}
+
+type errorCountingLLMPlugin struct {
+	mu             sync.Mutex
+	errorPostHooks int
+}
+
+func (p *errorCountingLLMPlugin) GetName() string {
+	return "error-counting-test-plugin"
+}
+
+func (p *errorCountingLLMPlugin) Cleanup() error {
+	return nil
+}
+
+func (p *errorCountingLLMPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	return req, nil, nil
+}
+
+func (p *errorCountingLLMPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	if bifrostErr != nil {
+		p.mu.Lock()
+		p.errorPostHooks++
+		p.mu.Unlock()
+	}
+	return resp, bifrostErr, nil
+}
+
+func (p *errorCountingLLMPlugin) ErrorPostHookCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.errorPostHooks
 }
 
 // Test executeRequestWithRetries - success scenarios
@@ -583,6 +653,343 @@ func TestExecuteRequestWithRetries_LoggingAndCounting(t *testing.T) {
 
 	if err != nil {
 		t.Errorf("Expected no error, got %v", err)
+	}
+}
+
+func TestExecuteRequestWithRetries_StreamRetriesBeforeEffectiveChunk(t *testing.T) {
+	config := createTestConfig(1, 100*time.Millisecond, time.Second)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+	logger := NewDefaultLogger(schemas.LogLevelError)
+
+	callCount := 0
+	handler := func() (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+		callCount++
+		stream := make(chan *schemas.BifrostStreamChunk, 3)
+		if callCount == 1 {
+			stream <- createResponsesStreamChunk(schemas.ResponsesStreamResponseTypeCreated, nil)
+			stream <- createResponsesStreamChunk(schemas.ResponsesStreamResponseTypeInProgress, nil)
+			stream <- createStreamErrorChunk("gateway timeout", Ptr(504))
+			close(stream)
+			return stream, nil
+		}
+
+		text := "ok"
+		stream <- createResponsesStreamChunk(schemas.ResponsesStreamResponseTypeOutputTextDelta, &text)
+		close(stream)
+		return stream, nil
+	}
+
+	result, err := executeRequestWithRetries(
+		ctx,
+		config,
+		handler,
+		schemas.ResponsesStreamRequest,
+		schemas.OpenAI,
+		"gpt-4.1",
+		nil,
+		logger,
+	)
+	if err != nil {
+		t.Fatalf("expected success after retry, got %v", err)
+	}
+	if callCount != 2 {
+		t.Fatalf("expected retry after pre-effective error, got %d calls", callCount)
+	}
+	if result == nil {
+		t.Fatal("expected result stream, got nil")
+	}
+
+	first, ok := <-result
+	if !ok {
+		t.Fatal("expected stream payload from retried attempt")
+	}
+	if first.BifrostResponsesStreamResponse == nil || first.BifrostResponsesStreamResponse.Delta == nil || *first.BifrostResponsesStreamResponse.Delta != "ok" {
+		t.Fatalf("expected retried stream payload, got %#v", first)
+	}
+}
+
+func TestExecuteRequestWithRetries_StreamDoesNotRetryAfterEffectiveChunk(t *testing.T) {
+	config := createTestConfig(1, 100*time.Millisecond, time.Second)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+	logger := NewDefaultLogger(schemas.LogLevelError)
+
+	callCount := 0
+	handler := func() (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+		callCount++
+		stream := make(chan *schemas.BifrostStreamChunk, 3)
+		text := "hello"
+		stream <- createChatStreamChunk(&schemas.ChatStreamResponseChoiceDelta{Content: &text})
+		stream <- createStreamErrorChunk("late timeout", Ptr(504))
+		close(stream)
+		return stream, nil
+	}
+
+	result, err := executeRequestWithRetries(
+		ctx,
+		config,
+		handler,
+		schemas.ChatCompletionStreamRequest,
+		schemas.OpenAI,
+		"gpt-4.1",
+		nil,
+		logger,
+	)
+	if err != nil {
+		t.Fatalf("expected stream to be returned without retry, got %v", err)
+	}
+	if callCount != 1 {
+		t.Fatalf("expected no retry after effective chunk, got %d calls", callCount)
+	}
+
+	first, ok := <-result
+	if !ok || first == nil || first.BifrostChatResponse == nil {
+		t.Fatalf("expected first content chunk, got %#v", first)
+	}
+	second, ok := <-result
+	if !ok || second == nil || second.BifrostError == nil {
+		t.Fatalf("expected terminal error chunk to remain in stream, got %#v", second)
+	}
+}
+
+func TestExecuteRequestWithRetries_StreamClosedBeforeChunks(t *testing.T) {
+	config := createTestConfig(1, 100*time.Millisecond, time.Second)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+	logger := NewDefaultLogger(schemas.LogLevelError)
+
+	callCount := 0
+	handler := func() (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+		callCount++
+		stream := make(chan *schemas.BifrostStreamChunk)
+		close(stream)
+		return stream, nil
+	}
+
+	result, err := executeRequestWithRetries(
+		ctx,
+		config,
+		handler,
+		schemas.ChatCompletionStreamRequest,
+		schemas.OpenAI,
+		"gpt-4.1",
+		nil,
+		logger,
+	)
+	if err != nil {
+		t.Fatalf("expected nil error for empty closed stream, got %v", err)
+	}
+	if callCount != 1 {
+		t.Fatalf("expected single call for empty closed stream, got %d", callCount)
+	}
+	if result != nil {
+		t.Fatalf("expected nil result for empty closed stream, got %#v", result)
+	}
+}
+
+func TestTryStreamRequest_PreludeErrorRunsErrorPostHooksOnlyOnce(t *testing.T) {
+	provider := schemas.OpenAI
+	model := "gpt-4o-mini"
+	plugin := &errorCountingLLMPlugin{}
+	account := NewMockAccount()
+
+	bifrost, err := Init(context.Background(), schemas.BifrostConfig{
+		Account:         account,
+		LLMPlugins:      []schemas.LLMPlugin{plugin},
+		Logger:          NewDefaultLogger(schemas.LogLevelError),
+		Tracer:          &schemas.NoOpTracer{},
+		InitialPoolSize: 1,
+	})
+	if err != nil {
+		t.Fatalf("failed to init bifrost: %v", err)
+	}
+	defer bifrost.Shutdown()
+
+	pq := &ProviderQueue{
+		queue: make(chan *ChannelMessage, 1),
+		done:  make(chan struct{}),
+	}
+	bifrost.requestQueues.Store(provider, pq)
+
+	var worker sync.WaitGroup
+	worker.Add(1)
+	go func() {
+		defer worker.Done()
+		for req := range pq.queue {
+			pipeline := bifrost.getPluginPipeline()
+			postHookRunner := func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+				resp, hookErr := pipeline.RunPostLLMHooks(ctx, result, bifrostErr, len(*bifrost.llmPlugins.Load()))
+				if hookErr != nil {
+					return nil, hookErr
+				}
+				return resp, nil
+			}
+
+			stream, bifrostErr := executeRequestWithRetries(
+				req.Context,
+				createTestConfig(0, 10*time.Millisecond, 10*time.Millisecond),
+				func() (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+					responseChan := make(chan *schemas.BifrostStreamChunk, 2)
+					go func() {
+						defer close(responseChan)
+
+						role := "assistant"
+						providerUtils.ProcessAndSendResponse(
+							req.Context,
+							postHookRunner,
+							&schemas.BifrostResponse{
+								ChatResponse: &schemas.BifrostChatResponse{
+									ID:    "chatcmpl-test",
+									Model: model,
+									Choices: []schemas.BifrostResponseChoice{
+										{
+											Index: 0,
+											ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+												Delta: &schemas.ChatStreamResponseChoiceDelta{
+													Role: &role,
+												},
+											},
+										},
+									},
+								},
+							},
+							responseChan,
+						)
+
+						req.Context.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+						providerUtils.ProcessAndSendBifrostError(
+							req.Context,
+							postHookRunner,
+							createBifrostError("prelude failure", Ptr(429), nil, false),
+							responseChan,
+							bifrost.logger,
+						)
+					}()
+					return responseChan, nil
+				},
+				schemas.ChatCompletionStreamRequest,
+				provider,
+				model,
+				&req.BifrostRequest,
+				bifrost.logger,
+			)
+
+			if bifrostErr != nil {
+				bifrost.releasePluginPipeline(pipeline)
+				req.Err <- *bifrostErr
+				continue
+			}
+
+			req.ResponseStream <- stream
+		}
+	}()
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	stream, bifrostErr := bifrost.tryStreamRequest(ctx, &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionStreamRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: provider,
+			Model:    model,
+		},
+	})
+
+	pq.signalClosing()
+	pq.closeQueue()
+	worker.Wait()
+
+	if stream != nil {
+		t.Fatal("expected nil stream when prelude error is converted to sync error")
+	}
+	if bifrostErr == nil {
+		t.Fatal("expected stream prelude error")
+	}
+	if plugin.ErrorPostHookCount() != 1 {
+		t.Fatalf("expected exactly one error post-hook invocation, got %d", plugin.ErrorPostHookCount())
+	}
+}
+
+func TestExecuteRequestWithRetries_ClearsPreludeErrorPostHookMarkerBetweenAttempts(t *testing.T) {
+	config := createTestConfig(1, 100*time.Millisecond, time.Second)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+	logger := NewDefaultLogger(schemas.LogLevelError)
+
+	callCount := 0
+	handler := func() (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+		callCount++
+		if callCount == 1 {
+			stream := make(chan *schemas.BifrostStreamChunk, 2)
+			stream <- createResponsesStreamChunk(schemas.ResponsesStreamResponseTypeCreated, nil)
+			stream <- createStreamErrorChunk("gateway timeout", Ptr(504))
+			close(stream)
+			return stream, nil
+		}
+		return nil, createBifrostError("direct final failure", Ptr(500), nil, false)
+	}
+
+	result, err := executeRequestWithRetries(
+		ctx,
+		config,
+		handler,
+		schemas.ResponsesStreamRequest,
+		schemas.OpenAI,
+		"gpt-4.1",
+		nil,
+		logger,
+	)
+	if result != nil {
+		t.Fatalf("expected nil stream result, got %#v", result)
+	}
+	if err == nil || err.Error == nil || err.Error.Message != "direct final failure" {
+		t.Fatalf("expected final direct error after retry, got %#v", err)
+	}
+	if lingeringFlag, _ := ctx.Value(streamPreludeErrorPostHooksAppliedContextKey).(bool); lingeringFlag {
+		t.Fatal("expected prelude post-hook marker to be cleared before the final direct error")
+	}
+}
+
+func TestExecuteRequestWithRetries_ClearsStreamEndIndicatorBetweenAttempts(t *testing.T) {
+	config := createTestConfig(1, 100*time.Millisecond, time.Second)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+	logger := NewDefaultLogger(schemas.LogLevelError)
+
+	callCount := 0
+	indicatorOnSecondAttempt := false
+	handler := func() (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+		callCount++
+		if callCount == 1 {
+			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+			stream := make(chan *schemas.BifrostStreamChunk, 2)
+			stream <- createResponsesStreamChunk(schemas.ResponsesStreamResponseTypeCreated, nil)
+			stream <- createStreamErrorChunk("gateway timeout", Ptr(504))
+			close(stream)
+			return stream, nil
+		}
+
+		indicatorOnSecondAttempt, _ = ctx.Value(schemas.BifrostContextKeyStreamEndIndicator).(bool)
+		return nil, createBifrostError("direct final failure", Ptr(500), nil, false)
+	}
+
+	result, err := executeRequestWithRetries(
+		ctx,
+		config,
+		handler,
+		schemas.ResponsesStreamRequest,
+		schemas.OpenAI,
+		"gpt-4.1",
+		nil,
+		logger,
+	)
+	if result != nil {
+		t.Fatalf("expected nil stream result, got %#v", result)
+	}
+	if err == nil || err.Error == nil || err.Error.Message != "direct final failure" {
+		t.Fatalf("expected final direct error after retry, got %#v", err)
+	}
+	if indicatorOnSecondAttempt {
+		t.Fatal("expected stream end indicator to be cleared before retry attempt")
 	}
 }
 
