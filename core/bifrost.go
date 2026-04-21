@@ -98,6 +98,7 @@ type ProviderQueue struct {
 }
 
 const streamPreludeErrorPostHooksAppliedContextKey schemas.BifrostContextKey = "bifrost-stream-prelude-error-posthooks-applied"
+const emptySuccessfulResponseMessage = "request completed without a response payload"
 
 func isLargePayloadPassthrough(ctx *schemas.BifrostContext) bool {
 	if ctx == nil {
@@ -113,6 +114,115 @@ func isLargePayloadPassthrough(ctx *schemas.BifrostContext) bool {
 	// Verify reader is present (flag and reader are always set together by middleware)
 	reader := ctx.Value(schemas.BifrostContextKeyLargePayloadReader)
 	return reader != nil
+}
+
+func newEmptySuccessfulResponseError(requestType schemas.RequestType, provider schemas.ModelProvider, model string) *schemas.BifrostError {
+	var statusCode *int
+	if requestType == schemas.PassthroughRequest {
+		statusCode = schemas.Ptr(fasthttp.StatusBadGateway)
+	}
+	return &schemas.BifrostError{
+		IsBifrostError: true,
+		StatusCode:     statusCode,
+		Error: &schemas.ErrorField{
+			Message: emptySuccessfulResponseMessage,
+		},
+		ExtraFields: schemas.BifrostErrorExtraFields{
+			RequestType:    requestType,
+			Provider:       provider,
+			ModelRequested: model,
+		},
+	}
+}
+
+func hasSuccessfulResponsePayload(resp *schemas.BifrostResponse, requestType schemas.RequestType) bool {
+	if resp == nil {
+		return false
+	}
+
+	switch requestType {
+	case schemas.ListModelsRequest:
+		return resp.ListModelsResponse != nil
+	case schemas.TextCompletionRequest:
+		return resp.TextCompletionResponse != nil
+	case schemas.ChatCompletionRequest:
+		return resp.ChatResponse != nil
+	case schemas.ResponsesRequest:
+		return resp.ResponsesResponse != nil
+	case schemas.CountTokensRequest:
+		return resp.CountTokensResponse != nil
+	case schemas.EmbeddingRequest:
+		return resp.EmbeddingResponse != nil
+	case schemas.RerankRequest:
+		return resp.RerankResponse != nil
+	case schemas.OCRRequest:
+		return resp.OCRResponse != nil
+	case schemas.SpeechRequest:
+		return resp.SpeechResponse != nil
+	case schemas.TranscriptionRequest:
+		return resp.TranscriptionResponse != nil
+	case schemas.ImageGenerationRequest, schemas.ImageEditRequest, schemas.ImageVariationRequest:
+		return resp.ImageGenerationResponse != nil
+	case schemas.VideoGenerationRequest, schemas.VideoRetrieveRequest, schemas.VideoRemixRequest:
+		return resp.VideoGenerationResponse != nil
+	case schemas.VideoDownloadRequest:
+		return resp.VideoDownloadResponse != nil
+	case schemas.VideoListRequest:
+		return resp.VideoListResponse != nil
+	case schemas.VideoDeleteRequest:
+		return resp.VideoDeleteResponse != nil
+	case schemas.BatchCreateRequest:
+		return resp.BatchCreateResponse != nil
+	case schemas.BatchListRequest:
+		return resp.BatchListResponse != nil
+	case schemas.BatchRetrieveRequest:
+		return resp.BatchRetrieveResponse != nil
+	case schemas.BatchCancelRequest:
+		return resp.BatchCancelResponse != nil
+	case schemas.BatchDeleteRequest:
+		return resp.BatchDeleteResponse != nil
+	case schemas.BatchResultsRequest:
+		return resp.BatchResultsResponse != nil
+	case schemas.FileUploadRequest:
+		return resp.FileUploadResponse != nil
+	case schemas.FileListRequest:
+		return resp.FileListResponse != nil
+	case schemas.FileRetrieveRequest:
+		return resp.FileRetrieveResponse != nil
+	case schemas.FileDeleteRequest:
+		return resp.FileDeleteResponse != nil
+	case schemas.FileContentRequest:
+		return resp.FileContentResponse != nil
+	case schemas.ContainerCreateRequest:
+		return resp.ContainerCreateResponse != nil
+	case schemas.ContainerListRequest:
+		return resp.ContainerListResponse != nil
+	case schemas.ContainerRetrieveRequest:
+		return resp.ContainerRetrieveResponse != nil
+	case schemas.ContainerDeleteRequest:
+		return resp.ContainerDeleteResponse != nil
+	case schemas.ContainerFileCreateRequest:
+		return resp.ContainerFileCreateResponse != nil
+	case schemas.ContainerFileListRequest:
+		return resp.ContainerFileListResponse != nil
+	case schemas.ContainerFileRetrieveRequest:
+		return resp.ContainerFileRetrieveResponse != nil
+	case schemas.ContainerFileContentRequest:
+		return resp.ContainerFileContentResponse != nil
+	case schemas.ContainerFileDeleteRequest:
+		return resp.ContainerFileDeleteResponse != nil
+	case schemas.PassthroughRequest:
+		return resp.PassthroughResponse != nil
+	default:
+		return true
+	}
+}
+
+func ensureSuccessfulResponsePayload(resp *schemas.BifrostResponse, requestType schemas.RequestType, provider schemas.ModelProvider, model string) *schemas.BifrostError {
+	if hasSuccessfulResponsePayload(resp, requestType) {
+		return nil
+	}
+	return newEmptySuccessfulResponseError(requestType, provider, model)
 }
 
 // signalClosing signals the closing of the provider queue.
@@ -402,6 +512,9 @@ func (bifrost *Bifrost) ListModelsRequest(ctx *schemas.BifrostContext, req *sche
 	if err != nil {
 		return nil, err
 	}
+	if emptyRespErr := ensureSuccessfulResponsePayload(resp, schemas.ListModelsRequest, req.Provider, ""); emptyRespErr != nil {
+		return nil, emptyRespErr
+	}
 
 	return resp.ListModelsResponse, nil
 }
@@ -609,6 +722,9 @@ func (bifrost *Bifrost) TextCompletionRequest(ctx *schemas.BifrostContext, req *
 	if err != nil {
 		return nil, err
 	}
+	if emptyRespErr := ensureSuccessfulResponsePayload(response, schemas.TextCompletionRequest, req.Provider, req.Model); emptyRespErr != nil {
+		return nil, emptyRespErr
+	}
 	//TODO: Release the response
 	return response.TextCompletionResponse, nil
 }
@@ -678,6 +794,9 @@ func (bifrost *Bifrost) makeChatCompletionRequest(ctx *schemas.BifrostContext, r
 	response, err := bifrost.handleRequest(ctx, bifrostReq)
 	if err != nil {
 		return nil, err
+	}
+	if emptyRespErr := ensureSuccessfulResponsePayload(response, schemas.ChatCompletionRequest, req.Provider, req.Model); emptyRespErr != nil {
+		return nil, emptyRespErr
 	}
 
 	return response.ChatResponse, nil
@@ -781,6 +900,9 @@ func (bifrost *Bifrost) makeResponsesRequest(ctx *schemas.BifrostContext, req *s
 	if err != nil {
 		return nil, err
 	}
+	if emptyRespErr := ensureSuccessfulResponsePayload(response, schemas.ResponsesRequest, req.Provider, req.Model); emptyRespErr != nil {
+		return nil, emptyRespErr
+	}
 	return response.ResponsesResponse, nil
 }
 
@@ -883,6 +1005,9 @@ func (bifrost *Bifrost) CountTokensRequest(ctx *schemas.BifrostContext, req *sch
 	if err != nil {
 		return nil, err
 	}
+	if emptyRespErr := ensureSuccessfulResponsePayload(response, schemas.CountTokensRequest, req.Provider, req.Model); emptyRespErr != nil {
+		return nil, emptyRespErr
+	}
 
 	return response.CountTokensResponse, nil
 }
@@ -921,6 +1046,9 @@ func (bifrost *Bifrost) EmbeddingRequest(ctx *schemas.BifrostContext, req *schem
 	response, err := bifrost.handleRequest(ctx, bifrostReq)
 	if err != nil {
 		return nil, err
+	}
+	if emptyRespErr := ensureSuccessfulResponsePayload(response, schemas.EmbeddingRequest, req.Provider, req.Model); emptyRespErr != nil {
+		return nil, emptyRespErr
 	}
 	//TODO: Release the response
 	return response.EmbeddingResponse, nil
@@ -988,6 +1116,9 @@ func (bifrost *Bifrost) RerankRequest(ctx *schemas.BifrostContext, req *schemas.
 	if err != nil {
 		return nil, err
 	}
+	if emptyRespErr := ensureSuccessfulResponsePayload(response, schemas.RerankRequest, req.Provider, req.Model); emptyRespErr != nil {
+		return nil, emptyRespErr
+	}
 	return response.RerankResponse, nil
 }
 
@@ -1051,6 +1182,9 @@ func (bifrost *Bifrost) OCRRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 	if err != nil {
 		return nil, err
 	}
+	if emptyRespErr := ensureSuccessfulResponsePayload(response, schemas.OCRRequest, req.Provider, req.Model); emptyRespErr != nil {
+		return nil, emptyRespErr
+	}
 	return response.OCRResponse, nil
 }
 
@@ -1088,6 +1222,9 @@ func (bifrost *Bifrost) SpeechRequest(ctx *schemas.BifrostContext, req *schemas.
 	response, err := bifrost.handleRequest(ctx, bifrostReq)
 	if err != nil {
 		return nil, err
+	}
+	if emptyRespErr := ensureSuccessfulResponsePayload(response, schemas.SpeechRequest, req.Provider, req.Model); emptyRespErr != nil {
+		return nil, emptyRespErr
 	}
 	//TODO: Release the response
 	return response.SpeechResponse, nil
@@ -1161,6 +1298,9 @@ func (bifrost *Bifrost) TranscriptionRequest(ctx *schemas.BifrostContext, req *s
 	response, err := bifrost.handleRequest(ctx, bifrostReq)
 	if err != nil {
 		return nil, err
+	}
+	if emptyRespErr := ensureSuccessfulResponsePayload(response, schemas.TranscriptionRequest, req.Provider, req.Model); emptyRespErr != nil {
+		return nil, emptyRespErr
 	}
 	//TODO: Release the response
 	return response.TranscriptionResponse, nil
@@ -1236,18 +1376,8 @@ func (bifrost *Bifrost) ImageGenerationRequest(ctx *schemas.BifrostContext,
 	if err != nil {
 		return nil, err
 	}
-	if response == nil || response.ImageGenerationResponse == nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: &schemas.ErrorField{
-				Message: "received nil response from provider",
-			},
-			ExtraFields: schemas.BifrostErrorExtraFields{
-				RequestType:    schemas.ImageGenerationRequest,
-				Provider:       req.Provider,
-				ModelRequested: req.Model,
-			},
-		}
+	if emptyRespErr := ensureSuccessfulResponsePayload(response, schemas.ImageGenerationRequest, req.Provider, req.Model); emptyRespErr != nil {
+		return nil, emptyRespErr
 	}
 
 	return response.ImageGenerationResponse, nil
@@ -1338,19 +1468,8 @@ func (bifrost *Bifrost) ImageEditRequest(ctx *schemas.BifrostContext, req *schem
 	if err != nil {
 		return nil, err
 	}
-
-	if response == nil || response.ImageGenerationResponse == nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: &schemas.ErrorField{
-				Message: "received nil response from provider",
-			},
-			ExtraFields: schemas.BifrostErrorExtraFields{
-				RequestType:    schemas.ImageEditRequest,
-				Provider:       req.Provider,
-				ModelRequested: req.Model,
-			},
-		}
+	if emptyRespErr := ensureSuccessfulResponsePayload(response, schemas.ImageEditRequest, req.Provider, req.Model); emptyRespErr != nil {
+		return nil, emptyRespErr
 	}
 
 	return response.ImageGenerationResponse, nil
@@ -1440,19 +1559,8 @@ func (bifrost *Bifrost) ImageVariationRequest(ctx *schemas.BifrostContext, req *
 	if err != nil {
 		return nil, err
 	}
-
-	if response == nil || response.ImageGenerationResponse == nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: &schemas.ErrorField{
-				Message: "received nil response from provider",
-			},
-			ExtraFields: schemas.BifrostErrorExtraFields{
-				RequestType:    schemas.ImageVariationRequest,
-				Provider:       req.Provider,
-				ModelRequested: req.Model,
-			},
-		}
+	if emptyRespErr := ensureSuccessfulResponsePayload(response, schemas.ImageVariationRequest, req.Provider, req.Model); emptyRespErr != nil {
+		return nil, emptyRespErr
 	}
 
 	return response.ImageGenerationResponse, nil
@@ -1494,18 +1602,8 @@ func (bifrost *Bifrost) VideoGenerationRequest(ctx *schemas.BifrostContext,
 	if err != nil {
 		return nil, err
 	}
-	if response == nil || response.VideoGenerationResponse == nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: &schemas.ErrorField{
-				Message: "received nil response from provider",
-			},
-			ExtraFields: schemas.BifrostErrorExtraFields{
-				RequestType:    schemas.VideoGenerationRequest,
-				Provider:       req.Provider,
-				ModelRequested: req.Model,
-			},
-		}
+	if emptyRespErr := ensureSuccessfulResponsePayload(response, schemas.VideoGenerationRequest, req.Provider, req.Model); emptyRespErr != nil {
+		return nil, emptyRespErr
 	}
 
 	return response.VideoGenerationResponse, nil
@@ -1555,17 +1653,8 @@ func (bifrost *Bifrost) VideoRetrieveRequest(ctx *schemas.BifrostContext, req *s
 	if err != nil {
 		return nil, err
 	}
-	if response == nil || response.VideoGenerationResponse == nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: &schemas.ErrorField{
-				Message: "received nil response from provider",
-			},
-			ExtraFields: schemas.BifrostErrorExtraFields{
-				RequestType: schemas.VideoRetrieveRequest,
-				Provider:    req.Provider,
-			},
-		}
+	if emptyRespErr := ensureSuccessfulResponsePayload(response, schemas.VideoRetrieveRequest, req.Provider, ""); emptyRespErr != nil {
+		return nil, emptyRespErr
 	}
 	return response.VideoGenerationResponse, nil
 }
@@ -1614,6 +1703,9 @@ func (bifrost *Bifrost) VideoDownloadRequest(ctx *schemas.BifrostContext, req *s
 	response, err := bifrost.handleRequest(ctx, bifrostReq)
 	if err != nil {
 		return nil, err
+	}
+	if emptyRespErr := ensureSuccessfulResponsePayload(response, schemas.VideoDownloadRequest, req.Provider, ""); emptyRespErr != nil {
+		return nil, emptyRespErr
 	}
 	return response.VideoDownloadResponse, nil
 }
@@ -1674,17 +1766,8 @@ func (bifrost *Bifrost) VideoRemixRequest(ctx *schemas.BifrostContext, req *sche
 	if err != nil {
 		return nil, err
 	}
-	if response == nil || response.VideoGenerationResponse == nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: &schemas.ErrorField{
-				Message: "received nil response from provider",
-			},
-			ExtraFields: schemas.BifrostErrorExtraFields{
-				RequestType: schemas.VideoRemixRequest,
-				Provider:    req.Provider,
-			},
-		}
+	if emptyRespErr := ensureSuccessfulResponsePayload(response, schemas.VideoRemixRequest, req.Provider, ""); emptyRespErr != nil {
+		return nil, emptyRespErr
 	}
 	return response.VideoGenerationResponse, nil
 }
@@ -1720,6 +1803,9 @@ func (bifrost *Bifrost) VideoListRequest(ctx *schemas.BifrostContext, req *schem
 	response, err := bifrost.handleRequest(ctx, bifrostReq)
 	if err != nil {
 		return nil, err
+	}
+	if emptyRespErr := ensureSuccessfulResponsePayload(response, schemas.VideoListRequest, req.Provider, ""); emptyRespErr != nil {
+		return nil, emptyRespErr
 	}
 	return response.VideoListResponse, nil
 }
@@ -1767,6 +1853,9 @@ func (bifrost *Bifrost) VideoDeleteRequest(ctx *schemas.BifrostContext, req *sch
 	response, err := bifrost.handleRequest(ctx, bifrostReq)
 	if err != nil {
 		return nil, err
+	}
+	if emptyRespErr := ensureSuccessfulResponsePayload(response, schemas.VideoDeleteRequest, req.Provider, ""); emptyRespErr != nil {
+		return nil, emptyRespErr
 	}
 	return response.VideoDeleteResponse, nil
 }
@@ -1819,6 +1908,9 @@ func (bifrost *Bifrost) BatchCreateRequest(ctx *schemas.BifrostContext, req *sch
 	if err != nil {
 		return nil, err
 	}
+	if emptyRespErr := ensureSuccessfulResponsePayload(response, schemas.BatchCreateRequest, req.Provider, ""); emptyRespErr != nil {
+		return nil, emptyRespErr
+	}
 	return response.BatchCreateResponse, nil
 }
 
@@ -1851,6 +1943,9 @@ func (bifrost *Bifrost) BatchListRequest(ctx *schemas.BifrostContext, req *schem
 	response, err := bifrost.handleRequest(ctx, bifrostReq)
 	if err != nil {
 		return nil, err
+	}
+	if emptyRespErr := ensureSuccessfulResponsePayload(response, schemas.BatchListRequest, req.Provider, ""); emptyRespErr != nil {
+		return nil, emptyRespErr
 	}
 	return response.BatchListResponse, nil
 }
@@ -1893,6 +1988,9 @@ func (bifrost *Bifrost) BatchRetrieveRequest(ctx *schemas.BifrostContext, req *s
 	if err != nil {
 		return nil, err
 	}
+	if emptyRespErr := ensureSuccessfulResponsePayload(response, schemas.BatchRetrieveRequest, req.Provider, ""); emptyRespErr != nil {
+		return nil, emptyRespErr
+	}
 	return response.BatchRetrieveResponse, nil
 }
 
@@ -1934,6 +2032,9 @@ func (bifrost *Bifrost) BatchCancelRequest(ctx *schemas.BifrostContext, req *sch
 	if err != nil {
 		return nil, err
 	}
+	if emptyRespErr := ensureSuccessfulResponsePayload(response, schemas.BatchCancelRequest, req.Provider, ""); emptyRespErr != nil {
+		return nil, emptyRespErr
+	}
 	return response.BatchCancelResponse, nil
 }
 
@@ -1974,6 +2075,9 @@ func (bifrost *Bifrost) BatchDeleteRequest(ctx *schemas.BifrostContext, req *sch
 	response, err := bifrost.handleRequest(ctx, bifrostReq)
 	if err != nil {
 		return nil, err
+	}
+	if emptyRespErr := ensureSuccessfulResponsePayload(response, schemas.BatchDeleteRequest, req.Provider, ""); emptyRespErr != nil {
+		return nil, emptyRespErr
 	}
 	return response.BatchDeleteResponse, nil
 }
@@ -2026,6 +2130,9 @@ func (bifrost *Bifrost) BatchResultsRequest(ctx *schemas.BifrostContext, req *sc
 	if err != nil {
 		return nil, err
 	}
+	if emptyRespErr := ensureSuccessfulResponsePayload(response, schemas.BatchResultsRequest, req.Provider, ""); emptyRespErr != nil {
+		return nil, emptyRespErr
+	}
 	return response.BatchResultsResponse, nil
 }
 
@@ -2077,6 +2184,9 @@ func (bifrost *Bifrost) FileUploadRequest(ctx *schemas.BifrostContext, req *sche
 	if err != nil {
 		return nil, err
 	}
+	if emptyRespErr := ensureSuccessfulResponsePayload(response, schemas.FileUploadRequest, req.Provider, ""); emptyRespErr != nil {
+		return nil, emptyRespErr
+	}
 	return response.FileUploadResponse, nil
 }
 
@@ -2115,6 +2225,9 @@ func (bifrost *Bifrost) FileListRequest(ctx *schemas.BifrostContext, req *schema
 	response, err := bifrost.handleRequest(ctx, bifrostReq)
 	if err != nil {
 		return nil, err
+	}
+	if emptyRespErr := ensureSuccessfulResponsePayload(response, schemas.FileListRequest, req.Provider, ""); emptyRespErr != nil {
+		return nil, emptyRespErr
 	}
 	return response.FileListResponse, nil
 }
@@ -2157,6 +2270,9 @@ func (bifrost *Bifrost) FileRetrieveRequest(ctx *schemas.BifrostContext, req *sc
 	if err != nil {
 		return nil, err
 	}
+	if emptyRespErr := ensureSuccessfulResponsePayload(response, schemas.FileRetrieveRequest, req.Provider, ""); emptyRespErr != nil {
+		return nil, emptyRespErr
+	}
 	return response.FileRetrieveResponse, nil
 }
 
@@ -2197,6 +2313,9 @@ func (bifrost *Bifrost) FileDeleteRequest(ctx *schemas.BifrostContext, req *sche
 	response, err := bifrost.handleRequest(ctx, bifrostReq)
 	if err != nil {
 		return nil, err
+	}
+	if emptyRespErr := ensureSuccessfulResponsePayload(response, schemas.FileDeleteRequest, req.Provider, ""); emptyRespErr != nil {
+		return nil, emptyRespErr
 	}
 	return response.FileDeleteResponse, nil
 }
@@ -2239,6 +2358,9 @@ func (bifrost *Bifrost) FileContentRequest(ctx *schemas.BifrostContext, req *sch
 	if err != nil {
 		return nil, err
 	}
+	if emptyRespErr := ensureSuccessfulResponsePayload(response, schemas.FileContentRequest, req.Provider, ""); emptyRespErr != nil {
+		return nil, emptyRespErr
+	}
 	return response.FileContentResponse, nil
 }
 
@@ -2266,13 +2388,8 @@ func (bifrost *Bifrost) Passthrough(
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	if resp == nil || resp.PassthroughResponse == nil {
-		sc := fasthttp.StatusBadGateway
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			StatusCode:     &sc,
-			Error:          &schemas.ErrorField{Message: "provider returned nil passthrough response"},
-		}
+	if emptyRespErr := ensureSuccessfulResponsePayload(resp, schemas.PassthroughRequest, provider, ""); emptyRespErr != nil {
+		return nil, emptyRespErr
 	}
 	return resp.PassthroughResponse, nil
 }
@@ -2452,6 +2569,9 @@ func (bifrost *Bifrost) ContainerCreateRequest(ctx *schemas.BifrostContext, req 
 	if err != nil {
 		return nil, err
 	}
+	if emptyRespErr := ensureSuccessfulResponsePayload(response, schemas.ContainerCreateRequest, req.Provider, ""); emptyRespErr != nil {
+		return nil, emptyRespErr
+	}
 	return response.ContainerCreateResponse, nil
 }
 
@@ -2484,6 +2604,9 @@ func (bifrost *Bifrost) ContainerListRequest(ctx *schemas.BifrostContext, req *s
 	response, err := bifrost.handleRequest(ctx, bifrostReq)
 	if err != nil {
 		return nil, err
+	}
+	if emptyRespErr := ensureSuccessfulResponsePayload(response, schemas.ContainerListRequest, req.Provider, ""); emptyRespErr != nil {
+		return nil, emptyRespErr
 	}
 	return response.ContainerListResponse, nil
 }
@@ -2526,6 +2649,9 @@ func (bifrost *Bifrost) ContainerRetrieveRequest(ctx *schemas.BifrostContext, re
 	if err != nil {
 		return nil, err
 	}
+	if emptyRespErr := ensureSuccessfulResponsePayload(response, schemas.ContainerRetrieveRequest, req.Provider, ""); emptyRespErr != nil {
+		return nil, emptyRespErr
+	}
 	return response.ContainerRetrieveResponse, nil
 }
 
@@ -2566,6 +2692,9 @@ func (bifrost *Bifrost) ContainerDeleteRequest(ctx *schemas.BifrostContext, req 
 	response, err := bifrost.handleRequest(ctx, bifrostReq)
 	if err != nil {
 		return nil, err
+	}
+	if emptyRespErr := ensureSuccessfulResponsePayload(response, schemas.ContainerDeleteRequest, req.Provider, ""); emptyRespErr != nil {
+		return nil, emptyRespErr
 	}
 	return response.ContainerDeleteResponse, nil
 }
@@ -2616,6 +2745,9 @@ func (bifrost *Bifrost) ContainerFileCreateRequest(ctx *schemas.BifrostContext, 
 	if err != nil {
 		return nil, err
 	}
+	if emptyRespErr := ensureSuccessfulResponsePayload(response, schemas.ContainerFileCreateRequest, req.Provider, ""); emptyRespErr != nil {
+		return nil, emptyRespErr
+	}
 	return response.ContainerFileCreateResponse, nil
 }
 
@@ -2656,6 +2788,9 @@ func (bifrost *Bifrost) ContainerFileListRequest(ctx *schemas.BifrostContext, re
 	response, err := bifrost.handleRequest(ctx, bifrostReq)
 	if err != nil {
 		return nil, err
+	}
+	if emptyRespErr := ensureSuccessfulResponsePayload(response, schemas.ContainerFileListRequest, req.Provider, ""); emptyRespErr != nil {
+		return nil, emptyRespErr
 	}
 	return response.ContainerFileListResponse, nil
 }
@@ -2706,6 +2841,9 @@ func (bifrost *Bifrost) ContainerFileRetrieveRequest(ctx *schemas.BifrostContext
 	if err != nil {
 		return nil, err
 	}
+	if emptyRespErr := ensureSuccessfulResponsePayload(response, schemas.ContainerFileRetrieveRequest, req.Provider, ""); emptyRespErr != nil {
+		return nil, emptyRespErr
+	}
 	return response.ContainerFileRetrieveResponse, nil
 }
 
@@ -2755,6 +2893,9 @@ func (bifrost *Bifrost) ContainerFileContentRequest(ctx *schemas.BifrostContext,
 	if err != nil {
 		return nil, err
 	}
+	if emptyRespErr := ensureSuccessfulResponsePayload(response, schemas.ContainerFileContentRequest, req.Provider, ""); emptyRespErr != nil {
+		return nil, emptyRespErr
+	}
 	return response.ContainerFileContentResponse, nil
 }
 
@@ -2803,6 +2944,9 @@ func (bifrost *Bifrost) ContainerFileDeleteRequest(ctx *schemas.BifrostContext, 
 	response, err := bifrost.handleRequest(ctx, bifrostReq)
 	if err != nil {
 		return nil, err
+	}
+	if emptyRespErr := ensureSuccessfulResponsePayload(response, schemas.ContainerFileDeleteRequest, req.Provider, ""); emptyRespErr != nil {
+		return nil, emptyRespErr
 	}
 	return response.ContainerFileDeleteResponse, nil
 }
@@ -4112,6 +4256,12 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 		ctx.SetValue(schemas.BifrostContextKeyRequestID, requestID)
 	}
 	primaryResult, primaryErr := bifrost.tryRequest(ctx, req)
+	if primaryErr == nil {
+		if emptyRespErr := ensureSuccessfulResponsePayload(primaryResult, req.RequestType, provider, model); emptyRespErr != nil {
+			primaryResult = nil
+			primaryErr = emptyRespErr
+		}
+	}
 	if primaryErr != nil {
 		if primaryErr.Error != nil {
 			bifrost.logger.Debug(fmt.Sprintf("primary provider %s with model %s returned error: %s", provider, model, primaryErr.Error.Message))
@@ -4165,6 +4315,12 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 
 		// Try the fallback provider
 		result, fallbackErr := bifrost.tryRequest(ctx, fallbackReq)
+		if fallbackErr == nil {
+			if emptyRespErr := ensureSuccessfulResponsePayload(result, req.RequestType, fallback.Provider, fallback.Model); emptyRespErr != nil {
+				result = nil
+				fallbackErr = emptyRespErr
+			}
+		}
 		if fallbackErr == nil {
 			bifrost.logger.Debug(fmt.Sprintf("successfully used fallback provider %s with model %s", fallback.Provider, fallback.Model))
 			tracer.EndSpan(handle, schemas.SpanStatusOk, "")
@@ -4362,6 +4518,9 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 			if bifrostErr != nil {
 				return nil, bifrostErr
 			}
+			if emptyRespErr := ensureSuccessfulResponsePayload(resp, req.RequestType, provider, model); emptyRespErr != nil {
+				return nil, emptyRespErr
+			}
 			return resp, nil
 		}
 		// Handle short-circuit with error
@@ -4369,6 +4528,9 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 			resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, nil, shortCircuit.Error, preCount)
 			if bifrostErr != nil {
 				return nil, bifrostErr
+			}
+			if emptyRespErr := ensureSuccessfulResponsePayload(resp, req.RequestType, provider, model); emptyRespErr != nil {
+				return nil, emptyRespErr
 			}
 			return resp, nil
 		}
@@ -4466,6 +4628,10 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 			bifrost.releaseChannelMessage(msg)
 			return nil, bifrostErr
 		}
+		if emptyRespErr := ensureSuccessfulResponsePayload(resp, req.RequestType, provider, model); emptyRespErr != nil {
+			bifrost.releaseChannelMessage(msg)
+			return nil, emptyRespErr
+		}
 		bifrost.releaseChannelMessage(msg)
 		// Checking if need to drop raw messages
 		// This we use for requests like containers, container files, skills etc.
@@ -4493,6 +4659,9 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 		}
 		if bifrostErrPtr != nil {
 			return nil, bifrostErrPtr
+		}
+		if emptyRespErr := ensureSuccessfulResponsePayload(resp, req.RequestType, provider, model); emptyRespErr != nil {
+			return nil, emptyRespErr
 		}
 		return resp, nil
 	case <-ctx.Done():
@@ -4853,6 +5022,16 @@ func executeRequestWithRetries[T any](
 		// Attempt the request
 		result, bifrostError = requestHandler()
 
+		if bifrostError == nil && !IsStreamRequestType(requestType) {
+			if resp, ok := any(result).(*schemas.BifrostResponse); ok {
+				if emptyRespErr := ensureSuccessfulResponsePayload(resp, requestType, providerKey, model); emptyRespErr != nil {
+					var zero T
+					result = zero
+					bifrostError = emptyRespErr
+				}
+			}
+		}
+
 		// For streaming requests that returned success, check if the first chunk
 		// is actually an error (e.g., rate limits sent as SSE events in HTTP 200).
 		// This enables retries and fallbacks for providers that embed errors in
@@ -5172,8 +5351,20 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 
 // handleProviderRequest handles the request to the provider based on the request type
 // key is used for single-key operations, keys is used for batch/file operations that need multiple keys
-func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config *schemas.ProviderConfig, req *ChannelMessage, key schemas.Key, keys []schemas.Key) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	response := &schemas.BifrostResponse{}
+func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config *schemas.ProviderConfig, req *ChannelMessage, key schemas.Key, keys []schemas.Key) (response *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) {
+	response = &schemas.BifrostResponse{}
+	reqProvider, reqModel, _ := req.BifrostRequest.GetRequestFields()
+	reqProvider = provider.GetProviderKey()
+	defer func() {
+		if bifrostErr == nil {
+			return
+		}
+		bifrostErr.ExtraFields.RequestType = req.RequestType
+		bifrostErr.ExtraFields.Provider = reqProvider
+		if reqModel != "" {
+			bifrostErr.ExtraFields.ModelRequested = reqModel
+		}
+	}()
 	switch req.RequestType {
 	case schemas.ListModelsRequest:
 		listModelsResponse, bifrostError := provider.ListModels(req.Context, keys, req.BifrostRequest.ListModelsRequest)
@@ -5192,12 +5383,18 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
+		if chatCompletionResponse == nil {
+			return nil, newEmptySuccessfulResponseError(req.RequestType, reqProvider, reqModel)
+		}
 		chatCompletionResponse.BackfillParams(req.BifrostRequest.ChatRequest)
 		response.ChatResponse = chatCompletionResponse
 	case schemas.ResponsesRequest:
 		responsesResponse, bifrostError := provider.Responses(req.Context, key, req.BifrostRequest.ResponsesRequest)
 		if bifrostError != nil {
 			return nil, bifrostError
+		}
+		if responsesResponse == nil {
+			return nil, newEmptySuccessfulResponseError(req.RequestType, reqProvider, reqModel)
 		}
 		responsesResponse.BackfillParams(req.BifrostRequest.ResponsesRequest)
 		response.ResponsesResponse = responsesResponse
@@ -5230,6 +5427,9 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
+		if speechResponse == nil {
+			return nil, newEmptySuccessfulResponseError(req.RequestType, reqProvider, reqModel)
+		}
 		speechResponse.BackfillParams(req.BifrostRequest.SpeechRequest)
 		response.SpeechResponse = speechResponse
 	case schemas.TranscriptionRequest:
@@ -5243,12 +5443,18 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
+		if imageResponse == nil {
+			return nil, newEmptySuccessfulResponseError(req.RequestType, reqProvider, reqModel)
+		}
 		imageResponse.BackfillParams(&req.BifrostRequest)
 		response.ImageGenerationResponse = imageResponse
 	case schemas.ImageEditRequest:
 		imageEditResponse, bifrostError := provider.ImageEdit(req.Context, key, req.BifrostRequest.ImageEditRequest)
 		if bifrostError != nil {
 			return nil, bifrostError
+		}
+		if imageEditResponse == nil {
+			return nil, newEmptySuccessfulResponseError(req.RequestType, reqProvider, reqModel)
 		}
 		imageEditResponse.BackfillParams(&req.BifrostRequest)
 		response.ImageGenerationResponse = imageEditResponse
@@ -5257,12 +5463,18 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
+		if imageVariationResponse == nil {
+			return nil, newEmptySuccessfulResponseError(req.RequestType, reqProvider, reqModel)
+		}
 		imageVariationResponse.BackfillParams(&req.BifrostRequest)
 		response.ImageGenerationResponse = imageVariationResponse
 	case schemas.VideoGenerationRequest:
 		videoGenerationResponse, bifrostError := provider.VideoGeneration(req.Context, key, req.BifrostRequest.VideoGenerationRequest)
 		if bifrostError != nil {
 			return nil, bifrostError
+		}
+		if videoGenerationResponse == nil {
+			return nil, newEmptySuccessfulResponseError(req.RequestType, reqProvider, reqModel)
 		}
 		videoGenerationResponse.BackfillParams(&req.BifrostRequest)
 		response.VideoGenerationResponse = videoGenerationResponse
@@ -5435,6 +5647,9 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 				ModelRequested: model,
 			},
 		}
+	}
+	if emptyRespErr := ensureSuccessfulResponsePayload(response, req.RequestType, reqProvider, reqModel); emptyRespErr != nil {
+		return nil, emptyRespErr
 	}
 	return response, nil
 }

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"runtime/debug"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -22,6 +23,29 @@ import (
 )
 
 var loggingSkipPaths = []string{"/health", "/_next", "/api/dev"}
+var streamingDecompressFn = streamingDecompress
+
+// RecoveryMiddleware converts unexpected handler panics into a stable 500 response.
+func RecoveryMiddleware() schemas.BifrostHTTPMiddleware {
+	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					logger.Error(
+						"panic while handling %s %s: %v\n%s",
+						ctx.Method(),
+						ctx.RequestURI(),
+						recovered,
+						debug.Stack(),
+					)
+					ctx.Response.ResetBody()
+					SendError(ctx, fasthttp.StatusInternalServerError, "internal server error")
+				}
+			}()
+			next(ctx)
+		}
+	}
+}
 
 // SecurityHeadersMiddleware sets security-related HTTP headers on every response.
 // This should wrap the outermost handler so all responses (API, UI, errors) include these headers.
@@ -147,14 +171,14 @@ func RequestDecompressionMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 			}
 
 			if shouldStreamDecompress(config, ctx) {
-				cleanup, applied, err := streamingDecompress(ctx)
+				cleanup, applied, err := streamingDecompressFn(ctx)
 				if err != nil {
 					SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid compressed request body: %v", err))
 					return
 				}
 				if applied {
+					defer cleanup()
 					next(ctx)
-					cleanup()
 					return
 				}
 				// No body stream available (StreamRequestBody not enabled) — fall

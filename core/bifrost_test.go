@@ -11,6 +11,7 @@ import (
 	mistralprovider "github.com/maximhq/bifrost/core/providers/mistral"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/valyala/fasthttp"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
 )
@@ -88,6 +89,27 @@ func createChatStreamChunk(delta *schemas.ChatStreamResponseChoiceDelta) *schema
 type errorCountingLLMPlugin struct {
 	mu             sync.Mutex
 	errorPostHooks int
+}
+
+type nilSuccessLLMPlugin struct{}
+
+func (p *nilSuccessLLMPlugin) GetName() string {
+	return "nil-success-test-plugin"
+}
+
+func (p *nilSuccessLLMPlugin) Cleanup() error {
+	return nil
+}
+
+func (p *nilSuccessLLMPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	return req, nil, nil
+}
+
+func (p *nilSuccessLLMPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	if bifrostErr != nil {
+		return resp, bifrostErr, nil
+	}
+	return nil, nil, nil
 }
 
 func (p *errorCountingLLMPlugin) GetName() string {
@@ -788,6 +810,51 @@ func TestExecuteRequestWithRetries_StreamClosedBeforeChunks(t *testing.T) {
 	}
 }
 
+func TestNewEmptySuccessfulResponseError_PassthroughUsesBadGatewayStatus(t *testing.T) {
+	err := newEmptySuccessfulResponseError(schemas.PassthroughRequest, schemas.OpenAI, "")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if err.StatusCode == nil || *err.StatusCode != fasthttp.StatusBadGateway {
+		t.Fatalf("expected passthrough empty response to use status %d, got %#v", fasthttp.StatusBadGateway, err.StatusCode)
+	}
+}
+
+func TestExecuteRequestWithRetries_RejectsNilNonStreamingResult(t *testing.T) {
+	config := createTestConfig(1, 100*time.Millisecond, time.Second)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+	logger := NewDefaultLogger(schemas.LogLevelError)
+
+	callCount := 0
+	result, err := executeRequestWithRetries(
+		ctx,
+		config,
+		func() (*schemas.BifrostResponse, *schemas.BifrostError) {
+			callCount++
+			return nil, nil
+		},
+		schemas.ChatCompletionRequest,
+		schemas.OpenAI,
+		"gpt-4.1",
+		nil,
+		logger,
+	)
+
+	if result != nil {
+		t.Fatalf("expected nil result, got %#v", result)
+	}
+	if err == nil || err.Error == nil {
+		t.Fatalf("expected empty-response error, got %#v", err)
+	}
+	if err.Error.Message == "" {
+		t.Fatal("expected non-empty error message for nil response")
+	}
+	if callCount != 1 {
+		t.Fatalf("expected nil success response to stop without retry, got %d calls", callCount)
+	}
+}
+
 func TestTryStreamRequest_PreludeErrorRunsErrorPostHooksOnlyOnce(t *testing.T) {
 	provider := schemas.OpenAI
 	model := "gpt-4o-mini"
@@ -1047,6 +1114,155 @@ func TestHandleProviderRequest_OCROperationNotAllowed(t *testing.T) {
 	}
 	if err.ExtraFields.ModelRequested != "custom-mistral/mistral-ocr-latest" {
 		t.Fatalf("expected model to be preserved, got %q", err.ExtraFields.ModelRequested)
+	}
+}
+
+type nilChatProvider struct {
+	schemas.Provider
+}
+
+func (p *nilChatProvider) GetProviderKey() schemas.ModelProvider {
+	return schemas.OpenAI
+}
+
+func (p *nilChatProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	return nil, nil
+}
+
+func TestHandleProviderRequest_RejectsNilChatResponse(t *testing.T) {
+	bifrost := &Bifrost{logger: NewDefaultLogger(schemas.LogLevelError)}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := &ChannelMessage{
+		Context: ctx,
+		BifrostRequest: schemas.BifrostRequest{
+			RequestType: schemas.ChatCompletionRequest,
+			ChatRequest: &schemas.BifrostChatRequest{
+				Provider: schemas.OpenAI,
+				Model:    "gpt-4.1",
+				Input: []schemas.ChatMessage{{
+					Role: schemas.ChatMessageRoleUser,
+					Content: &schemas.ChatMessageContent{
+						ContentStr: schemas.Ptr("hi"),
+					},
+				}},
+			},
+		},
+	}
+
+	var (
+		response *schemas.BifrostResponse
+		err      *schemas.BifrostError
+	)
+	func() {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				t.Fatalf("handleProviderRequest should not panic on nil provider response, got %v", recovered)
+			}
+		}()
+		response, err = bifrost.handleProviderRequest(&nilChatProvider{}, &schemas.ProviderConfig{}, req, schemas.Key{}, nil)
+	}()
+
+	if response != nil {
+		t.Fatalf("expected nil response, got %#v", response)
+	}
+	if err == nil || err.Error == nil {
+		t.Fatalf("expected empty-response error, got %#v", err)
+	}
+	if err.Error.Message == "" {
+		t.Fatal("expected non-empty error message")
+	}
+}
+
+func TestChatCompletionRequest_ReturnsErrorWhenPostHookDropsSuccessfulResponse(t *testing.T) {
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 1, 1)
+
+	bifrost, err := Init(context.Background(), schemas.BifrostConfig{
+		Account:         account,
+		LLMPlugins:      []schemas.LLMPlugin{&nilSuccessLLMPlugin{}},
+		Logger:          NewDefaultLogger(schemas.LogLevelError),
+		Tracer:          &schemas.NoOpTracer{},
+		InitialPoolSize: 1,
+	})
+	if err != nil {
+		t.Fatalf("failed to init bifrost: %v", err)
+	}
+	defer bifrost.Shutdown()
+
+	if existingPQValue, ok := bifrost.requestQueues.Load(schemas.OpenAI); ok {
+		existingPQ := existingPQValue.(*ProviderQueue)
+		existingPQ.signalClosing()
+		existingPQ.closeQueue()
+	}
+
+	pq := &ProviderQueue{
+		queue: make(chan *ChannelMessage, 1),
+		done:  make(chan struct{}),
+	}
+	bifrost.requestQueues.Store(schemas.OpenAI, pq)
+
+	var worker sync.WaitGroup
+	worker.Add(1)
+	go func() {
+		defer worker.Done()
+		for req := range pq.queue {
+			req.Response <- &schemas.BifrostResponse{
+				ChatResponse: &schemas.BifrostChatResponse{
+					ID:    "chatcmpl-test",
+					Model: "gpt-4.1",
+					Choices: []schemas.BifrostResponseChoice{
+						{
+							Index: 0,
+							ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
+								Message: &schemas.ChatMessage{
+									Role: schemas.ChatMessageRoleAssistant,
+									Content: &schemas.ChatMessageContent{
+										ContentStr: schemas.Ptr("ok"),
+									},
+								},
+							},
+						},
+					},
+				},
+			}
+		}
+	}()
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	var (
+		resp       *schemas.BifrostChatResponse
+		bifrostErr *schemas.BifrostError
+	)
+	func() {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				t.Fatalf("ChatCompletionRequest should not panic when a post-hook drops the response, got %v", recovered)
+			}
+		}()
+		resp, bifrostErr = bifrost.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4.1",
+			Input: []schemas.ChatMessage{{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{
+					ContentStr: schemas.Ptr("hi"),
+				},
+			}},
+		})
+	}()
+
+	pq.signalClosing()
+	pq.closeQueue()
+	worker.Wait()
+
+	if resp != nil {
+		t.Fatalf("expected nil response after plugin dropped payload, got %#v", resp)
+	}
+	if bifrostErr == nil || bifrostErr.Error == nil {
+		t.Fatalf("expected empty-response error, got %#v", bifrostErr)
+	}
+	if bifrostErr.Error.Message == "" {
+		t.Fatal("expected non-empty error message")
 	}
 }
 

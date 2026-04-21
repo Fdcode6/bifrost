@@ -32,6 +32,112 @@ func (m *mockLogger) LogHTTPRequest(level schemas.LogLevel, msg string) schemas.
 	return schemas.NoopLogEvent
 }
 
+func TestRecoveryMiddleware_RecoversFromPanic(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	ctx := &fasthttp.RequestCtx{}
+	handler := RecoveryMiddleware()(func(ctx *fasthttp.RequestCtx) {
+		panic("boom")
+	})
+
+	handler(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusInternalServerError {
+		t.Fatalf("expected status %d, got %d", fasthttp.StatusInternalServerError, ctx.Response.StatusCode())
+	}
+	if got := string(ctx.Response.Header.ContentType()); !strings.Contains(got, "application/json") {
+		t.Fatalf("expected json response, got %q", got)
+	}
+
+	var bifrostErr schemas.BifrostError
+	if err := json.Unmarshal(ctx.Response.Body(), &bifrostErr); err != nil {
+		t.Fatalf("expected valid bifrost error json, got %v", err)
+	}
+	if bifrostErr.Error == nil || bifrostErr.Error.Message == "" {
+		t.Fatalf("expected panic recovery error message, got %#v", bifrostErr)
+	}
+}
+
+func TestRecoveryMiddleware_PreservesHeadersFromOuterMiddlewares(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	config := &lib.Config{
+		ClientConfig: &configstore.ClientConfig{
+			AllowedOrigins: []string{"https://example.com"},
+		},
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set("Origin", "https://example.com")
+	ctx.Request.Header.Set("X-Forwarded-Proto", "https")
+
+	handler := SecurityHeadersMiddleware()(
+		CorsMiddleware(config)(
+			RecoveryMiddleware()(func(ctx *fasthttp.RequestCtx) {
+				panic("boom")
+			}),
+		),
+	)
+
+	handler(ctx)
+
+	if got := string(ctx.Response.Header.Peek("Access-Control-Allow-Origin")); got != "https://example.com" {
+		t.Fatalf("expected CORS header to survive panic recovery, got %q", got)
+	}
+	if got := string(ctx.Response.Header.Peek("X-Frame-Options")); got != "DENY" {
+		t.Fatalf("expected security header to survive panic recovery, got %q", got)
+	}
+	if got := string(ctx.Response.Header.Peek("Strict-Transport-Security")); got == "" {
+		t.Fatal("expected HSTS header to survive panic recovery")
+	}
+}
+
+func TestRequestDecompressionMiddleware_StreamingCleanupRunsWhenRecoveredPanic(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	originalStreamingDecompressFn := streamingDecompressFn
+	defer func() {
+		streamingDecompressFn = originalStreamingDecompressFn
+	}()
+
+	streamingAttempted := false
+	cleanupCalled := false
+	streamingDecompressFn = func(ctx *fasthttp.RequestCtx) (func(), bool, error) {
+		streamingAttempted = true
+		return func() {
+			cleanupCalled = true
+		}, true, nil
+	}
+
+	config := &lib.Config{
+		ClientConfig:                 &configstore.ClientConfig{},
+		StreamingDecompressThreshold: 1,
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Set(fasthttp.HeaderContentEncoding, "gzip")
+	ctx.Request.SetBodyString("1234567890")
+	ctx.Request.Header.SetContentLength(len("1234567890"))
+
+	handler := RecoveryMiddleware()(
+		RequestDecompressionMiddleware(config)(func(ctx *fasthttp.RequestCtx) {
+			panic("boom")
+		}),
+	)
+
+	handler(ctx)
+
+	if !streamingAttempted {
+		t.Fatal("expected streaming decompression branch to run")
+	}
+	if !cleanupCalled {
+		t.Fatal("expected streaming cleanup to run after recovered panic")
+	}
+	if ctx.Response.StatusCode() != fasthttp.StatusInternalServerError {
+		t.Fatalf("expected status %d, got %d", fasthttp.StatusInternalServerError, ctx.Response.StatusCode())
+	}
+}
+
 // TestCorsMiddleware_LocalhostOrigins tests that localhost origins are always allowed
 func TestCorsMiddleware_LocalhostOrigins(t *testing.T) {
 	config := &lib.Config{
