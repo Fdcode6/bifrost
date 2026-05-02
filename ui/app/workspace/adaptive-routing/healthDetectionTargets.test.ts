@@ -52,20 +52,22 @@ describe("healthDetectionTargets helpers", () => {
 	it("returns readable labels for probe state", () => {
 		expect(getHealthDetectionProbeStateLabel("unsupported")).toBe("Unsupported");
 		expect(getHealthDetectionProbeStateLabel("off")).toBe("Off");
-		expect(getHealthDetectionProbeStateLabel("pending_first_probe")).toBe("Pending First Probe");
-		expect(getHealthDetectionProbeStateLabel("eligible")).toBe("Eligible");
-		expect(getHealthDetectionProbeStateLabel("paused_idle")).toBe("Paused (Idle)");
+		expect(getHealthDetectionProbeStateLabel("pending_first_probe")).toBe("Waiting for First Probe");
+		expect(getHealthDetectionProbeStateLabel("eligible")).toBe("Probe Eligible");
+		expect(getHealthDetectionProbeStateLabel("paused_idle")).toBe("Paused: Idle");
 	});
 
 	it("returns probe state descriptions that match the design copy", () => {
-		expect(getHealthDetectionProbeStateDescription("unsupported")).toBe("This target is visible but cannot be enrolled in active probing.");
-		expect(getHealthDetectionProbeStateDescription("off")).toBe("Active probing is turned off for this target.");
+		expect(getHealthDetectionProbeStateDescription("unsupported")).toBe(
+			"This target is visible, but it cannot run background liveness probes.",
+		);
+		expect(getHealthDetectionProbeStateDescription("off")).toBe("Background liveness probes are off for this target.");
 		expect(getHealthDetectionProbeStateDescription("pending_first_probe")).toBe(
 			"The target is enabled and waiting for an initial liveness probe.",
 		);
-		expect(getHealthDetectionProbeStateDescription("eligible")).toBe("The target is enabled and eligible for background liveness probing.");
+		expect(getHealthDetectionProbeStateDescription("eligible")).toBe("The target can run background liveness probes.");
 		expect(getHealthDetectionProbeStateDescription("paused_idle")).toBe(
-			"Background probing is paused because this target has not received recent real traffic.",
+			"Probes are paused because this target has not received recent real traffic.",
 		);
 	});
 

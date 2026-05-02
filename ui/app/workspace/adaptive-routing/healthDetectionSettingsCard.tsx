@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import isEqual from "lodash.isequal";
-import { ArrowRight, Info, Loader2, Save, Settings2, Shield } from "lucide-react";
+import { Activity, ArrowRight, ChevronDown, Info, Loader2, Save, Shield } from "lucide-react";
 import Link from "next/link";
 
 import { Badge } from "@/components/ui/badge";
@@ -31,10 +31,10 @@ interface HealthDetectionSettingsCardProps {
 }
 
 const fieldDescriptions = {
-	active_health_probe_interval_seconds: "How often the background loop scans enabled targets for liveness checks.",
-	idle_pause_minutes: "If a target goes this many minutes without real traffic, background probing pauses until traffic returns.",
+	active_health_probe_interval_seconds: "How often enabled targets are checked while probes are on.",
+	idle_pause_minutes: "Pause probes after this many minutes without real traffic. Probes resume when traffic returns.",
 	active_health_probe_timeout_seconds: "Maximum time allowed for one lightweight liveness request.",
-	active_health_probe_max_concurrency: "How many targets can be checked at the same time in one scan.",
+	active_health_probe_max_concurrency: "Maximum number of targets checked at the same time.",
 } as const;
 
 export default function HealthDetectionSettingsCard({ config, error, isLoading, isFetching, onRetry }: HealthDetectionSettingsCardProps) {
@@ -42,6 +42,7 @@ export default function HealthDetectionSettingsCard({ config, error, isLoading, 
 	const [updateConfig, { isLoading: isSaving }] = useUpdateHealthDetectionConfigMutation();
 	const baselineRef = useRef<HealthDetectionFormState | null>(null);
 	const [form, setForm] = useState<HealthDetectionFormState | null>(null);
+	const [advancedOpen, setAdvancedOpen] = useState(false);
 
 	useEffect(() => {
 		if (!config) {
@@ -100,11 +101,11 @@ export default function HealthDetectionSettingsCard({ config, error, isLoading, 
 			baselineRef.current = next;
 			setForm(next);
 			toast({
-				title: "Health detection settings updated",
+				title: "Liveness probe settings updated",
 			});
 		} catch (saveError) {
 			toast({
-				title: "Failed to update health detection settings",
+				title: "Failed to update liveness probe settings",
 				description: getErrorMessage(saveError),
 				variant: "destructive",
 			});
@@ -124,8 +125,8 @@ export default function HealthDetectionSettingsCard({ config, error, isLoading, 
 				<div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
 					<div className="space-y-2">
 						<div className="flex items-center gap-2">
-							<Settings2 className="text-muted-foreground h-4 w-4" />
-							<CardTitle>Health Detection</CardTitle>
+							<Activity className="text-muted-foreground h-4 w-4" />
+							<CardTitle>Liveness Probes</CardTitle>
 							{form ? (
 								<Badge variant="outline" className="text-xs">
 									{getDetectionModeLabel(form.mode)}
@@ -133,7 +134,8 @@ export default function HealthDetectionSettingsCard({ config, error, isLoading, 
 							) : null}
 						</div>
 						<CardDescription>
-							Global detection mode for Adaptive Routing. Background probes are liveness-only and do not update routing health.
+							Background checks only verify whether enabled targets can answer. Routing health, degraded status, and cooldown still come
+							from real traffic.
 						</CardDescription>
 					</div>
 					<div className="flex flex-wrap items-center gap-2">
@@ -150,11 +152,11 @@ export default function HealthDetectionSettingsCard({ config, error, isLoading, 
 				{isLoading && !form ? (
 					<div className="text-muted-foreground flex items-center gap-2 py-6 text-sm">
 						<Loader2 className="h-4 w-4 animate-spin" />
-						Loading health detection settings…
+						Loading liveness probe settings…
 					</div>
 				) : error ? (
 					<div className="border-destructive/30 bg-destructive/5 rounded-sm border p-4 text-sm">
-						<p className="font-medium">Unable to load health detection settings.</p>
+						<p className="font-medium">Unable to load liveness probe settings.</p>
 						<p className="text-muted-foreground mt-1">{getErrorMessage(error)}</p>
 						<Button variant="outline" size="sm" onClick={onRetry} disabled={isFetching || isSaving} className="mt-3">
 							Retry
@@ -174,9 +176,9 @@ export default function HealthDetectionSettingsCard({ config, error, isLoading, 
 						<div className="grid gap-6 lg:grid-cols-[minmax(0,1.05fr)_minmax(0,1.4fr)]">
 							<div className="space-y-3">
 								<div className="space-y-1">
-									<label className="text-sm font-medium">Detection Mode</label>
+									<label className="text-sm font-medium">Background probes</label>
 									<p className="text-muted-foreground text-xs">
-										Choose whether the gateway should rely only on real traffic or also run lightweight liveness checks.
+										Turn on lightweight checks for visibility only. They do not freeze, recover, or reprioritize targets.
 									</p>
 								</div>
 								<Select
@@ -197,8 +199,8 @@ export default function HealthDetectionSettingsCard({ config, error, isLoading, 
 										<SelectValue />
 									</SelectTrigger>
 									<SelectContent>
-										<SelectItem value="passive">Passive only</SelectItem>
-										<SelectItem value="hybrid">Hybrid (Passive + Active)</SelectItem>
+										<SelectItem value="passive">Off - real traffic only</SelectItem>
+										<SelectItem value="hybrid">On - liveness only</SelectItem>
 									</SelectContent>
 								</Select>
 								<div className="bg-muted/20 rounded-sm border p-3 text-sm">
@@ -208,25 +210,13 @@ export default function HealthDetectionSettingsCard({ config, error, isLoading, 
 									</div>
 									<p className="text-muted-foreground text-xs">
 										{form.mode === "hybrid"
-											? "Use real request outcomes for routing. Lightweight probes only show whether enabled targets can still answer."
-											: "Use real request outcomes only. No background probes."}
+											? "Real requests still control routing. Probes only update liveness columns and last probe result."
+											: "No background probe requests. Routing still uses real request outcomes."}
 									</p>
 								</div>
 							</div>
 
-							<div className="grid gap-4 sm:grid-cols-2">
-								<div className="space-y-2">
-									<label className="text-sm font-medium">Idle pause (minutes)</label>
-									<Input
-										type="number"
-										min={1}
-										value={form.idle_pause_minutes}
-										disabled={parametersDisabled || isSaving}
-										onChange={(event) => setNumericField("idle_pause_minutes", event.target.value)}
-										data-testid="adaptive-routing-idle-pause"
-									/>
-									<p className="text-muted-foreground text-xs">{fieldDescriptions.idle_pause_minutes}</p>
-								</div>
+							<div className="space-y-4">
 								<div className="space-y-2">
 									<label className="text-sm font-medium">Probe interval (seconds)</label>
 									<Input
@@ -239,29 +229,58 @@ export default function HealthDetectionSettingsCard({ config, error, isLoading, 
 									/>
 									<p className="text-muted-foreground text-xs">{fieldDescriptions.active_health_probe_interval_seconds}</p>
 								</div>
-								<div className="space-y-2">
-									<label className="text-sm font-medium">Probe timeout (seconds)</label>
-									<Input
-										type="number"
-										min={1}
-										value={form.active_health_probe_timeout_seconds}
-										disabled={parametersDisabled || isSaving}
-										onChange={(event) => setNumericField("active_health_probe_timeout_seconds", event.target.value)}
-										data-testid="adaptive-routing-probe-timeout"
-									/>
-									<p className="text-muted-foreground text-xs">{fieldDescriptions.active_health_probe_timeout_seconds}</p>
-								</div>
-								<div className="space-y-2">
-									<label className="text-sm font-medium">Max concurrency</label>
-									<Input
-										type="number"
-										min={1}
-										value={form.active_health_probe_max_concurrency}
-										disabled={parametersDisabled || isSaving}
-										onChange={(event) => setNumericField("active_health_probe_max_concurrency", event.target.value)}
-										data-testid="adaptive-routing-max-concurrency"
-									/>
-									<p className="text-muted-foreground text-xs">{fieldDescriptions.active_health_probe_max_concurrency}</p>
+
+								<div className="rounded-sm border">
+									<button
+										type="button"
+										className="hover:bg-muted/40 flex w-full items-center justify-between px-3 py-2 text-left text-sm font-medium"
+										onClick={() => setAdvancedOpen((open) => !open)}
+										aria-expanded={advancedOpen}
+										data-testid="adaptive-routing-probe-advanced-toggle"
+									>
+										<span>Advanced probe limits</span>
+										<ChevronDown className={`h-4 w-4 transition-transform ${advancedOpen ? "rotate-180" : ""}`} />
+									</button>
+									{advancedOpen ? (
+										<div className="grid gap-4 border-t p-3 sm:grid-cols-2">
+											<div className="space-y-2">
+												<label className="text-sm font-medium">Probe timeout (seconds)</label>
+												<Input
+													type="number"
+													min={1}
+													value={form.active_health_probe_timeout_seconds}
+													disabled={parametersDisabled || isSaving}
+													onChange={(event) => setNumericField("active_health_probe_timeout_seconds", event.target.value)}
+													data-testid="adaptive-routing-probe-timeout"
+												/>
+												<p className="text-muted-foreground text-xs">{fieldDescriptions.active_health_probe_timeout_seconds}</p>
+											</div>
+											<div className="space-y-2">
+												<label className="text-sm font-medium">Max concurrency</label>
+												<Input
+													type="number"
+													min={1}
+													value={form.active_health_probe_max_concurrency}
+													disabled={parametersDisabled || isSaving}
+													onChange={(event) => setNumericField("active_health_probe_max_concurrency", event.target.value)}
+													data-testid="adaptive-routing-max-concurrency"
+												/>
+												<p className="text-muted-foreground text-xs">{fieldDescriptions.active_health_probe_max_concurrency}</p>
+											</div>
+											<div className="space-y-2 sm:col-span-2">
+												<label className="text-sm font-medium">Idle pause (minutes)</label>
+												<Input
+													type="number"
+													min={1}
+													value={form.idle_pause_minutes}
+													disabled={parametersDisabled || isSaving}
+													onChange={(event) => setNumericField("idle_pause_minutes", event.target.value)}
+													data-testid="adaptive-routing-idle-pause"
+												/>
+												<p className="text-muted-foreground text-xs">{fieldDescriptions.idle_pause_minutes}</p>
+											</div>
+										</div>
+									) : null}
 								</div>
 							</div>
 						</div>

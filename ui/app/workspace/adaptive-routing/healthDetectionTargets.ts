@@ -17,11 +17,11 @@ export function getHealthDetectionProbeStateLabel(state: HealthDetectionProbeSta
 		case "off":
 			return "Off";
 		case "pending_first_probe":
-			return "Pending First Probe";
+			return "Waiting for First Probe";
 		case "eligible":
-			return "Eligible";
+			return "Probe Eligible";
 		case "paused_idle":
-			return "Paused (Idle)";
+			return "Paused: Idle";
 		default:
 			return state;
 	}
@@ -30,15 +30,15 @@ export function getHealthDetectionProbeStateLabel(state: HealthDetectionProbeSta
 export function getHealthDetectionProbeStateDescription(state: HealthDetectionProbeState): string {
 	switch (state) {
 		case "unsupported":
-			return "This target is visible but cannot be enrolled in active probing.";
+			return "This target is visible, but it cannot run background liveness probes.";
 		case "off":
-			return "Active probing is turned off for this target.";
+			return "Background liveness probes are off for this target.";
 		case "pending_first_probe":
 			return "The target is enabled and waiting for an initial liveness probe.";
 		case "eligible":
-			return "The target is enabled and eligible for background liveness probing.";
+			return "The target can run background liveness probes.";
 		case "paused_idle":
-			return "Background probing is paused because this target has not received recent real traffic.";
+			return "Probes are paused because this target has not received recent real traffic.";
 		default:
 			return "";
 	}

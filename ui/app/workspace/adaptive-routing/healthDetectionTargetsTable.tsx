@@ -80,10 +80,10 @@ export default function HealthDetectionTargetsTable({
 			<CardHeader className="border-b">
 				<div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
 					<div className="space-y-1">
-						<CardTitle>Unified Detection Targets</CardTitle>
+						<CardTitle>Liveness Probe Targets</CardTitle>
 						<CardDescription>
-							Each grouped routing target appears once here. Detection switches are shared across every rule that references the same
-							target.
+							Each grouped routing target appears once here. Probe switches only control background liveness checks; route health still
+							comes from real requests.
 						</CardDescription>
 					</div>
 					<div className="flex items-center gap-2">
@@ -103,12 +103,12 @@ export default function HealthDetectionTargetsTable({
 				{isLoading && rows.length === 0 ? (
 					<div className="text-muted-foreground flex items-center gap-2 px-6 py-8 text-sm">
 						<Loader2 className="h-4 w-4 animate-spin" />
-						Loading unified health detection targets…
+						Loading liveness probe targets…
 					</div>
 				) : error ? (
 					<div className="px-6 py-6">
 						<div className="border-destructive/30 bg-destructive/5 rounded-sm border p-4 text-sm">
-							<p className="font-medium">Unable to load health detection targets.</p>
+							<p className="font-medium">Unable to load liveness probe targets.</p>
 							<p className="text-muted-foreground mt-1">{getErrorMessage(error)}</p>
 							<Button variant="outline" size="sm" onClick={onRetry} className="mt-3">
 								Retry
@@ -136,7 +136,7 @@ export default function HealthDetectionTargetsTable({
 									<TableHead>Routing Groups</TableHead>
 									<TableHead>Rule Health</TableHead>
 									<TableHead>Support Status</TableHead>
-									<TableHead className="w-36">Detection Enabled</TableHead>
+									<TableHead className="w-36">Probe Enabled</TableHead>
 									<TableHead>Probe State</TableHead>
 									<TableHead>Rule Health Summary</TableHead>
 									<TableHead>Last Real Access</TableHead>
@@ -215,7 +215,7 @@ export default function HealthDetectionTargetsTable({
 																.unwrap()
 																.catch((mutationError) => {
 																	toast({
-																		title: "Failed to update health detection target",
+																		title: "Failed to update liveness probe target",
 																		description: getErrorMessage(mutationError),
 																		variant: "destructive",
 																	});
@@ -237,7 +237,7 @@ export default function HealthDetectionTargetsTable({
 													</p>
 													{mode === "passive" && target.probe_state !== "unsupported" ? (
 														<p className="text-muted-foreground text-xs">
-															Background probing is disabled globally until Hybrid mode is turned back on.
+															Background probes are off globally. This target setting is saved for when probes are turned on.
 														</p>
 													) : null}
 												</div>

@@ -68,7 +68,7 @@ export default function HealthStatusView() {
 				<div>
 					<h2 className="text-2xl font-bold tracking-tight">Adaptive Routing</h2>
 					<p className="text-muted-foreground mt-1 text-sm">
-						Unified health detection controls for grouped routing targets, plus the rule-level health table that still decides routing.
+						Liveness probe controls for grouped routing targets, plus the rule-level health table that still decides routing.
 					</p>
 					<p className="text-muted-foreground mt-2 text-xs">
 						Detailed per-request routing decisions remain in Logs under Routing Decision Logs.
@@ -106,7 +106,7 @@ export default function HealthStatusView() {
 				<div className="rounded-lg border p-4">
 					<div className="text-muted-foreground flex items-center gap-2 text-sm">
 						<ShieldAlert className="h-4 w-4" />
-						Detection Enabled
+						Probes Enabled
 					</div>
 					<p className="mt-1 text-2xl font-semibold">{enabledTargetCount}</p>
 					<p className="text-muted-foreground mt-1 text-xs">
@@ -131,7 +131,7 @@ export default function HealthStatusView() {
 				{configData?.mode === "passive" ? (
 					<div className="rounded-md border border-amber-200 bg-amber-50 p-4 lg:col-span-2 dark:border-amber-900/60 dark:bg-amber-950/20">
 						<p className="text-sm font-medium text-amber-900 dark:text-amber-200">
-							Background probing is disabled globally. Only real request outcomes update rule health.
+							Background probes are off globally. Only real request outcomes update rule health.
 						</p>
 					</div>
 				) : null}
@@ -155,7 +155,7 @@ export default function HealthStatusView() {
 						</p>
 					</div>
 					<Badge variant="outline" className="w-fit text-xs">
-						Detection Mode: {detectionModeLabel}
+						Probe Mode: {detectionModeLabel}
 					</Badge>
 				</div>
 

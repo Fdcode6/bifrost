@@ -22,5 +22,5 @@ export function buildHealthDetectionUpdatePayload(form: HealthDetectionFormState
 }
 
 export function getDetectionModeLabel(mode: HealthDetectionMode): string {
-	return mode === "hybrid" ? "Hybrid (Passive + Active)" : "Passive only";
+	return mode === "hybrid" ? "Probes On" : "Probes Off";
 }

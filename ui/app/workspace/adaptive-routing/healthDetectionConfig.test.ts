@@ -61,7 +61,7 @@ describe("healthDetectionConfig helpers", () => {
 	});
 
 	it("returns readable labels for detection modes", () => {
-		expect(getDetectionModeLabel("passive")).toBe("Passive only");
-		expect(getDetectionModeLabel("hybrid")).toBe("Hybrid (Passive + Active)");
+		expect(getDetectionModeLabel("passive")).toBe("Probes Off");
+		expect(getDetectionModeLabel("hybrid")).toBe("Probes On");
 	});
 });
