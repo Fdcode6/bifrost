@@ -42,10 +42,21 @@ export interface RouteGroup {
 	targets: RouteGroupTarget[];
 }
 
+export interface RouteGroupReference {
+	rule_id: string;
+	rule_name: string;
+	group_name: string;
+	group_index: number;
+	fallback_only: boolean;
+	retry_limit: number;
+	health_level?: HealthSnapshot["health_level"];
+}
+
 export interface HealthSnapshot {
 	key: string;
 	status: "available" | "cooldown";
 	health_level: "healthy" | "degraded" | "cooldown";
+	route_groups?: RouteGroupReference[];
 	failure_count: number;
 	consecutive_failures: number;
 	slow_count: number;
@@ -108,6 +119,7 @@ export interface HealthDetectionTarget {
 	key_id?: string;
 	referenced_rule_ids: string[];
 	referenced_rule_names: string[];
+	route_groups: RouteGroupReference[];
 	support_status: HealthDetectionSupportStatus;
 	support_reason?: string;
 	detection_enabled: boolean;

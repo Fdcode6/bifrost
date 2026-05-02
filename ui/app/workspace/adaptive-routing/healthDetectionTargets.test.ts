@@ -6,8 +6,11 @@ import {
 	getHealthDetectionProbeStateDescription,
 	getHealthDetectionProbeStateLabel,
 	getHealthDetectionSupportStatusLabel,
+	getHealthLevelBadgeClass,
 	getHealthLevelDescription,
 	getHealthLevelLabel,
+	getRouteGroupLabel,
+	getWorstRouteGroupHealthLevel,
 	formatSlowRatio,
 	isHealthDetectionTargetEditable,
 } from "./healthDetectionTargets";
@@ -19,6 +22,17 @@ const baseTarget: HealthDetectionTarget = {
 	key_id: "relay-a",
 	referenced_rule_ids: ["rule-a"],
 	referenced_rule_names: ["Rule A"],
+	route_groups: [
+		{
+			rule_id: "rule-a",
+			rule_name: "Rule A",
+			group_name: "Primary",
+			group_index: 1,
+			fallback_only: false,
+			retry_limit: 0,
+			health_level: "healthy",
+		},
+	],
 	support_status: "supported",
 	detection_enabled: false,
 	probe_state: "off",
@@ -70,6 +84,43 @@ describe("healthDetectionTargets helpers", () => {
 		expect(getHealthLevelLabel("degraded")).toBe("Degraded");
 		expect(getHealthLevelLabel("cooldown")).toBe("Cooldown");
 		expect(getHealthLevelDescription("degraded")).toContain("routed after healthy");
+		expect(getHealthLevelBadgeClass("cooldown")).toContain("red");
+	});
+
+	it("returns the worst health level across route group references", () => {
+		expect(getWorstRouteGroupHealthLevel(baseTarget.route_groups)).toBe("healthy");
+		expect(
+			getWorstRouteGroupHealthLevel([
+				...baseTarget.route_groups,
+				{
+					rule_id: "rule-b",
+					rule_name: "Rule B",
+					group_name: "Fallback",
+					group_index: 3,
+					fallback_only: true,
+					retry_limit: 2,
+					health_level: "cooldown",
+				},
+			]),
+		).toBe("cooldown");
+	});
+
+	it("formats route group labels with fallback markers", () => {
+		expect(getRouteGroupLabel(baseTarget.route_groups[0])).toBe("G1: Primary");
+		expect(
+			getRouteGroupLabel({
+				group_name: "Rescue",
+				group_index: 3,
+				fallback_only: true,
+			}),
+		).toBe("G3: Rescue · Fallback");
+		expect(
+			getRouteGroupLabel({
+				group_name: "Fallback",
+				group_index: 3,
+				fallback_only: true,
+			}),
+		).toBe("G3: Fallback");
 	});
 
 	it("formats slow ratios for health snapshots", () => {

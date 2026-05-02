@@ -14,7 +14,13 @@ import {
 import type { RuleHealthStatus } from "@/lib/types/routingRules";
 
 import { getDetectionModeLabel } from "./healthDetectionConfig";
-import { formatHealthMetric, formatSlowRatio, getHealthLevelDescription, getHealthLevelLabel } from "./healthDetectionTargets";
+import {
+	formatHealthMetric,
+	formatSlowRatio,
+	getHealthLevelDescription,
+	getHealthLevelLabel,
+	getRouteGroupLabel,
+} from "./healthDetectionTargets";
 import HealthDetectionSettingsCard from "./healthDetectionSettingsCard";
 import HealthDetectionTargetsTable from "./healthDetectionTargetsTable";
 
@@ -180,11 +186,12 @@ export default function HealthStatusView() {
 									{rule.targets.filter((target) => target.status === "available").length}/{rule.targets.length} available
 								</Badge>
 							</div>
-							<div className="rounded-md border">
-								<Table>
+							<div className="overflow-x-auto rounded-md border">
+								<Table className="min-w-[1320px]">
 									<TableHeader>
 										<TableRow>
 											<TableHead>Target</TableHead>
+											<TableHead className="w-52">Group</TableHead>
 											<TableHead className="w-28">Status</TableHead>
 											<TableHead className="w-28">Source</TableHead>
 											<TableHead className="w-28">Window Fail</TableHead>
@@ -202,6 +209,20 @@ export default function HealthStatusView() {
 										{rule.targets.map((target) => (
 											<TableRow key={target.key}>
 												<TableCell className="font-mono text-sm font-medium">{target.key}</TableCell>
+												<TableCell>
+													<div className="flex flex-wrap gap-1">
+														{target.route_groups?.map((group) => (
+															<Badge
+																key={`${target.key}-${group.group_index}-${group.group_name}`}
+																variant={group.fallback_only ? "secondary" : "outline"}
+																className="max-w-44 truncate text-xs"
+																title={`${getRouteGroupLabel(group)} / retry ${group.retry_limit}`}
+															>
+																<span className="truncate">{getRouteGroupLabel(group)}</span>
+															</Badge>
+														))}
+													</div>
+												</TableCell>
 												<TableCell>
 													{target.health_level === "cooldown" ? (
 														<Badge variant="destructive" className="gap-1">

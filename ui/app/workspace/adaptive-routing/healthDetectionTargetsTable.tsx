@@ -21,9 +21,13 @@ import { cn } from "@/lib/utils";
 
 import {
 	formatHealthDetectionTimestamp,
+	getHealthLevelBadgeClass,
+	getHealthLevelLabel,
 	getHealthDetectionProbeStateDescription,
 	getHealthDetectionProbeStateLabel,
 	getHealthDetectionSupportStatusLabel,
+	getRouteGroupLabel,
+	getWorstRouteGroupHealthLevel,
 	isHealthDetectionTargetEditable,
 } from "./healthDetectionTargets";
 
@@ -122,13 +126,15 @@ export default function HealthDetectionTargetsTable({
 					</div>
 				) : (
 					<div className="overflow-x-auto">
-						<Table className="min-w-[1180px]">
+						<Table className="min-w-[1420px]">
 							<TableHeader>
 								<TableRow>
 									<TableHead>Provider</TableHead>
 									<TableHead>Model</TableHead>
 									<TableHead>Key ID</TableHead>
 									<TableHead>Referenced By</TableHead>
+									<TableHead>Routing Groups</TableHead>
+									<TableHead>Rule Health</TableHead>
 									<TableHead>Support Status</TableHead>
 									<TableHead className="w-36">Detection Enabled</TableHead>
 									<TableHead>Probe State</TableHead>
@@ -142,6 +148,7 @@ export default function HealthDetectionTargetsTable({
 								{rows.map((target) => {
 									const editable = isHealthDetectionTargetEditable(target);
 									const probeResultLabel = target.last_probe_result ? target.last_probe_result.toUpperCase() : "—";
+									const worstHealthLevel = getWorstRouteGroupHealthLevel(target.route_groups);
 
 									return (
 										<TableRow key={target.target_id}>
@@ -155,6 +162,32 @@ export default function HealthDetectionTargetsTable({
 															{ruleName}
 														</Badge>
 													))}
+												</div>
+											</TableCell>
+											<TableCell>
+												<div className="flex max-w-80 flex-wrap gap-1">
+													{target.route_groups?.map((group) => (
+														<Badge
+															key={`${target.target_id}-${group.rule_id}-${group.group_index}-${group.group_name}`}
+															variant={group.fallback_only ? "secondary" : "outline"}
+															className="max-w-56 truncate text-xs"
+															title={`${group.rule_name} / ${getRouteGroupLabel(group)} / retry ${group.retry_limit}`}
+														>
+															<span className="truncate">{getRouteGroupLabel(group)}</span>
+														</Badge>
+													))}
+												</div>
+											</TableCell>
+											<TableCell>
+												<div className="space-y-1">
+													<Badge className={cn("w-fit", getHealthLevelBadgeClass(worstHealthLevel))}>
+														{getHealthLevelLabel(worstHealthLevel)}
+													</Badge>
+													<span className="text-muted-foreground block text-xs">
+														{target.rule_health_summary.degraded_rule_count ?? 0} degraded,{" "}
+														{target.rule_health_summary.cooldown_rule_count} cooldown /{" "}
+														{target.rule_health_summary.total_rule_count}
+													</span>
 												</div>
 											</TableCell>
 											<TableCell>

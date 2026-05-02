@@ -412,6 +412,13 @@ func TestGetHealthStatusUsesInMemoryRoutingRulesWithoutConfigStore(t *testing.T)
 	require.Len(t, resp.Rules[0].Targets, 1)
 	require.Equal(t, targetKey, resp.Rules[0].Targets[0].Key)
 	require.Equal(t, "active", resp.Rules[0].Targets[0].LastObservationSource)
+	require.Len(t, resp.Rules[0].Targets[0].RouteGroups, 1)
+	require.Equal(t, "rule-1", resp.Rules[0].Targets[0].RouteGroups[0].RuleID)
+	require.Equal(t, "Primary Rule", resp.Rules[0].Targets[0].RouteGroups[0].RuleName)
+	require.Equal(t, "group-a", resp.Rules[0].Targets[0].RouteGroups[0].GroupName)
+	require.Equal(t, 1, resp.Rules[0].Targets[0].RouteGroups[0].GroupIndex)
+	require.False(t, resp.Rules[0].Targets[0].RouteGroups[0].FallbackOnly)
+	require.Equal(t, "healthy", resp.Rules[0].Targets[0].RouteGroups[0].HealthLevel)
 }
 
 func TestGetHealthDetectionTargets_DeduplicatesAcrossRules(t *testing.T) {
@@ -649,6 +656,91 @@ func TestGetHealthDetectionTargets_ComputesCooldownRuleSummary(t *testing.T) {
 	require.Len(t, resp.Targets, 1)
 	require.Equal(t, 2, resp.Targets[0].RuleHealthSummary.TotalRuleCount)
 	require.Equal(t, 1, resp.Targets[0].RuleHealthSummary.CooldownRuleCount)
+}
+
+func TestGetHealthDetectionTargetsIncludesRouteGroupReferences(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	provider := "openai"
+	model := "gpt-4.1"
+	keyID := "relay-a"
+	targetKey := governance.TargetKey(provider, model, keyID)
+	now := time.Now()
+
+	healthTracker := governance.NewHealthTracker()
+	healthTracker.RecordFailureForRule("rule-a", targetKey, "timeout", now)
+
+	handler, err := NewAdaptiveRoutingHandler(
+		&mockAdaptiveRoutingRuntime{
+			config: governance.ActiveHealthProbeConfig{},
+			store: &mockAdaptiveRoutingStore{rules: []*configstoreTables.TableRoutingRule{
+				{
+					ID:                    "rule-a",
+					Name:                  "Rule A",
+					Enabled:               true,
+					GroupedRoutingEnabled: true,
+					ParsedHealthPolicy: &configstoreTables.HealthPolicy{
+						FailureThreshold:     1,
+						FailureWindowSeconds: 30,
+						CooldownSeconds:      30,
+					},
+					ParsedRouteGroups: []configstoreTables.RouteGroup{
+						{
+							Name:       "Primary",
+							RetryLimit: 0,
+							Targets: []configstoreTables.RouteGroupTarget{
+								{
+									Provider: &provider,
+									Model:    &model,
+									KeyID:    &keyID,
+									Weight:   1,
+								},
+							},
+						},
+						{
+							Name:         "Rescue",
+							RetryLimit:   2,
+							FallbackOnly: true,
+							Targets: []configstoreTables.RouteGroupTarget{
+								{
+									Provider: &provider,
+									Model:    &model,
+									KeyID:    &keyID,
+									Weight:   1,
+								},
+							},
+						},
+					},
+				},
+			}},
+			healthTracker: healthTracker,
+		},
+		&mockAdaptiveRoutingConfigStore{},
+	)
+	require.NoError(t, err)
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.SetRequestURI("/api/governance/health-detection-targets")
+
+	handler.getHealthDetectionTargets(ctx)
+
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+
+	var resp HealthDetectionTargetsResponse
+	require.NoError(t, json.Unmarshal(ctx.Response.Body(), &resp))
+	require.Len(t, resp.Targets, 1)
+	require.Len(t, resp.Targets[0].RouteGroups, 2)
+	require.Equal(t, "Rule A", resp.Targets[0].RouteGroups[0].RuleName)
+	require.Equal(t, "Primary", resp.Targets[0].RouteGroups[0].GroupName)
+	require.Equal(t, 1, resp.Targets[0].RouteGroups[0].GroupIndex)
+	require.False(t, resp.Targets[0].RouteGroups[0].FallbackOnly)
+	require.Equal(t, "cooldown", resp.Targets[0].RouteGroups[0].HealthLevel)
+	require.Equal(t, "Rescue", resp.Targets[0].RouteGroups[1].GroupName)
+	require.Equal(t, 2, resp.Targets[0].RouteGroups[1].GroupIndex)
+	require.True(t, resp.Targets[0].RouteGroups[1].FallbackOnly)
+	require.Equal(t, 2, resp.Targets[0].RouteGroups[1].RetryLimit)
+	require.Equal(t, "cooldown", resp.Targets[0].RouteGroups[1].HealthLevel)
 }
 
 func TestUpdateHealthDetectionTarget_EnablesPendingFirstProbe(t *testing.T) {

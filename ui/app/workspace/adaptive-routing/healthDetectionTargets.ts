@@ -3,6 +3,7 @@ import type {
 	HealthDetectionSupportStatus,
 	HealthDetectionTarget,
 	HealthSnapshot,
+	RouteGroupReference,
 } from "@/lib/types/routingRules";
 
 export function getHealthDetectionSupportStatusLabel(status: HealthDetectionSupportStatus): string {
@@ -82,6 +83,37 @@ export function getHealthLevelDescription(level?: HealthSnapshot["health_level"]
 		default:
 			return "Eligible for normal routing.";
 	}
+}
+
+export function getHealthLevelBadgeClass(level?: HealthSnapshot["health_level"]): string {
+	switch (level) {
+		case "cooldown":
+			return "bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-300";
+		case "degraded":
+			return "bg-amber-100 text-amber-800 dark:bg-amber-950/40 dark:text-amber-300";
+		case "healthy":
+		default:
+			return "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400";
+	}
+}
+
+export function getWorstRouteGroupHealthLevel(groups?: RouteGroupReference[]): HealthSnapshot["health_level"] {
+	if (!groups || groups.length === 0) {
+		return "healthy";
+	}
+	if (groups.some((group) => group.health_level === "cooldown")) {
+		return "cooldown";
+	}
+	if (groups.some((group) => group.health_level === "degraded")) {
+		return "degraded";
+	}
+	return "healthy";
+}
+
+export function getRouteGroupLabel(group: Pick<RouteGroupReference, "group_index" | "group_name" | "fallback_only">): string {
+	const groupName = group.group_name || `Group ${group.group_index}`;
+	const fallbackMarker = group.fallback_only && !groupName.toLowerCase().includes("fallback") ? " · Fallback" : "";
+	return `G${group.group_index}: ${groupName}${fallbackMarker}`;
 }
 
 export function formatHealthMetric(value?: number, suffix = ""): string {

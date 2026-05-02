@@ -80,6 +80,16 @@ type HealthDetectionRuleHealthSummary struct {
 	CooldownRuleCount int `json:"cooldown_rule_count"`
 }
 
+type RouteGroupReferenceResponse struct {
+	RuleID       string `json:"rule_id"`
+	RuleName     string `json:"rule_name"`
+	GroupName    string `json:"group_name"`
+	GroupIndex   int    `json:"group_index"`
+	FallbackOnly bool   `json:"fallback_only"`
+	RetryLimit   int    `json:"retry_limit"`
+	HealthLevel  string `json:"health_level,omitempty"`
+}
+
 type HealthDetectionTargetResponse struct {
 	TargetID            string                           `json:"target_id"`
 	Provider            string                           `json:"provider"`
@@ -87,6 +97,7 @@ type HealthDetectionTargetResponse struct {
 	KeyID               *string                          `json:"key_id,omitempty"`
 	ReferencedRuleIDs   []string                         `json:"referenced_rule_ids"`
 	ReferencedRuleNames []string                         `json:"referenced_rule_names"`
+	RouteGroups         []RouteGroupReferenceResponse    `json:"route_groups"`
 	SupportStatus       string                           `json:"support_status"`
 	SupportReason       string                           `json:"support_reason,omitempty"`
 	DetectionEnabled    bool                             `json:"detection_enabled"`
@@ -104,11 +115,16 @@ type HealthDetectionTargetsResponse struct {
 	Count   int                             `json:"count"`
 }
 
+type TargetHealthSnapshotResponse struct {
+	governance.TargetHealthSnapshot
+	RouteGroups []RouteGroupReferenceResponse `json:"route_groups"`
+}
+
 type RuleHealthStatusResponse struct {
-	RuleID   string                            `json:"rule_id"`
-	RuleName string                            `json:"rule_name"`
-	Policy   *configstoreTables.HealthPolicy   `json:"policy"`
-	Targets  []governance.TargetHealthSnapshot `json:"targets"`
+	RuleID   string                          `json:"rule_id"`
+	RuleName string                          `json:"rule_name"`
+	Policy   *configstoreTables.HealthPolicy `json:"policy"`
+	Targets  []TargetHealthSnapshotResponse  `json:"targets"`
 }
 
 type HealthStatusResponse struct {
@@ -125,6 +141,7 @@ type healthDetectionTargetRecord struct {
 	KeyID               *string
 	ReferencedRuleIDs   []string
 	ReferencedRuleNames []string
+	RouteGroups         []RouteGroupReferenceResponse
 	DegradedRuleCount   int
 	CooldownRuleCount   int
 }
@@ -176,7 +193,8 @@ func (h *AdaptiveRoutingHandler) getHealthStatus(ctx *fasthttp.RequestCtx) {
 		}
 
 		policy := healthPolicyOrDefault(rule)
-		targets := make([]governance.TargetHealthSnapshot, 0)
+		routeGroupsByTarget := buildRouteGroupReferencesByTarget(rule, "")
+		targets := make([]TargetHealthSnapshotResponse, 0)
 		seen := make(map[string]struct{})
 		for _, group := range rule.ParsedRouteGroups {
 			for _, target := range group.Targets {
@@ -185,7 +203,12 @@ func (h *AdaptiveRoutingHandler) getHealthStatus(ctx *fasthttp.RequestCtx) {
 					continue
 				}
 				seen[key] = struct{}{}
-				targets = append(targets, healthTracker.GetTargetStatusForRule(rule.ID, key, policy, now))
+				snapshot := healthTracker.GetTargetStatusForRule(rule.ID, key, policy, now)
+				routeGroups := cloneRouteGroupReferencesWithHealth(routeGroupsByTarget[key], snapshot.HealthLevel)
+				targets = append(targets, TargetHealthSnapshotResponse{
+					TargetHealthSnapshot: snapshot,
+					RouteGroups:          routeGroups,
+				})
 			}
 		}
 
@@ -421,7 +444,7 @@ func (h *AdaptiveRoutingHandler) buildHealthDetectionTargets(ctx context.Context
 		policy := healthPolicyOrDefault(rule)
 		seenInRule := make(map[string]struct{})
 
-		for _, group := range rule.ParsedRouteGroups {
+		for groupIndex, group := range rule.ParsedRouteGroups {
 			for _, target := range group.Targets {
 				if target.Provider == nil || strings.TrimSpace(*target.Provider) == "" {
 					continue
@@ -434,10 +457,10 @@ func (h *AdaptiveRoutingHandler) buildHealthDetectionTargets(ctx context.Context
 				model := strings.TrimSpace(*target.Model)
 				keyID := cloneStringPtr(target.KeyID)
 				canonicalKey := canonicalHealthDetectionTargetKey(provider, model, keyID)
-				if _, exists := seenInRule[canonicalKey]; exists {
-					continue
+				_, alreadySeenInRule := seenInRule[canonicalKey]
+				if !alreadySeenInRule {
+					seenInRule[canonicalKey] = struct{}{}
 				}
-				seenInRule[canonicalKey] = struct{}{}
 
 				record, ok := records[canonicalKey]
 				if !ok {
@@ -450,21 +473,31 @@ func (h *AdaptiveRoutingHandler) buildHealthDetectionTargets(ctx context.Context
 						KeyID:               keyID,
 						ReferencedRuleIDs:   make([]string, 0, 1),
 						ReferencedRuleNames: make([]string, 0, 1),
+						RouteGroups:         make([]RouteGroupReferenceResponse, 0, 1),
 					}
 					records[canonicalKey] = record
 				}
 
-				record.ReferencedRuleIDs = append(record.ReferencedRuleIDs, rule.ID)
-				record.ReferencedRuleNames = append(record.ReferencedRuleNames, rule.Name)
-
+				healthLevel := string(governance.HealthHealthy)
 				if tracker != nil {
 					snap := tracker.GetTargetStatusForRule(rule.ID, record.RuntimeTargetKey, policy, now)
-					if snap.HealthLevel == string(governance.HealthCooldown) {
-						record.CooldownRuleCount++
-					} else if snap.HealthLevel == string(governance.HealthDegraded) {
-						record.DegradedRuleCount++
+					healthLevel = snap.HealthLevel
+					if !alreadySeenInRule {
+						if snap.HealthLevel == string(governance.HealthCooldown) {
+							record.CooldownRuleCount++
+						} else if snap.HealthLevel == string(governance.HealthDegraded) {
+							record.DegradedRuleCount++
+						}
 					}
 				}
+
+				record.RouteGroups = append(record.RouteGroups, routeGroupReference(rule, group, groupIndex+1, healthLevel))
+
+				if alreadySeenInRule {
+					continue
+				}
+				record.ReferencedRuleIDs = append(record.ReferencedRuleIDs, rule.ID)
+				record.ReferencedRuleNames = append(record.ReferencedRuleNames, rule.Name)
 			}
 		}
 	}
@@ -485,6 +518,7 @@ func (h *AdaptiveRoutingHandler) buildHealthDetectionTargets(ctx context.Context
 			KeyID:               cloneStringPtr(record.KeyID),
 			ReferencedRuleIDs:   append([]string(nil), record.ReferencedRuleIDs...),
 			ReferencedRuleNames: append([]string(nil), record.ReferencedRuleNames...),
+			RouteGroups:         append([]RouteGroupReferenceResponse(nil), record.RouteGroups...),
 			SupportStatus:       supportStatus,
 			SupportReason:       supportReason,
 			DetectionEnabled:    detectionEnabled,
@@ -513,6 +547,47 @@ func (h *AdaptiveRoutingHandler) buildHealthDetectionTargets(ctx context.Context
 	})
 
 	return targets, nil
+}
+
+func buildRouteGroupReferencesByTarget(rule *configstoreTables.TableRoutingRule, healthLevel string) map[string][]RouteGroupReferenceResponse {
+	refsByTarget := make(map[string][]RouteGroupReferenceResponse)
+	if rule == nil {
+		return refsByTarget
+	}
+	for groupIndex, group := range rule.ParsedRouteGroups {
+		for _, target := range group.Targets {
+			key := governance.RouteGroupTargetKey(target)
+			refsByTarget[key] = append(refsByTarget[key], routeGroupReference(rule, group, groupIndex+1, healthLevel))
+		}
+	}
+	return refsByTarget
+}
+
+func routeGroupReference(rule *configstoreTables.TableRoutingRule, group configstoreTables.RouteGroup, groupIndex int, healthLevel string) RouteGroupReferenceResponse {
+	ref := RouteGroupReferenceResponse{
+		GroupName:    group.Name,
+		GroupIndex:   groupIndex,
+		FallbackOnly: group.FallbackOnly,
+		RetryLimit:   group.RetryLimit,
+		HealthLevel:  healthLevel,
+	}
+	if rule != nil {
+		ref.RuleID = rule.ID
+		ref.RuleName = rule.Name
+	}
+	return ref
+}
+
+func cloneRouteGroupReferencesWithHealth(refs []RouteGroupReferenceResponse, healthLevel string) []RouteGroupReferenceResponse {
+	if len(refs) == 0 {
+		return []RouteGroupReferenceResponse{}
+	}
+	cloned := make([]RouteGroupReferenceResponse, len(refs))
+	copy(cloned, refs)
+	for i := range cloned {
+		cloned[i].HealthLevel = healthLevel
+	}
+	return cloned
 }
 
 func validateHealthDetectionUpdateRequest(request UpdateHealthDetectionConfigRequest) error {
