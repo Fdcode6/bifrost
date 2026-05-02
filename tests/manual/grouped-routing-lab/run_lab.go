@@ -27,6 +27,29 @@ var keyIDs = map[string]string{
 	"site-d-hardfail": "site-d-hardfail-id",
 	"site-e-timeout":  "site-e-timeout-id",
 	"site-f-recover":  "site-f-recover-id",
+	"cost-cheap-1":    "cost-cheap-1-id",
+	"cost-cheap-2":    "cost-cheap-2-id",
+	"cost-cheap-3":    "cost-cheap-3-id",
+	"cost-cheap-4":    "cost-cheap-4-id",
+	"cost-cheap-5":    "cost-cheap-5-id",
+	"cost-mid-1":      "cost-mid-1-id",
+	"cost-mid-2":      "cost-mid-2-id",
+	"cost-mid-3":      "cost-mid-3-id",
+	"cost-expensive":  "cost-expensive-id",
+	"cost-fallback":   "cost-fallback-id",
+}
+
+var costScenarioModels = map[string]string{
+	"cost-cheap-1":   "cost-cheap-1-model",
+	"cost-cheap-2":   "cost-cheap-2-model",
+	"cost-cheap-3":   "cost-cheap-3-model",
+	"cost-cheap-4":   "cost-cheap-4-model",
+	"cost-cheap-5":   "cost-cheap-5-model",
+	"cost-mid-1":     "cost-mid-1-model",
+	"cost-mid-2":     "cost-mid-2-model",
+	"cost-mid-3":     "cost-mid-3-model",
+	"cost-expensive": "cost-expensive-model",
+	"cost-fallback":  "cost-fallback-model",
 }
 
 type routeTarget struct {
@@ -37,9 +60,10 @@ type routeTarget struct {
 }
 
 type routeGroup struct {
-	Name       string        `json:"name"`
-	RetryLimit int           `json:"retry_limit"`
-	Targets    []routeTarget `json:"targets"`
+	Name         string        `json:"name"`
+	RetryLimit   int           `json:"retry_limit"`
+	Targets      []routeTarget `json:"targets"`
+	FallbackOnly bool          `json:"fallback_only,omitempty"`
 }
 
 type healthPolicy struct {
@@ -206,6 +230,7 @@ func main() {
 		{"cooldown_recovery", "冷却结束后恢复尝试", runCooldownRecovery},
 		{"timeout_failover", "超时后切换到下一站点", runTimeoutFailover},
 		{"final_group_rescue", "前两组失败时最终兜底组产出结果", runFinalGroupRescue},
+		{"cost_health_group_order", "健康优先、组内价格优先、兜底最后", runCostHealthGroupOrder},
 		{"pressure_mixed_failures", "中等并发压力下保持成功与不重复命中失败站点", runPressureScenario},
 		{"all_groups_down_boundary", "全部分组都失败时返回错误并保留可解释日志", runAllGroupsDownBoundary},
 	}
@@ -541,7 +566,14 @@ func runCooldownRecovery(l *lab) (scenarioResult, error) {
 	}); err != nil {
 		return scenarioResult{}, err
 	}
-	ruleID, err := l.createRule("lab-cooldown-recovery", healthPolicy{2, 30, 30, 2}, []routeGroup{
+	ruleID, err := l.createRuleWithRawPolicy("lab-cooldown-recovery", map[string]any{
+		"failure_threshold":       2,
+		"failure_window_seconds":  30,
+		"cooldown_seconds":        30,
+		"consecutive_failures":    2,
+		"cooldown_backoff_factor": 1,
+		"cooldown_max_seconds":    30,
+	}, []routeGroup{
 		group("primary", 0, target("site-d-hardfail", 1)),
 		group("backup", 0, target("site-a-ok", 1)),
 	})
@@ -558,7 +590,7 @@ func runCooldownRecovery(l *lab) (scenarioResult, error) {
 	}
 	if err := l.setProfiles(map[string]mockProfile{
 		"site-d-hardfail": {Default: mockProfileAction{Type: "success", DelayMs: 90, ResponseText: "recovered primary"}},
-		"site-a-ok":       {Default: mockProfileAction{Type: "success", DelayMs: 60, ResponseText: "backup still healthy"}},
+		"site-a-ok":       {Default: mockProfileAction{Type: "error", Status: 503, Message: "backup unavailable during recovery"}},
 	}); err != nil {
 		return scenarioResult{}, err
 	}
@@ -589,8 +621,7 @@ func runCooldownRecovery(l *lab) (scenarioResult, error) {
 	}
 
 	passed := reqRes.StatusCode == http.StatusOK &&
-		events.Counts["site-d-hardfail"] == 1 &&
-		events.Counts["site-a-ok"] == 0
+		events.Counts["site-d-hardfail"] == 1
 
 	if err := writeScenarioArtifacts(dir, map[string]any{
 		"request_result": reqRes,
@@ -611,7 +642,7 @@ func runCooldownRecovery(l *lab) (scenarioResult, error) {
 		MockCounts:   events.Counts,
 		Observations: []string{
 			"等待 31 秒后重新发起请求",
-			fmt.Sprintf("恢复后主站点命中 %d 次", events.Counts["site-d-hardfail"]),
+			fmt.Sprintf("恢复后主站点命中 %d 次，备用命中 %d 次", events.Counts["site-d-hardfail"], events.Counts["site-a-ok"]),
 		},
 		SampleRoutingLog: firstRoutingLog(logs),
 		HealthSummary:    healthSummary,
@@ -737,6 +768,225 @@ func runFinalGroupRescue(l *lab) (scenarioResult, error) {
 		ErrorCount:       boolToInt(reqRes.StatusCode != http.StatusOK),
 		MockCounts:       events.Counts,
 		Observations:     []string{"最终兜底组提供成功结果"},
+		SampleRoutingLog: firstRoutingLog(logs),
+		ArtifactDir:      dir,
+	}, nil
+}
+
+func runCostHealthGroupOrder(l *lab) (scenarioResult, error) {
+	start := time.Now()
+	dir := l.scenarioDir("cost_health_group_order")
+	if err := l.resetMock(); err != nil {
+		return scenarioResult{}, err
+	}
+
+	ruleID, err := l.createRuleWithRawPolicy("lab-cost-health-order", map[string]any{
+		"failure_threshold":        1,
+		"failure_window_seconds":   30,
+		"cooldown_seconds":         30,
+		"consecutive_failures":     1,
+		"slow_threshold_ms":        40,
+		"slow_window_size":         10,
+		"slow_ratio_threshold":     0.5,
+		"slow_recovery_seconds":    60,
+		"soft_cooldown_multiplier": 1,
+		"cooldown_backoff_factor":  1,
+		"cooldown_max_seconds":     30,
+	}, []routeGroup{
+		group("cheap-five", 4,
+			costTarget("cost-cheap-1", 0.2),
+			costTarget("cost-cheap-2", 0.2),
+			costTarget("cost-cheap-3", 0.2),
+			costTarget("cost-cheap-4", 0.2),
+			costTarget("cost-cheap-5", 0.2),
+		),
+		group("mid-three", 2,
+			costTarget("cost-mid-1", 1.0/3.0),
+			costTarget("cost-mid-2", 1.0/3.0),
+			costTarget("cost-mid-3", 1.0/3.0),
+		),
+		group("expensive-one", 0, costTarget("cost-expensive", 1)),
+		fallbackGroup("fallback-only", 2, costTarget("cost-fallback", 1)),
+	})
+	if err != nil {
+		return scenarioResult{}, err
+	}
+	defer l.deleteRule(ruleID)
+
+	observations := []string{}
+
+	if err := l.setProfiles(costProfiles(
+		[]string{"cost-cheap-1", "cost-cheap-2", "cost-cheap-3", "cost-cheap-4", "cost-cheap-5", "cost-mid-1", "cost-mid-2", "cost-mid-3", "cost-expensive", "cost-fallback"},
+		mockProfile{Default: mockProfileAction{Type: "success", DelayMs: 5, ResponseText: "ok"}},
+	)); err != nil {
+		return scenarioResult{}, err
+	}
+	firstReq, err := l.sendChat("cost-order-001")
+	if err != nil {
+		return scenarioResult{}, err
+	}
+	firstEvents, err := l.getMockEvents()
+	if err != nil {
+		return scenarioResult{}, err
+	}
+	firstKeys := eventKeys(firstEvents)
+	observations = append(observations, fmt.Sprintf("全部 healthy 时命中: %v", firstKeys))
+
+	slowProfiles := costProfiles([]string{
+		"cost-cheap-1", "cost-cheap-2", "cost-cheap-3", "cost-cheap-4", "cost-cheap-5",
+	}, mockProfile{Default: mockProfileAction{Type: "success", DelayMs: 70, ResponseText: "cheap slow"}})
+	for _, name := range []string{"cost-mid-1", "cost-mid-2", "cost-mid-3", "cost-expensive", "cost-fallback"} {
+		slowProfiles[name] = mockProfile{Default: mockProfileAction{Type: "success", DelayMs: 5, ResponseText: "ok"}}
+	}
+	if err := l.setProfiles(slowProfiles); err != nil {
+		return scenarioResult{}, err
+	}
+	if err := l.resetMock(); err != nil {
+		return scenarioResult{}, err
+	}
+	for i := 0; i < 5; i++ {
+		reqRes, err := l.sendChat(fmt.Sprintf("cost-slow-cheap-%03d", i+1))
+		if err != nil {
+			return scenarioResult{}, err
+		}
+		if reqRes.StatusCode != http.StatusOK {
+			return scenarioResult{}, fmt.Errorf("cheap slow warmup request %d returned %d: %s", i+1, reqRes.StatusCode, reqRes.ErrorText)
+		}
+	}
+	warmupEvents, err := l.getMockEvents()
+	if err != nil {
+		return scenarioResult{}, err
+	}
+	observations = append(observations, fmt.Sprintf("慢化 5 个 cheap 的命中顺序: %v", eventKeys(warmupEvents)))
+
+	if err := l.resetMock(); err != nil {
+		return scenarioResult{}, err
+	}
+	midReq, err := l.sendChat("cost-after-cheap-degraded")
+	if err != nil {
+		return scenarioResult{}, err
+	}
+	midEvents, err := l.getMockEvents()
+	if err != nil {
+		return scenarioResult{}, err
+	}
+	midKeys := eventKeys(midEvents)
+	observations = append(observations, fmt.Sprintf("cheap 全 degraded 后命中: %v", midKeys))
+
+	midFailProfiles := costProfiles([]string{
+		"cost-cheap-1", "cost-cheap-2", "cost-cheap-3", "cost-cheap-4", "cost-cheap-5", "cost-expensive", "cost-fallback",
+	}, mockProfile{Default: mockProfileAction{Type: "success", DelayMs: 5, ResponseText: "ok"}})
+	for _, name := range []string{"cost-mid-1", "cost-mid-2", "cost-mid-3"} {
+		midFailProfiles[name] = mockProfile{Default: mockProfileAction{Type: "error", Status: 503, Message: "mid saturated"}}
+	}
+	if err := l.setProfiles(midFailProfiles); err != nil {
+		return scenarioResult{}, err
+	}
+	if err := l.resetMock(); err != nil {
+		return scenarioResult{}, err
+	}
+	midFailReq, err := l.sendChat("cost-trip-mid-cooldown")
+	if err != nil {
+		return scenarioResult{}, err
+	}
+	midFailEvents, err := l.getMockEvents()
+	if err != nil {
+		return scenarioResult{}, err
+	}
+	observations = append(observations, fmt.Sprintf("mid 失败并进入 cooldown 的链路: %v", eventKeys(midFailEvents)))
+
+	if err := l.resetMock(); err != nil {
+		return scenarioResult{}, err
+	}
+	expensiveReq, err := l.sendChat("cost-after-mid-cooldown")
+	if err != nil {
+		return scenarioResult{}, err
+	}
+	expensiveEvents, err := l.getMockEvents()
+	if err != nil {
+		return scenarioResult{}, err
+	}
+	expensiveKeys := eventKeys(expensiveEvents)
+	observations = append(observations, fmt.Sprintf("mid cooldown 后命中: %v", expensiveKeys))
+
+	fallbackProfiles := costProfiles([]string{
+		"cost-cheap-1", "cost-cheap-2", "cost-cheap-3", "cost-cheap-4", "cost-cheap-5", "cost-expensive",
+	}, mockProfile{Default: mockProfileAction{Type: "error", Status: 503, Message: "regular down"}})
+	for _, name := range []string{"cost-mid-1", "cost-mid-2", "cost-mid-3"} {
+		fallbackProfiles[name] = mockProfile{Default: mockProfileAction{Type: "error", Status: 503, Message: "mid still down"}}
+	}
+	fallbackProfiles["cost-fallback"] = mockProfile{
+		Series: []mockProfileAction{
+			{Type: "error", Status: 503, Message: "fallback first fail"},
+			{Type: "error", Status: 503, Message: "fallback second fail"},
+			{Type: "success", DelayMs: 5, ResponseText: "fallback final ok"},
+		},
+	}
+	if err := l.setProfiles(fallbackProfiles); err != nil {
+		return scenarioResult{}, err
+	}
+	if err := l.resetMock(); err != nil {
+		return scenarioResult{}, err
+	}
+	fallbackReq, err := l.sendChat("cost-fallback-repeats")
+	if err != nil {
+		return scenarioResult{}, err
+	}
+	fallbackEvents, err := l.getMockEvents()
+	if err != nil {
+		return scenarioResult{}, err
+	}
+	fallbackKeys := eventKeys(fallbackEvents)
+	observations = append(observations, fmt.Sprintf("全部普通目标不可用时兜底链路: %v", fallbackKeys))
+
+	health, err := l.getHealth(ruleID)
+	if err != nil {
+		return scenarioResult{}, err
+	}
+	logs, err := l.getLogs(ruleID)
+	if err != nil {
+		return scenarioResult{}, err
+	}
+
+	passed := firstReq.StatusCode == http.StatusOK &&
+		equalStrings(firstKeys, []string{"cost-cheap-3"}) &&
+		midReq.StatusCode == http.StatusOK &&
+		equalStrings(midKeys, []string{"cost-mid-2"}) &&
+		midFailReq.StatusCode == http.StatusOK &&
+		equalStrings(eventKeys(midFailEvents), []string{"cost-mid-2", "cost-mid-3", "cost-mid-1", "cost-expensive"}) &&
+		expensiveReq.StatusCode == http.StatusOK &&
+		equalStrings(expensiveKeys, []string{"cost-expensive"}) &&
+		fallbackReq.StatusCode == http.StatusOK &&
+		len(fallbackKeys) >= 4 &&
+		equalStrings(fallbackKeys[len(fallbackKeys)-3:], []string{"cost-fallback", "cost-fallback", "cost-fallback"})
+
+	if err := writeScenarioArtifacts(dir, map[string]any{
+		"first_request":     firstReq,
+		"first_events":      firstEvents,
+		"warmup_events":     warmupEvents,
+		"mid_request":       midReq,
+		"mid_events":        midEvents,
+		"mid_fail_request":  midFailReq,
+		"mid_fail_events":   midFailEvents,
+		"expensive_request": expensiveReq,
+		"expensive_events":  expensiveEvents,
+		"fallback_request":  fallbackReq,
+		"fallback_events":   fallbackEvents,
+		"health":            health,
+		"logs":              logs,
+	}); err != nil {
+		return scenarioResult{}, err
+	}
+
+	return scenarioResult{
+		Name:             "cost_health_group_order",
+		Goal:             "健康优先、组内价格优先、兜底最后",
+		Passed:           passed,
+		DurationMs:       time.Since(start).Milliseconds(),
+		SuccessCount:     5,
+		ErrorCount:       0,
+		MockCounts:       fallbackEvents.Counts,
+		Observations:     observations,
 		SampleRoutingLog: firstRoutingLog(logs),
 		ArtifactDir:      dir,
 	}, nil
@@ -924,6 +1174,16 @@ func (l *lab) setupProvider() error {
 			keyPayload("site-d-hardfail", keyIDs["site-d-hardfail"]),
 			keyPayload("site-e-timeout", keyIDs["site-e-timeout"]),
 			keyPayload("site-f-recover", keyIDs["site-f-recover"]),
+			keyPayload("cost-cheap-1", keyIDs["cost-cheap-1"]),
+			keyPayload("cost-cheap-2", keyIDs["cost-cheap-2"]),
+			keyPayload("cost-cheap-3", keyIDs["cost-cheap-3"]),
+			keyPayload("cost-cheap-4", keyIDs["cost-cheap-4"]),
+			keyPayload("cost-cheap-5", keyIDs["cost-cheap-5"]),
+			keyPayload("cost-mid-1", keyIDs["cost-mid-1"]),
+			keyPayload("cost-mid-2", keyIDs["cost-mid-2"]),
+			keyPayload("cost-mid-3", keyIDs["cost-mid-3"]),
+			keyPayload("cost-expensive", keyIDs["cost-expensive"]),
+			keyPayload("cost-fallback", keyIDs["cost-fallback"]),
 		},
 		"network_config": map[string]any{
 			"base_url":                           l.mockAdmin,
@@ -941,6 +1201,7 @@ func (l *lab) setupProvider() error {
 			"is_key_less":        false,
 			"base_provider_type": "openai",
 		},
+		"pricing_overrides": costPricingOverrides(),
 	}
 	return l.postJSON(l.bifrostURL+"/api/providers", payload, nil)
 }
@@ -950,9 +1211,43 @@ func keyPayload(name, id string) map[string]any {
 		"id":      id,
 		"name":    name,
 		"value":   name,
-		"models":  []string{modelName},
+		"models":  allLabModels(),
 		"weight":  1,
 		"enabled": true,
+	}
+}
+
+func allLabModels() []string {
+	models := []string{modelName}
+	for _, model := range costScenarioModels {
+		models = append(models, model)
+	}
+	sort.Strings(models[1:])
+	return models
+}
+
+func costPricingOverrides() []map[string]any {
+	return []map[string]any{
+		costPricing("cost-cheap-1-model", 0.000005, 0.000005),
+		costPricing("cost-cheap-2-model", 0.0000025, 0.0000025),
+		costPricing("cost-cheap-3-model", 0.0000005, 0.0000005),
+		costPricing("cost-cheap-4-model", 0.0000035, 0.0000035),
+		costPricing("cost-cheap-5-model", 0.0000045, 0.0000045),
+		costPricing("cost-mid-1-model", 0.000010, 0.000010),
+		costPricing("cost-mid-2-model", 0.0000075, 0.0000075),
+		costPricing("cost-mid-3-model", 0.000009, 0.000009),
+		costPricing("cost-expensive-model", 0.000050, 0.000050),
+		costPricing("cost-fallback-model", 0.000001, 0.000001),
+	}
+}
+
+func costPricing(model string, inputCost, outputCost float64) map[string]any {
+	return map[string]any{
+		"model_pattern":         model,
+		"match_type":            "exact",
+		"request_types":         []string{"chat_completion", "chat_completion_stream"},
+		"input_cost_per_token":  inputCost,
+		"output_cost_per_token": outputCost,
 	}
 }
 
@@ -969,7 +1264,24 @@ func group(name string, retry int, targets ...routeTarget) routeGroup {
 	return routeGroup{Name: name, RetryLimit: retry, Targets: targets}
 }
 
+func fallbackGroup(name string, retry int, targets ...routeTarget) routeGroup {
+	return routeGroup{Name: name, RetryLimit: retry, Targets: targets, FallbackOnly: true}
+}
+
+func costTarget(name string, weight float64) routeTarget {
+	return routeTarget{
+		Provider: providerName,
+		Model:    costScenarioModels[name],
+		KeyID:    keyIDs[name],
+		Weight:   weight,
+	}
+}
+
 func (l *lab) createRule(name string, hp healthPolicy, groups []routeGroup) (string, error) {
+	return l.createRuleWithRawPolicy(name, hp, groups)
+}
+
+func (l *lab) createRuleWithRawPolicy(name string, hp any, groups []routeGroup) (string, error) {
 	payload := map[string]any{
 		"name":                    name,
 		"description":             "grouped routing lab scenario",
@@ -1000,7 +1312,7 @@ func (l *lab) deleteRule(id string) {
 
 func (l *lab) sendChat(user string) (requestResult, error) {
 	payload := map[string]any{
-		"model": modelName,
+		"model": providerName + "/" + modelName,
 		"messages": []map[string]any{
 			{"role": "user", "content": "say hello"},
 		},
@@ -1088,8 +1400,14 @@ func (l *lab) getMockEvents() (mockEventsResponse, error) {
 }
 
 func (l *lab) postJSON(url string, payload any, out any) error {
-	_, _, err := l.doJSON(http.MethodPost, url, payload, out)
-	return err
+	status, body, err := l.doJSON(http.MethodPost, url, payload, out)
+	if err != nil {
+		return err
+	}
+	if status >= 400 {
+		return fmt.Errorf("%s returned %d: %s", url, status, strings.TrimSpace(string(body)))
+	}
+	return nil
 }
 
 func (l *lab) doJSON(method, url string, payload any, out any) (int, []byte, error) {
@@ -1213,6 +1531,36 @@ func totalEventCount(counts map[string]int) int {
 		total += v
 	}
 	return total
+}
+
+func eventKeys(events mockEventsResponse) []string {
+	keys := make([]string, 0, len(events.Events))
+	for _, ev := range events.Events {
+		if ev.Path == "/v1/chat/completions" {
+			keys = append(keys, ev.Key)
+		}
+	}
+	return keys
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func costProfiles(keys []string, profile mockProfile) map[string]mockProfile {
+	profiles := make(map[string]mockProfile, len(keys))
+	for _, key := range keys {
+		profiles[key] = profile
+	}
+	return profiles
 }
 
 func boolToInt(v bool) int {

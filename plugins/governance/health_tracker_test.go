@@ -370,3 +370,225 @@ func TestHealthTracker_LazyCooldownUsesLastFailureTime(t *testing.T) {
 	assert.Equal(t, "available", snap.Status)
 	assert.Equal(t, 0, snap.ConsecutiveFailures)
 }
+
+func TestApplyHealthPolicyDefaults_PreservesExplicitHalfOpenFalse(t *testing.T) {
+	halfOpen := false
+	policy := ApplyHealthPolicyDefaults(&configstoreTables.HealthPolicy{
+		HalfOpenProbe: &halfOpen,
+	})
+
+	require.NotNil(t, policy.HalfOpenProbe)
+	assert.False(t, *policy.HalfOpenProbe)
+}
+
+func TestApplyHealthPolicyDefaults_PreservesExplicitSlowRecoveryZero(t *testing.T) {
+	recovery := 0
+	policy := ApplyHealthPolicyDefaults(&configstoreTables.HealthPolicy{
+		SlowRecoverySeconds: &recovery,
+	})
+
+	require.NotNil(t, policy.SlowRecoverySeconds)
+	assert.Equal(t, 0, *policy.SlowRecoverySeconds)
+}
+
+func TestGetTargetHealth_DegradedBySlowRatio(t *testing.T) {
+	ht := NewHealthTracker()
+	recovery := 0
+	policy := ApplyHealthPolicyDefaults(&configstoreTables.HealthPolicy{
+		SlowWindowSize:       10,
+		SlowRatioThreshold:   0.5,
+		SlowRecoverySeconds:  &recovery,
+		FailureThreshold:     2,
+		FailureWindowSeconds: 30,
+		CooldownSeconds:      30,
+	})
+	now := time.Now()
+	key := "openai:gpt-4.1"
+
+	for i := 0; i < 6; i++ {
+		ht.RecordOutcome("rule-a", key, OutcomeSlow, 60*time.Second, "", policy, now.Add(time.Duration(i)*time.Second))
+	}
+	for i := 6; i < 10; i++ {
+		ht.RecordOutcome("rule-a", key, OutcomeSuccess, 2*time.Second, "", policy, now.Add(time.Duration(i)*time.Second))
+	}
+
+	assert.Equal(t, HealthDegraded, ht.GetTargetHealthForRule("rule-a", key, policy, now.Add(10*time.Second)))
+	snap := ht.GetTargetStatusForRule("rule-a", key, policy, now.Add(10*time.Second))
+	assert.Equal(t, "available", snap.Status)
+	assert.Equal(t, "degraded", snap.HealthLevel)
+	assert.Equal(t, 6, snap.SlowCount)
+	assert.Equal(t, 10, snap.SampleCount)
+	assert.InDelta(t, 0.6, snap.SlowRatio, 0.001)
+	require.NotNil(t, snap.P95LatencyMs)
+	assert.GreaterOrEqual(t, *snap.P95LatencyMs, int64(60000))
+}
+
+func TestGetTargetHealth_SlowRatioThresholdAboveOneDisablesDegraded(t *testing.T) {
+	ht := NewHealthTracker()
+	recovery := 0
+	policy := ApplyHealthPolicyDefaults(&configstoreTables.HealthPolicy{
+		SlowWindowSize:       10,
+		SlowRatioThreshold:   999,
+		SlowRecoverySeconds:  &recovery,
+		FailureThreshold:     2,
+		FailureWindowSeconds: 30,
+		CooldownSeconds:      30,
+	})
+	now := time.Now()
+	key := "openai:gpt-4.1"
+
+	for i := 0; i < 10; i++ {
+		ht.RecordOutcome("rule-a", key, OutcomeSlow, 60*time.Second, "", policy, now.Add(time.Duration(i)*time.Second))
+	}
+
+	assert.Equal(t, HealthHealthy, ht.GetTargetHealthForRule("rule-a", key, policy, now.Add(10*time.Second)))
+}
+
+func TestRecordOutcome_SoftFailUsesMultiplier(t *testing.T) {
+	ht := NewHealthTracker()
+	policy := ApplyHealthPolicyDefaults(&configstoreTables.HealthPolicy{
+		FailureThreshold:       1,
+		FailureWindowSeconds:   30,
+		CooldownSeconds:        30,
+		SoftCooldownMultiplier: 2,
+		CooldownBackoffFactor:  1,
+		CooldownMaxSeconds:     300,
+	})
+	now := time.Now()
+	key := "openai:gpt-4.1"
+
+	ht.RecordOutcome("rule-a", key, OutcomeSoftFail, 0, "rate limited", policy, now)
+	snap := ht.GetTargetStatusForRule("rule-a", key, policy, now)
+
+	require.NotNil(t, snap.CooldownUntil)
+	cooldownUntil, err := time.Parse(time.RFC3339, *snap.CooldownUntil)
+	require.NoError(t, err)
+	assert.Equal(t, now.Add(60*time.Second).UTC().Format(time.RFC3339), cooldownUntil.UTC().Format(time.RFC3339))
+	assert.Equal(t, "soft_fail", snap.LastOutcomeKind)
+}
+
+func TestRecordOutcome_SlowSuccess_DoesNotResetFailures(t *testing.T) {
+	ht := NewHealthTracker()
+	recovery := 0
+	policy := ApplyHealthPolicyDefaults(&configstoreTables.HealthPolicy{
+		FailureThreshold:     3,
+		FailureWindowSeconds: 30,
+		CooldownSeconds:      30,
+		SlowRecoverySeconds:  &recovery,
+	})
+	now := time.Now()
+	key := "openai:gpt-4.1"
+
+	ht.RecordOutcome("rule-a", key, OutcomeHardFail, 0, "502", policy, now)
+	ht.RecordOutcome("rule-a", key, OutcomeHardFail, 0, "503", policy, now.Add(time.Second))
+	ht.RecordOutcome("rule-a", key, OutcomeSlow, 60*time.Second, "", policy, now.Add(2*time.Second))
+
+	snap := ht.GetTargetStatusForRule("rule-a", key, policy, now.Add(3*time.Second))
+	assert.Equal(t, "available", snap.Status)
+	assert.Equal(t, 2, snap.FailureCount)
+	assert.Equal(t, 0, snap.ConsecutiveFailures)
+	assert.Equal(t, "slow", snap.LastOutcomeKind)
+}
+
+func TestGetTargetHealth_RecoversToHealthy(t *testing.T) {
+	ht := NewHealthTracker()
+	recovery := 0
+	policy := ApplyHealthPolicyDefaults(&configstoreTables.HealthPolicy{
+		SlowWindowSize:       10,
+		SlowRatioThreshold:   0.5,
+		SlowRecoverySeconds:  &recovery,
+		FailureThreshold:     2,
+		FailureWindowSeconds: 30,
+		CooldownSeconds:      30,
+	})
+	now := time.Now()
+	key := "openai:gpt-4.1"
+
+	for i := 0; i < 6; i++ {
+		ht.RecordOutcome("rule-a", key, OutcomeSlow, 60*time.Second, "", policy, now.Add(time.Duration(i)*time.Second))
+	}
+	for i := 6; i < 16; i++ {
+		ht.RecordOutcome("rule-a", key, OutcomeSuccess, time.Second, "", policy, now.Add(time.Duration(i)*time.Second))
+	}
+
+	assert.Equal(t, HealthHealthy, ht.GetTargetHealthForRule("rule-a", key, policy, now.Add(16*time.Second)))
+}
+
+func TestHalfOpenProbe_OnlyOneInFlight(t *testing.T) {
+	ht := NewHealthTracker()
+	policy := ApplyHealthPolicyDefaults(&configstoreTables.HealthPolicy{
+		FailureThreshold:     1,
+		FailureWindowSeconds: 30,
+		CooldownSeconds:      1,
+	})
+	now := time.Now()
+	key := "openai:gpt-4.1"
+
+	ht.RecordOutcome("rule-a", key, OutcomeHardFail, 0, "502", policy, now)
+	assert.Equal(t, HealthCooldown, ht.GetTargetHealthForRule("rule-a", key, policy, now))
+
+	level, halfOpen := ht.GetTargetRoutingHealthForRule("rule-a", key, policy, now.Add(2*time.Second))
+	assert.Equal(t, HealthCooldown, level)
+	assert.True(t, halfOpen)
+
+	for i := 0; i < 5; i++ {
+		level, halfOpen = ht.GetTargetRoutingHealthForRule("rule-a", key, policy, now.Add(2*time.Second))
+		assert.Equal(t, HealthCooldown, level)
+		assert.False(t, halfOpen)
+	}
+
+	ht.RecordOutcome("rule-a", key, OutcomeSuccess, time.Second, "", policy, now.Add(3*time.Second))
+	assert.Equal(t, HealthHealthy, ht.GetTargetHealthForRule("rule-a", key, policy, now.Add(3*time.Second)))
+}
+
+func TestExponentialBackoff_StreakIncrement(t *testing.T) {
+	ht := NewHealthTracker()
+	policy := ApplyHealthPolicyDefaults(&configstoreTables.HealthPolicy{
+		FailureThreshold:      1,
+		FailureWindowSeconds:  30,
+		CooldownSeconds:       10,
+		CooldownBackoffFactor: 2,
+		CooldownMaxSeconds:    60,
+	})
+	now := time.Now()
+	key := "openai:gpt-4.1"
+
+	ht.RecordOutcome("rule-a", key, OutcomeHardFail, 0, "502", policy, now)
+	snap := ht.GetTargetStatusForRule("rule-a", key, policy, now)
+	require.NotNil(t, snap.CooldownUntil)
+	firstUntil, err := time.Parse(time.RFC3339, *snap.CooldownUntil)
+	require.NoError(t, err)
+	assert.Equal(t, now.Add(10*time.Second).UTC().Format(time.RFC3339), firstUntil.UTC().Format(time.RFC3339))
+
+	ht.GetTargetHealthForRule("rule-a", key, policy, now.Add(11*time.Second))
+	ht.RecordOutcome("rule-a", key, OutcomeHardFail, 0, "502", policy, now.Add(12*time.Second))
+	snap = ht.GetTargetStatusForRule("rule-a", key, policy, now.Add(12*time.Second))
+	require.NotNil(t, snap.CooldownUntil)
+	secondUntil, err := time.Parse(time.RFC3339, *snap.CooldownUntil)
+	require.NoError(t, err)
+	assert.Equal(t, now.Add(32*time.Second).UTC().Format(time.RFC3339), secondUntil.UTC().Format(time.RFC3339))
+	assert.Equal(t, 2, snap.CooldownStreak)
+}
+
+func TestRecordOutcome_HardFailUsesBaseCooldown(t *testing.T) {
+	ht := NewHealthTracker()
+	policy := ApplyHealthPolicyDefaults(&configstoreTables.HealthPolicy{
+		FailureThreshold:       1,
+		FailureWindowSeconds:   30,
+		CooldownSeconds:        30,
+		SoftCooldownMultiplier: 2,
+		CooldownBackoffFactor:  1,
+		CooldownMaxSeconds:     300,
+	})
+	now := time.Now()
+	key := "openai:gpt-4.1"
+
+	ht.RecordOutcome("rule-a", key, OutcomeHardFail, 0, "500", policy, now)
+	snap := ht.GetTargetStatusForRule("rule-a", key, policy, now)
+
+	require.NotNil(t, snap.CooldownUntil)
+	cooldownUntil, err := time.Parse(time.RFC3339, *snap.CooldownUntil)
+	require.NoError(t, err)
+	assert.Equal(t, now.Add(30*time.Second).UTC().Format(time.RFC3339), cooldownUntil.UTC().Format(time.RFC3339))
+	assert.Equal(t, "hard_fail", snap.LastOutcomeKind)
+}

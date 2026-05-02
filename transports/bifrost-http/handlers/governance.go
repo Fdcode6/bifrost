@@ -138,17 +138,27 @@ type RoutingTarget struct {
 
 // HealthPolicyRequest represents the health policy for grouped routing
 type HealthPolicyRequest struct {
-	FailureThreshold     *int `json:"failure_threshold,omitempty"`
-	FailureWindowSeconds *int `json:"failure_window_seconds,omitempty"`
-	CooldownSeconds      *int `json:"cooldown_seconds,omitempty"`
-	ConsecutiveFailures  *int `json:"consecutive_failures,omitempty"`
+	FailureThreshold       *int     `json:"failure_threshold,omitempty"`
+	FailureWindowSeconds   *int     `json:"failure_window_seconds,omitempty"`
+	CooldownSeconds        *int     `json:"cooldown_seconds,omitempty"`
+	ConsecutiveFailures    *int     `json:"consecutive_failures,omitempty"`
+	SlowThresholdMs        *int     `json:"slow_threshold_ms,omitempty"`
+	SlowWindowSize         *int     `json:"slow_window_size,omitempty"`
+	SlowRatioThreshold     *float64 `json:"slow_ratio_threshold,omitempty"`
+	SlowRecoverySeconds    *int     `json:"slow_recovery_seconds,omitempty"`
+	RequestDeadlineMs      *int     `json:"request_deadline_ms,omitempty"`
+	SoftCooldownMultiplier *float64 `json:"soft_cooldown_multiplier,omitempty"`
+	CooldownBackoffFactor  *float64 `json:"cooldown_backoff_factor,omitempty"`
+	CooldownMaxSeconds     *int     `json:"cooldown_max_seconds,omitempty"`
+	HalfOpenProbe          *bool    `json:"half_open_probe,omitempty"`
 }
 
 // RouteGroupRequest represents a route group in a create/update request
 type RouteGroupRequest struct {
-	Name       string          `json:"name"`
-	RetryLimit int             `json:"retry_limit"`
-	Targets    []RoutingTarget `json:"targets"` // grouped targets must explicitly set provider and model
+	Name         string          `json:"name"`
+	RetryLimit   int             `json:"retry_limit"`
+	Targets      []RoutingTarget `json:"targets"` // grouped targets must explicitly set provider and model
+	FallbackOnly bool            `json:"fallback_only,omitempty"`
 }
 
 // CreateRoutingRuleRequest represents the request body for creating a routing rule
@@ -3492,21 +3502,41 @@ func validateHealthPolicy(hp *HealthPolicyRequest) error {
 	if hp.CooldownSeconds != nil && *hp.CooldownSeconds < 1 {
 		return fmt.Errorf("health_policy.cooldown_seconds must be >= 1")
 	}
-	if hp.ConsecutiveFailures != nil && *hp.ConsecutiveFailures < 1 {
-		return fmt.Errorf("health_policy.consecutive_failures must be >= 1")
+	if hp.ConsecutiveFailures != nil && *hp.ConsecutiveFailures < 0 {
+		return fmt.Errorf("health_policy.consecutive_failures must be >= 0")
+	}
+	if hp.SlowThresholdMs != nil && *hp.SlowThresholdMs < 1 {
+		return fmt.Errorf("health_policy.slow_threshold_ms must be >= 1")
+	}
+	if hp.SlowWindowSize != nil && *hp.SlowWindowSize < 1 {
+		return fmt.Errorf("health_policy.slow_window_size must be >= 1")
+	}
+	if hp.SlowRatioThreshold != nil && *hp.SlowRatioThreshold <= 0 {
+		return fmt.Errorf("health_policy.slow_ratio_threshold must be > 0")
+	}
+	if hp.SlowRecoverySeconds != nil && *hp.SlowRecoverySeconds < 0 {
+		return fmt.Errorf("health_policy.slow_recovery_seconds must be >= 0")
+	}
+	if hp.RequestDeadlineMs != nil && *hp.RequestDeadlineMs < 0 {
+		return fmt.Errorf("health_policy.request_deadline_ms must be >= 0")
+	}
+	if hp.SoftCooldownMultiplier != nil && *hp.SoftCooldownMultiplier < 1 {
+		return fmt.Errorf("health_policy.soft_cooldown_multiplier must be >= 1")
+	}
+	if hp.CooldownBackoffFactor != nil && *hp.CooldownBackoffFactor < 1 {
+		return fmt.Errorf("health_policy.cooldown_backoff_factor must be >= 1")
+	}
+	if hp.CooldownMaxSeconds != nil && *hp.CooldownMaxSeconds < 1 {
+		return fmt.Errorf("health_policy.cooldown_max_seconds must be >= 1")
 	}
 	return nil
 }
 
 // buildHealthPolicy converts the request health policy to a table health policy with defaults
 func buildHealthPolicy(hp *HealthPolicyRequest) *configstoreTables.HealthPolicy {
-	result := &configstoreTables.HealthPolicy{
-		FailureThreshold:     2,
-		FailureWindowSeconds: 30,
-		CooldownSeconds:      30,
-	}
+	result := &configstoreTables.HealthPolicy{}
 	if hp == nil {
-		return result
+		return governance.ApplyHealthPolicyDefaults(result)
 	}
 	if hp.FailureThreshold != nil {
 		result.FailureThreshold = *hp.FailureThreshold
@@ -3520,7 +3550,34 @@ func buildHealthPolicy(hp *HealthPolicyRequest) *configstoreTables.HealthPolicy 
 	if hp.ConsecutiveFailures != nil {
 		result.ConsecutiveFailures = *hp.ConsecutiveFailures
 	}
-	return result
+	if hp.SlowThresholdMs != nil {
+		result.SlowThresholdMs = *hp.SlowThresholdMs
+	}
+	if hp.SlowWindowSize != nil {
+		result.SlowWindowSize = *hp.SlowWindowSize
+	}
+	if hp.SlowRatioThreshold != nil {
+		result.SlowRatioThreshold = *hp.SlowRatioThreshold
+	}
+	if hp.SlowRecoverySeconds != nil {
+		result.SlowRecoverySeconds = hp.SlowRecoverySeconds
+	}
+	if hp.RequestDeadlineMs != nil {
+		result.RequestDeadlineMs = *hp.RequestDeadlineMs
+	}
+	if hp.SoftCooldownMultiplier != nil {
+		result.SoftCooldownMultiplier = *hp.SoftCooldownMultiplier
+	}
+	if hp.CooldownBackoffFactor != nil {
+		result.CooldownBackoffFactor = *hp.CooldownBackoffFactor
+	}
+	if hp.CooldownMaxSeconds != nil {
+		result.CooldownMaxSeconds = *hp.CooldownMaxSeconds
+	}
+	if hp.HalfOpenProbe != nil {
+		result.HalfOpenProbe = hp.HalfOpenProbe
+	}
+	return governance.ApplyHealthPolicyDefaults(result)
 }
 
 // buildRouteGroups converts request route groups to table route groups
@@ -3537,9 +3594,10 @@ func buildRouteGroups(groups []RouteGroupRequest) []configstoreTables.RouteGroup
 			})
 		}
 		result = append(result, configstoreTables.RouteGroup{
-			Name:       g.Name,
-			RetryLimit: g.RetryLimit,
-			Targets:    targets,
+			Name:         g.Name,
+			RetryLimit:   g.RetryLimit,
+			Targets:      targets,
+			FallbackOnly: g.FallbackOnly,
 		})
 	}
 	return result

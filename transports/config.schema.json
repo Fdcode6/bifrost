@@ -1633,7 +1633,61 @@
         "consecutive_failures": {
           "type": "integer",
           "description": "Number of consecutive failures (regardless of time window) before a target enters cooldown. Useful for low-traffic scenarios. 0 or omitted = use failure_threshold value",
-          "minimum": 1
+          "minimum": 0,
+          "default": 0
+        },
+        "slow_threshold_ms": {
+          "type": "integer",
+          "description": "Latency threshold in milliseconds for classifying a successful request as slow",
+          "minimum": 1,
+          "default": 45000
+        },
+        "slow_window_size": {
+          "type": "integer",
+          "description": "Number of recent samples used to calculate slow ratio",
+          "minimum": 1,
+          "default": 10
+        },
+        "slow_ratio_threshold": {
+          "type": "number",
+          "description": "Slow sample ratio that marks a target degraded. Values greater than 1, such as 999, disable ratio-based degraded routing.",
+          "exclusiveMinimum": 0,
+          "default": 0.5
+        },
+        "slow_recovery_seconds": {
+          "type": "integer",
+          "description": "Seconds after a slow success that the target remains degraded. 0 explicitly disables last-slow recency degraded routing.",
+          "minimum": 0,
+          "default": 60
+        },
+        "request_deadline_ms": {
+          "type": "integer",
+          "description": "Reserved for a future per-attempt deadline. Current version treats 0 as disabled and does not enforce this value.",
+          "minimum": 0,
+          "default": 0
+        },
+        "soft_cooldown_multiplier": {
+          "type": "number",
+          "description": "Cooldown multiplier for soft failures such as rate limits, quota errors, timeouts, and saturated groups",
+          "minimum": 1,
+          "default": 2
+        },
+        "cooldown_backoff_factor": {
+          "type": "number",
+          "description": "Exponential backoff factor applied to repeated cooldowns without a successful recovery",
+          "minimum": 1,
+          "default": 2
+        },
+        "cooldown_max_seconds": {
+          "type": "integer",
+          "description": "Maximum cooldown duration after multipliers and backoff are applied",
+          "minimum": 1,
+          "default": 600
+        },
+        "half_open_probe": {
+          "type": "boolean",
+          "description": "Allow one half-open probe request after cooldown expires. Omit for the default true; set false to preserve strict old cooldown expiry behavior.",
+          "default": true
         }
       },
       "additionalProperties": false
@@ -1649,9 +1703,14 @@
         },
         "retry_limit": {
           "type": "integer",
-          "description": "Additional attempts on other healthy targets within this group after the first attempt. The same target is not retried again within the same request.",
+          "description": "Additional attempts after the first attempt. Regular groups choose other healthy targets and do not repeat the same target; fallback-only groups may repeat selected targets so a single fallback target can consume the retry budget.",
           "minimum": 0,
           "default": 0
+        },
+        "fallback_only": {
+          "type": "boolean",
+          "description": "Do not compete for primary routing while regular groups are routable. Append this group to the current request fallback chain, become primary only when regular groups are unavailable, and skip active probing.",
+          "default": false
         },
         "targets": {
           "type": "array",

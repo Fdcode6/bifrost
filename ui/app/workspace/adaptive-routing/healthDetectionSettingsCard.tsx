@@ -31,10 +31,10 @@ interface HealthDetectionSettingsCardProps {
 }
 
 const fieldDescriptions = {
-	active_health_probe_interval_seconds: "How often the background loop scans enabled targets for probing work.",
+	active_health_probe_interval_seconds: "How often the background loop scans enabled targets for liveness checks.",
 	idle_pause_minutes: "If a target goes this many minutes without real traffic, background probing pauses until traffic returns.",
-	active_health_probe_timeout_seconds: "Maximum time allowed for one lightweight probe request.",
-	active_health_probe_max_concurrency: "How many targets can be probed at the same time in one scan.",
+	active_health_probe_timeout_seconds: "Maximum time allowed for one lightweight liveness request.",
+	active_health_probe_max_concurrency: "How many targets can be checked at the same time in one scan.",
 } as const;
 
 export default function HealthDetectionSettingsCard({ config, error, isLoading, isFetching, onRetry }: HealthDetectionSettingsCardProps) {
@@ -133,7 +133,7 @@ export default function HealthDetectionSettingsCard({ config, error, isLoading, 
 							) : null}
 						</div>
 						<CardDescription>
-							Global detection mode for Adaptive Routing. Only targets enabled in the unified list can participate in background probing.
+							Global detection mode for Adaptive Routing. Background probes are liveness-only and do not update routing health.
 						</CardDescription>
 					</div>
 					<div className="flex flex-wrap items-center gap-2">
@@ -176,7 +176,7 @@ export default function HealthDetectionSettingsCard({ config, error, isLoading, 
 								<div className="space-y-1">
 									<label className="text-sm font-medium">Detection Mode</label>
 									<p className="text-muted-foreground text-xs">
-										Choose whether the gateway should rely only on real traffic or also run lightweight probes.
+										Choose whether the gateway should rely only on real traffic or also run lightweight liveness checks.
 									</p>
 								</div>
 								<Select
@@ -208,7 +208,7 @@ export default function HealthDetectionSettingsCard({ config, error, isLoading, 
 									</div>
 									<p className="text-muted-foreground text-xs">
 										{form.mode === "hybrid"
-											? "Use passive signals first. When a target has not been reached by real traffic, the gateway can validate it with a lightweight probe."
+											? "Use real request outcomes for routing. Lightweight probes only show whether enabled targets can still answer."
 											: "Use real request outcomes only. No background probes."}
 									</p>
 								</div>

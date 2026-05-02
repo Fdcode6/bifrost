@@ -16,7 +16,16 @@ export interface HealthPolicy {
 	failure_threshold: number;
 	failure_window_seconds: number;
 	cooldown_seconds: number;
-	consecutive_failures?: number;
+	consecutive_failures: number;
+	slow_threshold_ms: number;
+	slow_window_size: number;
+	slow_ratio_threshold: number;
+	slow_recovery_seconds: number;
+	request_deadline_ms: number;
+	soft_cooldown_multiplier: number;
+	cooldown_backoff_factor: number;
+	cooldown_max_seconds: number;
+	half_open_probe: boolean;
 }
 
 export interface RouteGroupTarget {
@@ -29,14 +38,25 @@ export interface RouteGroupTarget {
 export interface RouteGroup {
 	name: string;
 	retry_limit: number;
+	fallback_only?: boolean;
 	targets: RouteGroupTarget[];
 }
 
 export interface HealthSnapshot {
 	key: string;
 	status: "available" | "cooldown";
+	health_level: "healthy" | "degraded" | "cooldown";
 	failure_count: number;
 	consecutive_failures: number;
+	slow_count: number;
+	sample_count: number;
+	slow_ratio: number;
+	p95_latency_ms?: number;
+	cooldown_streak: number;
+	last_slow_at?: string;
+	last_slow_latency_ms?: number;
+	last_outcome_kind?: "success" | "slow" | "soft_fail" | "hard_fail";
+	half_open_in_flight?: boolean;
 	cooldown_until?: string;
 	last_failure_time?: string;
 	last_failure_msg?: string;
@@ -77,6 +97,7 @@ export type HealthDetectionProbeState = "unsupported" | "off" | "pending_first_p
 
 export interface HealthDetectionRuleHealthSummary {
 	total_rule_count: number;
+	degraded_rule_count?: number;
 	cooldown_rule_count: number;
 }
 
@@ -174,6 +195,7 @@ export interface RoutingTargetFormData {
 export interface RouteGroupFormData {
 	name: string;
 	retry_limit: number;
+	fallback_only: boolean;
 	targets: RoutingTargetFormData[];
 }
 
@@ -220,12 +242,22 @@ export const DEFAULT_HEALTH_POLICY: HealthPolicy = {
 	failure_threshold: 2,
 	failure_window_seconds: 30,
 	cooldown_seconds: 30,
-	consecutive_failures: 2,
+	consecutive_failures: 0,
+	slow_threshold_ms: 45000,
+	slow_window_size: 10,
+	slow_ratio_threshold: 0.5,
+	slow_recovery_seconds: 60,
+	request_deadline_ms: 0,
+	soft_cooldown_multiplier: 2,
+	cooldown_backoff_factor: 2,
+	cooldown_max_seconds: 600,
+	half_open_probe: true,
 };
 
 export const DEFAULT_ROUTE_GROUP: RouteGroupFormData = {
 	name: "",
 	retry_limit: 0,
+	fallback_only: false,
 	targets: [{ provider: "", model: "", key_id: "", weight: 1 }],
 };
 

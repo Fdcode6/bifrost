@@ -76,6 +76,7 @@ type UpdateHealthDetectionTargetRequest struct {
 
 type HealthDetectionRuleHealthSummary struct {
 	TotalRuleCount    int `json:"total_rule_count"`
+	DegradedRuleCount int `json:"degraded_rule_count"`
 	CooldownRuleCount int `json:"cooldown_rule_count"`
 }
 
@@ -124,6 +125,7 @@ type healthDetectionTargetRecord struct {
 	KeyID               *string
 	ReferencedRuleIDs   []string
 	ReferencedRuleNames []string
+	DegradedRuleCount   int
 	CooldownRuleCount   int
 }
 
@@ -457,8 +459,10 @@ func (h *AdaptiveRoutingHandler) buildHealthDetectionTargets(ctx context.Context
 
 				if tracker != nil {
 					snap := tracker.GetTargetStatusForRule(rule.ID, record.RuntimeTargetKey, policy, now)
-					if snap.Status == "cooldown" {
+					if snap.HealthLevel == string(governance.HealthCooldown) {
 						record.CooldownRuleCount++
+					} else if snap.HealthLevel == string(governance.HealthDegraded) {
+						record.DegradedRuleCount++
 					}
 				}
 			}
@@ -487,6 +491,7 @@ func (h *AdaptiveRoutingHandler) buildHealthDetectionTargets(ctx context.Context
 			ProbeState:          resolveHealthDetectionProbeState(supportStatus, detectionEnabled, activity, probeConfig.IdlePause, now),
 			RuleHealthSummary: HealthDetectionRuleHealthSummary{
 				TotalRuleCount:    len(record.ReferencedRuleIDs),
+				DegradedRuleCount: record.DegradedRuleCount,
 				CooldownRuleCount: record.CooldownRuleCount,
 			},
 			LastRealAccessAt: formatTimePtr(activity.LastRealAccessAt),
@@ -629,6 +634,10 @@ func resolveHealthDetectionRequestType(activity governance.TargetActivitySnapsho
 	if supportsHealthDetectionRequestType(activity.LastProbeRequestType) {
 		return activity.LastProbeRequestType, true
 	}
+	switch activity.LastRealAccessRequestType {
+	case schemas.ChatCompletionStreamRequest, schemas.ResponsesStreamRequest, schemas.TextCompletionStreamRequest:
+		return schemas.ChatCompletionRequest, true
+	}
 	if activity.LastRealAccessRequestType != "" || activity.LastProbeRequestType != "" {
 		return "", false
 	}
@@ -671,13 +680,9 @@ func resolveHealthDetectionProbeState(
 
 func healthPolicyOrDefault(rule *configstoreTables.TableRoutingRule) *configstoreTables.HealthPolicy {
 	if rule != nil && rule.ParsedHealthPolicy != nil {
-		return rule.ParsedHealthPolicy
+		return governance.ApplyHealthPolicyDefaults(rule.ParsedHealthPolicy)
 	}
-	return &configstoreTables.HealthPolicy{
-		FailureThreshold:     2,
-		FailureWindowSeconds: 30,
-		CooldownSeconds:      30,
-	}
+	return governance.ApplyHealthPolicyDefaults(nil)
 }
 
 func formatTimePtr(value time.Time) *string {

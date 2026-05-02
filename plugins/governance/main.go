@@ -39,6 +39,8 @@ const (
 	groupedRoutingCurrentLayerContextKey      schemas.BifrostContextKey = "bf-grouped-routing-current-layer"       // RoutingLayerPlan: current grouped routing attempt metadata
 	groupedRoutingFallbackLayerPlanContextKey schemas.BifrostContextKey = "bf-grouped-routing-fallback-layer-plan" // []RoutingLayerPlan: grouped routing fallback layer plan aligned with fallback_index
 	groupedRoutingPinnedKeyIDContextKey       schemas.BifrostContextKey = "bf-grouped-routing-pinned-key-id"       // string: key_id pinned for current attempt (for PostLLMHook health tracking)
+	groupedRoutingHealthPolicyContextKey      schemas.BifrostContextKey = "bf-grouped-routing-health-policy"       // *HealthPolicy: matched rule policy with defaults applied
+	groupedRoutingAttemptStartContextKey      schemas.BifrostContextKey = "bf-grouped-routing-attempt-start"       // time.Time: current provider attempt start time
 
 	VirtualKeyPrefix = "sk-bf-"
 )
@@ -803,6 +805,7 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 		Headers:                  req.Headers,
 		QueryParams:              req.Query,
 		BudgetAndRateLimitStatus: p.store.GetBudgetAndRateLimitStatus(ctx, model, provider, virtualKey, nil, nil, nil),
+		TargetCostResolver:       p.resolveRoutingTargetCost,
 	}
 
 	p.logger.Debug("[HTTPTransport] Built routing context: provider=%s, model=%s, requestType=%s, vk=%v, headerCount=%d, paramCount=%d",
@@ -868,6 +871,7 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 			ctx.SetValue(groupedRoutingCurrentLayerContextKey, decision.PrimaryLayer)
 			ctx.SetValue(groupedRoutingFallbackLayerPlanContextKey, decision.FallbackLayerPlan)
 			ctx.SetValue(groupedRoutingPinnedKeyIDContextKey, decision.KeyID)
+			ctx.SetValue(groupedRoutingHealthPolicyContextKey, ApplyHealthPolicyDefaults(decision.HealthPolicy))
 			ctx.SetValue(schemas.BifrostContextKeyRouteLayerIndex, decision.PrimaryLayer.LayerIndex)
 			ctx.SetValue(schemas.BifrostContextKeyDisableProviderRetries, true)
 			if len(decision.FallbackKeyIDs) > 0 {
@@ -879,6 +883,24 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 	}
 
 	return body, decision, nil
+}
+
+func (p *GovernancePlugin) resolveRoutingTargetCost(provider schemas.ModelProvider, model string, requestType schemas.RequestType) (float64, bool) {
+	if p.modelCatalog == nil || provider == "" || model == "" {
+		return 0, false
+	}
+	if requestType == "" {
+		requestType = schemas.ChatCompletionRequest
+	}
+	pricing := p.modelCatalog.GetEffectivePricingEntry(model, provider, requestType)
+	if pricing == nil {
+		return 0, false
+	}
+	cost := pricing.InputCostPerToken + pricing.OutputCostPerToken
+	if cost <= 0 {
+		return 0, false
+	}
+	return cost, true
 }
 
 // addMCPIncludeTools adds the x-bf-mcp-include-tools header to the request headers
@@ -1070,6 +1092,10 @@ func (p *GovernancePlugin) evaluateGovernanceRequest(ctx *schemas.BifrostContext
 //   - *schemas.LLMPluginShortCircuit: The plugin short circuit if the request is not allowed
 //   - error: Any error that occurred during processing
 func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	if isGrouped, _ := ctx.Value(groupedRoutingActiveContextKey).(bool); isGrouped {
+		ctx.SetValue(groupedRoutingAttemptStartContextKey, time.Now())
+	}
+
 	// If its skip key selection - in that case we need to skip virtual key selection too
 	if bifrost.GetBoolFromContext(ctx, schemas.BifrostContextKeySkipKeySelection) {
 		return req, nil, nil
@@ -1167,17 +1193,23 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 			trackedKeyID = currentLayer.KeyID
 		}
 		if ruleID != "" && trackedProvider != "" && trackedModel != "" {
+			now := time.Now()
 			targetKey := TargetKey(trackedProvider, trackedModel, trackedKeyID)
-			p.healthTracker.RecordRealAccess(targetKey, requestType, time.Now())
-			if err != nil {
-				failureMsg := "unknown error"
-				if err.Error != nil {
-					failureMsg = err.Error.Message
-				}
-				p.healthTracker.RecordFailureForRule(ruleID, targetKey, failureMsg, time.Now())
-			} else {
-				p.healthTracker.RecordSuccessForRule(ruleID, targetKey)
+			p.healthTracker.RecordRealAccess(targetKey, requestType, now)
+
+			policy, _ := ctx.Value(groupedRoutingHealthPolicyContextKey).(*configstoreTables.HealthPolicy)
+			policy = ApplyHealthPolicyDefaults(policy)
+			attemptStart, _ := ctx.Value(groupedRoutingAttemptStartContextKey).(time.Time)
+			latency := time.Duration(0)
+			if !attemptStart.IsZero() {
+				latency = now.Sub(attemptStart)
 			}
+			failureMsg := ""
+			if err != nil && err.Error != nil {
+				failureMsg = err.Error.Message
+			}
+			kind := ClassifyOutcome(err, latency, time.Duration(policy.SlowThresholdMs)*time.Millisecond)
+			p.healthTracker.RecordOutcome(ruleID, targetKey, kind, latency, failureMsg, policy, now)
 		}
 	}
 

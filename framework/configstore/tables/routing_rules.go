@@ -15,6 +15,16 @@ type HealthPolicy struct {
 	FailureWindowSeconds int `json:"failure_window_seconds"` // sliding window in seconds (default: 30)
 	CooldownSeconds      int `json:"cooldown_seconds"`       // cooldown duration in seconds (default: 30)
 	ConsecutiveFailures  int `json:"consecutive_failures"`   // consecutive failures (ignoring time) before cooldown; 0 = use failure_threshold (default: 0)
+
+	SlowThresholdMs        int     `json:"slow_threshold_ms,omitempty"`        // latency threshold for slow success (default: 45000)
+	SlowWindowSize         int     `json:"slow_window_size,omitempty"`         // recent samples used for slow ratio (default: 10)
+	SlowRatioThreshold     float64 `json:"slow_ratio_threshold,omitempty"`     // slow/window >= threshold enters degraded; >1 disables ratio (default: 0.5)
+	SlowRecoverySeconds    *int    `json:"slow_recovery_seconds,omitempty"`    // nil = default 60; explicit 0 disables last-slow recency degraded
+	RequestDeadlineMs      int     `json:"request_deadline_ms,omitempty"`      // reserved; 0 = disabled
+	SoftCooldownMultiplier float64 `json:"soft_cooldown_multiplier,omitempty"` // soft failure cooldown multiplier (default: 2.0)
+	CooldownBackoffFactor  float64 `json:"cooldown_backoff_factor,omitempty"`  // cooldown exponential backoff factor (default: 2.0)
+	CooldownMaxSeconds     int     `json:"cooldown_max_seconds,omitempty"`     // maximum cooldown duration (default: 600)
+	HalfOpenProbe          *bool   `json:"half_open_probe,omitempty"`          // nil = default true
 }
 
 // RouteGroupTarget is a single weighted target inside a route group.
@@ -28,9 +38,10 @@ type RouteGroupTarget struct {
 
 // RouteGroup is an ordered group of targets with its own retry budget
 type RouteGroup struct {
-	Name       string             `json:"name"`
-	RetryLimit int                `json:"retry_limit"` // extra attempts on other targets after the first attempt; total attempts = 1 + retry_limit
-	Targets    []RouteGroupTarget `json:"targets"`
+	Name         string             `json:"name"`
+	RetryLimit   int                `json:"retry_limit"` // extra attempts after the first attempt; regular groups use other targets, fallback-only groups may repeat targets
+	Targets      []RouteGroupTarget `json:"targets"`
+	FallbackOnly bool               `json:"fallback_only,omitempty"` // appended after regular groups as request fallback; primary only when regular groups are unavailable; skipped by active probing
 }
 
 // TableRoutingRule represents a routing rule in the database

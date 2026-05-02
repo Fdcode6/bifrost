@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { Activity, RefreshCw, ShieldAlert, ShieldCheck } from "lucide-react";
+import { Activity, AlertTriangle, RefreshCw, ShieldAlert, ShieldCheck } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -14,6 +14,7 @@ import {
 import type { RuleHealthStatus } from "@/lib/types/routingRules";
 
 import { getDetectionModeLabel } from "./healthDetectionConfig";
+import { formatHealthMetric, formatSlowRatio, getHealthLevelDescription, getHealthLevelLabel } from "./healthDetectionTargets";
 import HealthDetectionSettingsCard from "./healthDetectionSettingsCard";
 import HealthDetectionTargetsTable from "./healthDetectionTargetsTable";
 
@@ -47,6 +48,7 @@ export default function HealthStatusView() {
 	const targets = targetsData?.targets ?? [];
 	const enabledTargetCount = targets.filter((target) => target.detection_enabled).length;
 	const cooldownTargetCount = targets.filter((target) => target.rule_health_summary.cooldown_rule_count > 0).length;
+	const degradedTargetCount = targets.filter((target) => (target.rule_health_summary.degraded_rule_count ?? 0) > 0).length;
 	const detectionModeLabel = configData ? getDetectionModeLabel(configData.mode) : "Unavailable";
 	const isRefreshing = isHealthFetching || isConfigFetching || isTargetsFetching;
 
@@ -101,15 +103,17 @@ export default function HealthStatusView() {
 						Detection Enabled
 					</div>
 					<p className="mt-1 text-2xl font-semibold">{enabledTargetCount}</p>
-					<p className="text-muted-foreground mt-1 text-xs">{cooldownTargetCount} referenced by cooldown rules</p>
+					<p className="text-muted-foreground mt-1 text-xs">
+						{degradedTargetCount} degraded, {cooldownTargetCount} cooldown
+					</p>
 				</div>
 			</div>
 
 			<div className="grid gap-3 lg:grid-cols-2">
 				<div className="bg-muted/20 rounded-md border p-4">
-					<p className="text-sm font-medium">Probe State is target-level activity, not rule health.</p>
+					<p className="text-sm font-medium">Probe State is liveness activity, not rule health.</p>
 					<p className="text-muted-foreground mt-1 text-xs">
-						Use the table below to manage per-target probing, but use the rule table further down as the routing authority.
+						Use the table below to manage dead-or-alive checks, but use the rule table further down as the routing authority.
 					</p>
 				</div>
 				<div className="bg-muted/20 rounded-md border p-4">
@@ -185,6 +189,10 @@ export default function HealthStatusView() {
 											<TableHead className="w-28">Source</TableHead>
 											<TableHead className="w-28">Window Fail</TableHead>
 											<TableHead className="w-32">Consecutive</TableHead>
+											<TableHead className="w-28">P95</TableHead>
+											<TableHead className="w-28">Slow Ratio</TableHead>
+											<TableHead className="w-28">Samples</TableHead>
+											<TableHead className="w-28">Streak</TableHead>
 											<TableHead>Last Observed</TableHead>
 											<TableHead>Cooldown Until</TableHead>
 											<TableHead>Last Failure</TableHead>
@@ -195,18 +203,26 @@ export default function HealthStatusView() {
 											<TableRow key={target.key}>
 												<TableCell className="font-mono text-sm font-medium">{target.key}</TableCell>
 												<TableCell>
-													{target.status === "cooldown" ? (
+													{target.health_level === "cooldown" ? (
 														<Badge variant="destructive" className="gap-1">
 															<ShieldAlert className="h-3 w-3" />
-															Cooldown
+															{getHealthLevelLabel(target.health_level)}
 														</Badge>
+													) : target.health_level === "degraded" ? (
+														<div className="space-y-1">
+															<Badge className="gap-1 bg-amber-100 text-amber-800 dark:bg-amber-950/40 dark:text-amber-300">
+																<AlertTriangle className="h-3 w-3" />
+																{getHealthLevelLabel(target.health_level)}
+															</Badge>
+															<p className="text-muted-foreground max-w-36 text-[10px]">{getHealthLevelDescription(target.health_level)}</p>
+														</div>
 													) : (
 														<Badge
 															variant="secondary"
 															className="gap-1 bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400"
 														>
 															<ShieldCheck className="h-3 w-3" />
-															Available
+															{getHealthLevelLabel(target.health_level)}
 														</Badge>
 													)}
 												</TableCell>
@@ -221,6 +237,12 @@ export default function HealthStatusView() {
 												</TableCell>
 												<TableCell>{target.failure_count}</TableCell>
 												<TableCell>{target.consecutive_failures}</TableCell>
+												<TableCell className="text-muted-foreground text-sm">{formatHealthMetric(target.p95_latency_ms, "ms")}</TableCell>
+												<TableCell className="text-muted-foreground text-sm">{formatSlowRatio(target.slow_ratio)}</TableCell>
+												<TableCell className="text-muted-foreground text-sm">
+													{target.sample_count} ({target.slow_count} slow)
+												</TableCell>
+												<TableCell className="text-muted-foreground text-sm">{target.cooldown_streak}</TableCell>
 												<TableCell className="text-muted-foreground text-sm">
 													{target.last_observed_at ? new Date(target.last_observed_at).toLocaleTimeString() : "—"}
 												</TableCell>

@@ -26,6 +26,15 @@ func TestBuildActiveProbePlans_IncludesPendingFirstProbeWithoutRealAccess(t *tes
 	assert.Equal(t, schemas.ChatCompletionRequest, plans[0].RequestType)
 }
 
+func TestDefaultActiveHealthProbeConfig_IsDisabledWithRecommendedCadence(t *testing.T) {
+	cfg := defaultActiveHealthProbeConfig(nil)
+
+	assert.False(t, cfg.Enabled)
+	assert.Equal(t, 60*time.Second, cfg.Interval)
+	assert.Equal(t, 5*time.Minute, cfg.IdlePause)
+	assert.Equal(t, 5*time.Second, cfg.Timeout)
+}
+
 func TestBuildActiveProbePlans_DeduplicatesTargetsAcrossRules(t *testing.T) {
 	ht := NewHealthTracker()
 	now := time.Now()
@@ -99,6 +108,33 @@ func TestBuildActiveProbePlans_UsesBootstrapChatRequestTypeForFirstProbe(t *test
 	assert.Equal(t, schemas.ChatCompletionRequest, plans[0].RequestType)
 }
 
+func TestBuildActiveProbePlans_UsesChatProbeForStreamOnlyHistory(t *testing.T) {
+	ht := NewHealthTracker()
+	now := time.Now()
+	targetKey := TargetKey("openai", "gpt-4.1", "relay-a")
+	ht.RecordRealAccess(targetKey, schemas.ChatCompletionStreamRequest, now)
+
+	plans := buildActiveProbePlans([]*configstoreTables.TableRoutingRule{
+		testGroupedProbeRule("rule-a", "openai", "gpt-4.1", "relay-a"),
+	}, ht, map[string]bool{targetKey: true}, now, 5*time.Minute)
+
+	require.Len(t, plans, 1)
+	assert.Equal(t, schemas.ChatCompletionRequest, plans[0].RequestType)
+}
+
+func TestBuildActiveProbePlans_SkipsFallbackOnlyGroups(t *testing.T) {
+	ht := NewHealthTracker()
+	now := time.Now()
+	targetKey := TargetKey("openrouter", "gemma", "fallback-key")
+
+	rule := testGroupedProbeRule("rule-fallback", "openrouter", "gemma", "fallback-key")
+	rule.ParsedRouteGroups[0].FallbackOnly = true
+
+	plans := buildActiveProbePlans([]*configstoreTables.TableRoutingRule{rule}, ht, map[string]bool{targetKey: true}, now, 5*time.Minute)
+
+	require.Empty(t, plans)
+}
+
 func TestBuildActiveProbePlans_PausesAfterInitialProbeUntilRealTraffic(t *testing.T) {
 	ht := NewHealthTracker()
 	now := time.Now()
@@ -127,7 +163,7 @@ func TestBuildActiveProbePlans_SkipsTargetsWithoutSupportedProbeShape(t *testing
 	require.Len(t, plans, 0)
 }
 
-func TestApplyActiveProbeResult_FansOutFailureAndObservation(t *testing.T) {
+func TestApplyActiveProbeResult_RecordsProbeFailureWithoutMutatingRuleHealth(t *testing.T) {
 	ht := NewHealthTracker()
 	now := time.Now()
 	targetKey := TargetKey("openai", "gpt-4.1", "relay-a")
@@ -149,10 +185,12 @@ func TestApplyActiveProbeResult_FansOutFailureAndObservation(t *testing.T) {
 
 	snapA := ht.GetTargetStatusForRule("rule-a", targetKey, policy, now)
 	snapB := ht.GetTargetStatusForRule("rule-b", targetKey, policy, now)
-	require.Equal(t, "cooldown", snapA.Status)
-	require.Equal(t, "cooldown", snapB.Status)
-	assert.Equal(t, "timeout", snapA.LastFailureMsg)
-	assert.Equal(t, "timeout", snapB.LastFailureMsg)
+	require.Equal(t, "available", snapA.Status)
+	require.Equal(t, "available", snapB.Status)
+	assert.Equal(t, 0, snapA.FailureCount)
+	assert.Equal(t, 0, snapB.FailureCount)
+	assert.Empty(t, snapA.LastFailureMsg)
+	assert.Empty(t, snapB.LastFailureMsg)
 	assert.Equal(t, string(HealthObservationSourceActive), snapA.LastObservationSource)
 	assert.Equal(t, string(HealthObservationSourceActive), snapB.LastObservationSource)
 	activity := ht.GetTargetActivity(targetKey)
@@ -162,7 +200,7 @@ func TestApplyActiveProbeResult_FansOutFailureAndObservation(t *testing.T) {
 	assert.True(t, activity.LastRealAccessAt.IsZero())
 }
 
-func TestApplyActiveProbeResult_ClearsPendingFirstProbe(t *testing.T) {
+func TestApplyActiveProbeResult_RecordsProbeSuccessWithoutClearingRuleCooldown(t *testing.T) {
 	ht := NewHealthTracker()
 	now := time.Now()
 	targetKey := TargetKey("openai", "gpt-4.1", "relay-a")
@@ -188,10 +226,10 @@ func TestApplyActiveProbeResult_ClearsPendingFirstProbe(t *testing.T) {
 
 	snapA := ht.GetTargetStatusForRule("rule-a", targetKey, policy, now.Add(5*time.Second))
 	snapB := ht.GetTargetStatusForRule("rule-b", targetKey, policy, now.Add(5*time.Second))
-	assert.Equal(t, "available", snapA.Status)
-	assert.Equal(t, "available", snapB.Status)
-	assert.Equal(t, 0, snapA.FailureCount)
-	assert.Equal(t, 0, snapB.FailureCount)
+	assert.Equal(t, "cooldown", snapA.Status)
+	assert.Equal(t, "cooldown", snapB.Status)
+	assert.Equal(t, 1, snapA.FailureCount)
+	assert.Equal(t, 1, snapB.FailureCount)
 	assert.Equal(t, string(HealthObservationSourceActive), snapA.LastObservationSource)
 	assert.Equal(t, string(HealthObservationSourceActive), snapB.LastObservationSource)
 	activity := ht.GetTargetActivity(targetKey)

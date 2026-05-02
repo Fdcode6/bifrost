@@ -9,6 +9,7 @@ describe("routeGroupState helpers", () => {
 		const group: RouteGroupFormData = {
 			name: "Primary",
 			retry_limit: 0,
+			fallback_only: false,
 			targets: [
 				{
 					provider: "openrouter",
@@ -37,6 +38,7 @@ describe("routeGroupState helpers", () => {
 		const group: RouteGroupFormData = {
 			name: "Primary",
 			retry_limit: 1,
+			fallback_only: true,
 			targets: [
 				{
 					provider: "openrouter",
@@ -57,6 +59,7 @@ describe("routeGroupState helpers", () => {
 			weight: 0.5,
 		});
 
+		expect(updated.fallback_only).toBe(true);
 		expect(updated.targets[0]).toEqual(group.targets[0]);
 		expect(updated.targets[1]).toEqual({
 			provider: "柏拉图",
@@ -64,6 +67,29 @@ describe("routeGroupState helpers", () => {
 			key_id: "",
 			weight: 0.5,
 		});
+	});
+
+	it("preserves fallback-only group metadata when patching a target", () => {
+		const group: RouteGroupFormData = {
+			name: "Fallback",
+			retry_limit: 0,
+			fallback_only: true,
+			targets: [
+				{
+					provider: "openrouter",
+					model: "gemma-4-31b-it",
+					key_id: "key-1",
+					weight: 1,
+				},
+			],
+		};
+
+		const updated = updateRouteGroupTarget(group, 0, {
+			model: "gemini-3.1-pro-preview-thinking-medium",
+		});
+
+		expect(updated.fallback_only).toBe(true);
+		expect(updated.targets[0].model).toBe("gemini-3.1-pro-preview-thinking-medium");
 	});
 
 	it("returns keys for the selected grouped target provider", () => {

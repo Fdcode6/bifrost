@@ -916,7 +916,7 @@ func TestBuildGroupedRoutingDecision_DoesNotShareCooldownAcrossRules(t *testing.
 	assert.Equal(t, "relay-a", decisionB.KeyID)
 }
 
-func TestBuildGroupedRoutingDecision_TargetRecoversAfterActiveProbeSuccess(t *testing.T) {
+func TestBuildGroupedRoutingDecision_TargetDoesNotRecoverFromActiveProbeSuccess(t *testing.T) {
 	healthTracker := NewHealthTracker()
 	targetKey := TargetKey("openai", "gpt-4.1", "relay-a")
 	healthTracker.RecordFailureForRule("rule-a", targetKey, "timeout", time.Now())
@@ -954,12 +954,8 @@ func TestBuildGroupedRoutingDecision_TargetRecoversAfterActiveProbeSuccess(t *te
 		RuleIDs:     []string{"rule-a"},
 	}, activeProbeResult{Success: true}, time.Now())
 
-	ctxRecovered := schemas.NewBifrostContext(context.Background(), time.Now())
-	decisionRecovered := buildGroupedRoutingDecision(ctxRecovered, rule, routingCtx, healthTracker, NewMockLogger())
-	require.NotNil(t, decisionRecovered)
-	assert.Equal(t, "openai", decisionRecovered.Provider)
-	assert.Equal(t, "gpt-4.1", decisionRecovered.Model)
-	assert.Equal(t, "relay-a", decisionRecovered.KeyID)
+	ctxStillBlocked := schemas.NewBifrostContext(context.Background(), time.Now())
+	assert.Nil(t, buildGroupedRoutingDecision(ctxStillBlocked, rule, routingCtx, healthTracker, NewMockLogger()))
 }
 
 func TestBuildGroupedRoutingDecision_AssignsLayerPlan(t *testing.T) {
@@ -1162,6 +1158,454 @@ func TestPreLLMHook_GroupedRoutingFallbackIndexSwitchesCurrentLayer(t *testing.T
 
 	pinnedKeyID, _ := ctx.Value(groupedRoutingPinnedKeyIDContextKey).(string)
 	assert.Equal(t, "relay-c", pinnedKeyID)
+}
+
+func TestPreLLMHook_GroupedRoutingRecordsAttemptStart(t *testing.T) {
+	plugin, _ := newGovernancePluginForRoutingTests(t)
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now())
+	ctx.SetValue(groupedRoutingActiveContextKey, true)
+
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4.1",
+		},
+	}
+
+	_, shortCircuit, err := plugin.PreLLMHook(ctx, req)
+	require.NoError(t, err)
+	assert.Nil(t, shortCircuit)
+
+	attemptStart, ok := ctx.Value(groupedRoutingAttemptStartContextKey).(time.Time)
+	require.True(t, ok)
+	assert.False(t, attemptStart.IsZero())
+}
+
+func TestPostLLMHook_GroupedRoutingSlowSuccessRecordsSlowOutcome(t *testing.T) {
+	plugin, _ := newGovernancePluginForRoutingTests(t)
+	slowRecovery := 0
+	policy := ApplyHealthPolicyDefaults(&configstoreTables.HealthPolicy{
+		SlowThresholdMs:      1,
+		SlowWindowSize:       1,
+		SlowRatioThreshold:   0.5,
+		SlowRecoverySeconds:  &slowRecovery,
+		FailureThreshold:     2,
+		FailureWindowSeconds: 30,
+		CooldownSeconds:      30,
+	})
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now())
+	ctx.SetValue(groupedRoutingActiveContextKey, true)
+	ctx.SetValue(groupedRoutingRuleIDContextKey, "rule-slow-post")
+	ctx.SetValue(groupedRoutingPinnedKeyIDContextKey, "relay-a")
+	ctx.SetValue(groupedRoutingHealthPolicyContextKey, policy)
+	ctx.SetValue(groupedRoutingAttemptStartContextKey, time.Now().Add(-10*time.Millisecond))
+	ctx.SetValue(groupedRoutingCurrentLayerContextKey, RoutingLayerPlan{
+		Provider: "openai",
+		Model:    "gpt-4.1",
+		KeyID:    "relay-a",
+	})
+	result := &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{
+			Model: "gpt-4.1",
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType:    schemas.ChatCompletionRequest,
+				Provider:       schemas.OpenAI,
+				ModelRequested: "gpt-4.1",
+			},
+		},
+	}
+
+	_, _, err := plugin.PostLLMHook(ctx, result, nil)
+	require.NoError(t, err)
+
+	targetKey := TargetKey("openai", "gpt-4.1", "relay-a")
+	snap := plugin.GetHealthTracker().GetTargetStatusForRule("rule-slow-post", targetKey, policy, time.Now())
+	assert.Equal(t, "slow", snap.LastOutcomeKind)
+	assert.Equal(t, 1, snap.SlowCount)
+	assert.Equal(t, "degraded", snap.HealthLevel)
+}
+
+func TestPostLLMHook_GroupedRoutingFallbackAttemptUsesCurrentLayer(t *testing.T) {
+	plugin, _ := newGovernancePluginForRoutingTests(t)
+	policy := ApplyHealthPolicyDefaults(&configstoreTables.HealthPolicy{
+		FailureThreshold:     1,
+		FailureWindowSeconds: 30,
+		CooldownSeconds:      30,
+	})
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now())
+	ctx.SetValue(groupedRoutingActiveContextKey, true)
+	ctx.SetValue(groupedRoutingRuleIDContextKey, "rule-fallback-post")
+	ctx.SetValue(groupedRoutingPinnedKeyIDContextKey, "relay-b")
+	ctx.SetValue(groupedRoutingHealthPolicyContextKey, policy)
+	ctx.SetValue(groupedRoutingAttemptStartContextKey, time.Now())
+	ctx.SetValue(groupedRoutingCurrentLayerContextKey, RoutingLayerPlan{
+		Provider: "azure",
+		Model:    "gpt-4.1",
+		KeyID:    "relay-b",
+	})
+
+	_, _, err := plugin.PostLLMHook(ctx, nil, testBifrostError(500, "upstream failed"))
+	require.NoError(t, err)
+
+	fallbackKey := TargetKey("azure", "gpt-4.1", "relay-b")
+	snap := plugin.GetHealthTracker().GetTargetStatusForRule("rule-fallback-post", fallbackKey, policy, time.Now())
+	assert.Equal(t, "hard_fail", snap.LastOutcomeKind)
+	assert.Equal(t, "cooldown", snap.Status)
+
+	primaryKey := TargetKey("openai", "gpt-4.1", "relay-a")
+	primarySnap := plugin.GetHealthTracker().GetTargetStatusForRule("rule-fallback-post", primaryKey, policy, time.Now())
+	assert.Equal(t, "healthy", primarySnap.HealthLevel)
+}
+
+func TestBuildGroupedRoutingDecision_HealthOverCost_DegradedYieldsToNextGroup(t *testing.T) {
+	healthTracker := NewHealthTracker()
+	recovery := 0
+	policy := ApplyHealthPolicyDefaults(&configstoreTables.HealthPolicy{
+		SlowWindowSize:       10,
+		SlowRatioThreshold:   0.5,
+		SlowRecoverySeconds:  &recovery,
+		FailureThreshold:     2,
+		FailureWindowSeconds: 30,
+		CooldownSeconds:      30,
+	})
+	now := time.Now()
+	cheapKey := TargetKey("poloapi", "gemini-pro", "cheap-key")
+	for i := 0; i < 6; i++ {
+		healthTracker.RecordOutcome("rule-health-cost", cheapKey, OutcomeSlow, 60*time.Second, "", policy, now.Add(time.Duration(i)*time.Second))
+	}
+	for i := 6; i < 10; i++ {
+		healthTracker.RecordOutcome("rule-health-cost", cheapKey, OutcomeSuccess, time.Second, "", policy, now.Add(time.Duration(i)*time.Second))
+	}
+
+	rule := &configstoreTables.TableRoutingRule{
+		ID:                 "rule-health-cost",
+		Name:               "health over cost",
+		ParsedHealthPolicy: policy,
+		ParsedRouteGroups: []configstoreTables.RouteGroup{
+			{Name: "cheap", Targets: []configstoreTables.RouteGroupTarget{{
+				Provider: bifrost.Ptr("poloapi"),
+				Model:    bifrost.Ptr("gemini-pro"),
+				KeyID:    bifrost.Ptr("cheap-key"),
+				Weight:   1,
+			}}},
+			{Name: "fast", Targets: []configstoreTables.RouteGroupTarget{{
+				Provider: bifrost.Ptr("4sapi"),
+				Model:    bifrost.Ptr("gemini-pro-medium"),
+				KeyID:    bifrost.Ptr("fast-key"),
+				Weight:   1,
+			}}},
+		},
+	}
+
+	decision := buildGroupedRoutingDecision(schemas.NewBifrostContext(context.Background(), now), rule, &RoutingContext{
+		Provider: schemas.OpenAI,
+		Model:    "gemini-pro",
+	}, healthTracker, NewMockLogger())
+
+	require.NotNil(t, decision)
+	assert.Equal(t, "4sapi", decision.Provider)
+	assert.Equal(t, "gemini-pro-medium", decision.Model)
+	assert.Equal(t, "fast-key", decision.KeyID)
+	assert.Equal(t, []string{"poloapi/gemini-pro"}, decision.Fallbacks)
+}
+
+func TestBuildGroupedRoutingDecision_CostOrdersHealthyTargetsWithinGroup(t *testing.T) {
+	healthTracker := NewHealthTracker()
+	now := time.Now()
+	rule := &configstoreTables.TableRoutingRule{
+		ID:   "rule-cost-order",
+		Name: "cost order",
+		ParsedRouteGroups: []configstoreTables.RouteGroup{
+			{Name: "primary", RetryLimit: 1, Targets: []configstoreTables.RouteGroupTarget{
+				{Provider: bifrost.Ptr("openai"), Model: bifrost.Ptr("expensive"), KeyID: bifrost.Ptr("key-expensive"), Weight: 1},
+				{Provider: bifrost.Ptr("openai"), Model: bifrost.Ptr("cheap"), KeyID: bifrost.Ptr("key-cheap"), Weight: 1},
+			}},
+		},
+	}
+
+	decision := buildGroupedRoutingDecision(schemas.NewBifrostContext(context.Background(), now), rule, &RoutingContext{
+		Provider:    schemas.OpenAI,
+		Model:       "incoming",
+		RequestType: string(schemas.ChatCompletionRequest),
+		TargetCostResolver: func(provider schemas.ModelProvider, model string, requestType schemas.RequestType) (float64, bool) {
+			switch model {
+			case "cheap":
+				return 0.000001, true
+			case "expensive":
+				return 0.00001, true
+			default:
+				return 0, false
+			}
+		},
+	}, healthTracker, NewMockLogger())
+
+	require.NotNil(t, decision)
+	assert.Equal(t, "cheap", decision.Model)
+	assert.Equal(t, "key-cheap", decision.KeyID)
+	assert.Equal(t, []string{"openai/expensive"}, decision.Fallbacks)
+}
+
+func TestBuildGroupedRoutingDecision_FallbackOnlyAppendedAfterRegularHealthyExists(t *testing.T) {
+	healthTracker := NewHealthTracker()
+	now := time.Now()
+	rule := &configstoreTables.TableRoutingRule{
+		ID:   "rule-fallback-only",
+		Name: "fallback only",
+		ParsedRouteGroups: []configstoreTables.RouteGroup{
+			{Name: "regular", Targets: []configstoreTables.RouteGroupTarget{{
+				Provider: bifrost.Ptr("openai"),
+				Model:    bifrost.Ptr("gpt-4.1"),
+				KeyID:    bifrost.Ptr("regular-key"),
+				Weight:   1,
+			}}},
+			{Name: "fallback", FallbackOnly: true, Targets: []configstoreTables.RouteGroupTarget{{
+				Provider: bifrost.Ptr("openrouter"),
+				Model:    bifrost.Ptr("gemma"),
+				KeyID:    bifrost.Ptr("fallback-key"),
+				Weight:   1,
+			}}},
+		},
+	}
+
+	decision := buildGroupedRoutingDecision(schemas.NewBifrostContext(context.Background(), now), rule, &RoutingContext{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4.1",
+	}, healthTracker, NewMockLogger())
+
+	require.NotNil(t, decision)
+	assert.Equal(t, "openai", decision.Provider)
+	assert.Equal(t, []string{"openrouter/gemma"}, decision.Fallbacks)
+	require.Len(t, decision.FallbackLayerPlan, 1)
+	assert.Equal(t, "fallback", decision.FallbackLayerPlan[0].LayerName)
+}
+
+func TestBuildGroupedRoutingDecision_FallbackOnlyUsedAsLastResort(t *testing.T) {
+	healthTracker := NewHealthTracker()
+	policy := ApplyHealthPolicyDefaults(&configstoreTables.HealthPolicy{
+		FailureThreshold:     1,
+		FailureWindowSeconds: 30,
+		CooldownSeconds:      30,
+	})
+	now := time.Now()
+	regularKey := TargetKey("openai", "gpt-4.1", "regular-key")
+	healthTracker.RecordOutcome("rule-last-resort", regularKey, OutcomeHardFail, 0, "502", policy, now)
+
+	rule := &configstoreTables.TableRoutingRule{
+		ID:                 "rule-last-resort",
+		Name:               "last resort",
+		ParsedHealthPolicy: policy,
+		ParsedRouteGroups: []configstoreTables.RouteGroup{
+			{Name: "regular", Targets: []configstoreTables.RouteGroupTarget{{
+				Provider: bifrost.Ptr("openai"),
+				Model:    bifrost.Ptr("gpt-4.1"),
+				KeyID:    bifrost.Ptr("regular-key"),
+				Weight:   1,
+			}}},
+			{Name: "fallback", FallbackOnly: true, Targets: []configstoreTables.RouteGroupTarget{{
+				Provider: bifrost.Ptr("openrouter"),
+				Model:    bifrost.Ptr("gemma"),
+				KeyID:    bifrost.Ptr("fallback-key"),
+				Weight:   1,
+			}}},
+		},
+	}
+
+	decision := buildGroupedRoutingDecision(schemas.NewBifrostContext(context.Background(), now), rule, &RoutingContext{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4.1",
+	}, healthTracker, NewMockLogger())
+
+	require.NotNil(t, decision)
+	assert.Equal(t, "openrouter", decision.Provider)
+	assert.Equal(t, "fallback-key", decision.KeyID)
+}
+
+func TestBuildGroupedRoutingDecision_FallbackOnlyAppendedAfterRegularDegradedExists(t *testing.T) {
+	healthTracker := NewHealthTracker()
+	recovery := 0
+	policy := ApplyHealthPolicyDefaults(&configstoreTables.HealthPolicy{
+		SlowWindowSize:       10,
+		SlowRatioThreshold:   0.5,
+		SlowRecoverySeconds:  &recovery,
+		FailureThreshold:     2,
+		FailureWindowSeconds: 30,
+		CooldownSeconds:      30,
+	})
+	now := time.Now()
+	degradedKey := TargetKey("poloapi", "gemini-pro", "cheap-key")
+	for i := 0; i < 6; i++ {
+		healthTracker.RecordOutcome("rule-fallback-last", degradedKey, OutcomeSlow, 60*time.Second, "", policy, now.Add(time.Duration(i)*time.Second))
+	}
+
+	rule := &configstoreTables.TableRoutingRule{
+		ID:                 "rule-fallback-last",
+		Name:               "fallback last",
+		ParsedHealthPolicy: policy,
+		ParsedRouteGroups: []configstoreTables.RouteGroup{
+			{Name: "cheap", Targets: []configstoreTables.RouteGroupTarget{{
+				Provider: bifrost.Ptr("poloapi"),
+				Model:    bifrost.Ptr("gemini-pro"),
+				KeyID:    bifrost.Ptr("cheap-key"),
+				Weight:   1,
+			}}},
+			{Name: "fallback", FallbackOnly: true, Targets: []configstoreTables.RouteGroupTarget{{
+				Provider: bifrost.Ptr("openrouter"),
+				Model:    bifrost.Ptr("gemma"),
+				KeyID:    bifrost.Ptr("fallback-key"),
+				Weight:   1,
+			}}},
+		},
+	}
+
+	decision := buildGroupedRoutingDecision(schemas.NewBifrostContext(context.Background(), now), rule, &RoutingContext{
+		Provider: schemas.OpenAI,
+		Model:    "gemini-pro",
+	}, healthTracker, NewMockLogger())
+
+	require.NotNil(t, decision)
+	assert.Equal(t, "poloapi", decision.Provider)
+	assert.Equal(t, []string{"openrouter/gemma"}, decision.Fallbacks)
+	require.Len(t, decision.FallbackLayerPlan, 1)
+	assert.Equal(t, "fallback", decision.FallbackLayerPlan[0].LayerName)
+}
+
+func TestBuildGroupedRoutingDecision_FallbackOnlyRetryLimitRepeatsSingleTarget(t *testing.T) {
+	healthTracker := NewHealthTracker()
+	now := time.Now()
+	rule := &configstoreTables.TableRoutingRule{
+		ID:   "rule-fallback-retries",
+		Name: "fallback retries",
+		ParsedRouteGroups: []configstoreTables.RouteGroup{
+			{Name: "regular", Targets: []configstoreTables.RouteGroupTarget{{
+				Provider: bifrost.Ptr("openai"),
+				Model:    bifrost.Ptr("gpt-4.1"),
+				KeyID:    bifrost.Ptr("regular-key"),
+				Weight:   1,
+			}}},
+			{Name: "fallback", RetryLimit: 2, FallbackOnly: true, Targets: []configstoreTables.RouteGroupTarget{{
+				Provider: bifrost.Ptr("openrouter"),
+				Model:    bifrost.Ptr("gemma"),
+				KeyID:    bifrost.Ptr("fallback-key"),
+				Weight:   1,
+			}}},
+		},
+	}
+
+	decision := buildGroupedRoutingDecision(schemas.NewBifrostContext(context.Background(), now), rule, &RoutingContext{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4.1",
+	}, healthTracker, NewMockLogger())
+
+	require.NotNil(t, decision)
+	assert.Equal(t, "openai", decision.Provider)
+	assert.Equal(t, []string{"openrouter/gemma", "openrouter/gemma", "openrouter/gemma"}, decision.Fallbacks)
+	assert.Equal(t, []string{"fallback-key", "fallback-key", "fallback-key"}, decision.FallbackKeyIDs)
+	require.Len(t, decision.FallbackLayerPlan, 3)
+	for _, plan := range decision.FallbackLayerPlan {
+		assert.Equal(t, "fallback", plan.LayerName)
+		assert.Equal(t, "fallback-key", plan.KeyID)
+	}
+}
+
+func TestBuildGroupedRoutingDecision_HalfOpenProbeSinksToFallbackTail(t *testing.T) {
+	healthTracker := NewHealthTracker()
+	policy := ApplyHealthPolicyDefaults(&configstoreTables.HealthPolicy{
+		FailureThreshold:     1,
+		FailureWindowSeconds: 30,
+		CooldownSeconds:      1,
+	})
+	now := time.Now().Add(-2 * time.Second)
+	halfOpenKey := TargetKey("poloapi", "gemini-pro", "cheap-key")
+	healthTracker.RecordOutcome("rule-half-open", halfOpenKey, OutcomeHardFail, 0, "502", policy, now)
+	require.Equal(t, HealthCooldown, healthTracker.GetTargetHealthForRule("rule-half-open", halfOpenKey, policy, now))
+
+	rule := &configstoreTables.TableRoutingRule{
+		ID:                 "rule-half-open",
+		Name:               "half open",
+		ParsedHealthPolicy: policy,
+		ParsedRouteGroups: []configstoreTables.RouteGroup{
+			{Name: "cheap", Targets: []configstoreTables.RouteGroupTarget{{
+				Provider: bifrost.Ptr("poloapi"),
+				Model:    bifrost.Ptr("gemini-pro"),
+				KeyID:    bifrost.Ptr("cheap-key"),
+				Weight:   1,
+			}}},
+			{Name: "fast", Targets: []configstoreTables.RouteGroupTarget{{
+				Provider: bifrost.Ptr("4sapi"),
+				Model:    bifrost.Ptr("gemini-pro-medium"),
+				KeyID:    bifrost.Ptr("fast-key"),
+				Weight:   1,
+			}}},
+		},
+	}
+
+	decision := buildGroupedRoutingDecision(schemas.NewBifrostContext(context.Background(), time.Now()), rule, &RoutingContext{
+		Provider: schemas.OpenAI,
+		Model:    "gemini-pro",
+	}, healthTracker, NewMockLogger())
+
+	require.NotNil(t, decision)
+	assert.Equal(t, "4sapi", decision.Provider)
+	assert.Equal(t, []string{"poloapi/gemini-pro"}, decision.Fallbacks)
+}
+
+func TestBuildGroupedRoutingDecision_DedupAcrossHealthBuckets(t *testing.T) {
+	healthTracker := NewHealthTracker()
+	now := time.Now()
+	rule := &configstoreTables.TableRoutingRule{
+		ID:   "rule-dedup",
+		Name: "dedup",
+		ParsedRouteGroups: []configstoreTables.RouteGroup{
+			{Name: "first", RetryLimit: 1, Targets: []configstoreTables.RouteGroupTarget{
+				{Provider: bifrost.Ptr("openai"), Model: bifrost.Ptr("gpt-4.1"), KeyID: bifrost.Ptr("same-key"), Weight: 1},
+				{Provider: bifrost.Ptr("openai"), Model: bifrost.Ptr("gpt-4.1-mini"), KeyID: bifrost.Ptr("mini-key"), Weight: 0},
+			}},
+			{Name: "second", Targets: []configstoreTables.RouteGroupTarget{{
+				Provider: bifrost.Ptr("openai"),
+				Model:    bifrost.Ptr("gpt-4.1"),
+				KeyID:    bifrost.Ptr("same-key"),
+				Weight:   1,
+			}}},
+		},
+	}
+
+	decision := buildGroupedRoutingDecision(schemas.NewBifrostContext(context.Background(), now), rule, &RoutingContext{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4.1",
+	}, healthTracker, NewMockLogger())
+
+	require.NotNil(t, decision)
+	seen := map[string]int{decision.Provider + "/" + decision.Model: 1}
+	for _, fallback := range decision.Fallbacks {
+		seen[fallback]++
+	}
+	assert.Equal(t, 1, seen["openai/gpt-4.1"])
+}
+
+func TestBuildGroupedRoutingDecision_RetryLimitStillAppliesPerGroup(t *testing.T) {
+	healthTracker := NewHealthTracker()
+	now := time.Now()
+	rule := &configstoreTables.TableRoutingRule{
+		ID:   "rule-retry-limit",
+		Name: "retry limit",
+		ParsedRouteGroups: []configstoreTables.RouteGroup{
+			{Name: "primary", RetryLimit: 1, Targets: []configstoreTables.RouteGroupTarget{
+				{Provider: bifrost.Ptr("openai"), Model: bifrost.Ptr("gpt-4.1"), KeyID: bifrost.Ptr("key-a"), Weight: 1},
+				{Provider: bifrost.Ptr("openai"), Model: bifrost.Ptr("gpt-4.1-mini"), KeyID: bifrost.Ptr("key-b"), Weight: 1},
+				{Provider: bifrost.Ptr("openai"), Model: bifrost.Ptr("gpt-4.1-nano"), KeyID: bifrost.Ptr("key-c"), Weight: 1},
+			}},
+		},
+	}
+
+	decision := buildGroupedRoutingDecision(schemas.NewBifrostContext(context.Background(), now), rule, &RoutingContext{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4.1",
+	}, healthTracker, NewMockLogger())
+
+	require.NotNil(t, decision)
+	assert.Len(t, decision.Fallbacks, 1)
+	assert.Len(t, decision.FallbackLayerPlan, 1)
 }
 
 // TestCompileAndCacheProgram_BudgetExpression tests compiling budget expression

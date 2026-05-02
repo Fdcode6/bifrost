@@ -213,7 +213,8 @@ export default function HealthDetectionTargetsTable({
 												<span
 													className={cn("text-sm", target.rule_health_summary.cooldown_rule_count > 0 && "text-destructive font-medium")}
 												>
-													{target.rule_health_summary.cooldown_rule_count}/{target.rule_health_summary.total_rule_count} rules in cooldown
+													{target.rule_health_summary.degraded_rule_count ?? 0} degraded, {target.rule_health_summary.cooldown_rule_count}{" "}
+													cooldown / {target.rule_health_summary.total_rule_count}
 												</span>
 											</TableCell>
 											<TableCell className="text-muted-foreground text-sm">

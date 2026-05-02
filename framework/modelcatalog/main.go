@@ -88,8 +88,8 @@ type PricingEntry struct {
 	InputCostPerAudioPerSecondAbove128kTokens *float64 `json:"input_cost_per_audio_per_second_above_128k_tokens,omitempty"`
 	OutputCostPerTokenAbove128kTokens         *float64 `json:"output_cost_per_token_above_128k_tokens,omitempty"`
 	// Costs - 200k Tier
-	InputCostPerTokenAbove200kTokens         *float64 `json:"input_cost_per_token_above_200k_tokens,omitempty"`
-	InputCostPerTokenAbove200kTokensPriority *float64 `json:"input_cost_per_token_above_200k_tokens_priority,omitempty"`
+	InputCostPerTokenAbove200kTokens          *float64 `json:"input_cost_per_token_above_200k_tokens,omitempty"`
+	InputCostPerTokenAbove200kTokensPriority  *float64 `json:"input_cost_per_token_above_200k_tokens_priority,omitempty"`
 	OutputCostPerTokenAbove200kTokens         *float64 `json:"output_cost_per_token_above_200k_tokens,omitempty"`
 	OutputCostPerTokenAbove200kTokensPriority *float64 `json:"output_cost_per_token_above_200k_tokens_priority,omitempty"`
 	// Costs - 272k Tier
@@ -389,8 +389,6 @@ func (mc *ModelCatalog) getPricingSyncInterval() time.Duration {
 
 // GetPricingEntryForModel returns the pricing data
 func (mc *ModelCatalog) GetPricingEntryForModel(model string, provider schemas.ModelProvider) *PricingEntry {
-	mc.mu.RLock()
-	defer mc.mu.RUnlock()
 	// Check all modes
 	for _, mode := range []schemas.RequestType{
 		schemas.TextCompletionRequest,
@@ -405,13 +403,30 @@ func (mc *ModelCatalog) GetPricingEntryForModel(model string, provider schemas.M
 		schemas.ImageVariationRequest,
 		schemas.VideoGenerationRequest,
 	} {
-		key := makeKey(model, string(provider), normalizeRequestType(mode))
-		pricing, ok := mc.pricingData[key]
+		pricing, ok := mc.getPricing(model, string(provider), mode)
 		if ok {
-			return convertTableModelPricingToPricingData(&pricing)
+			return convertTableModelPricingToPricingData(pricing)
 		}
 	}
 	return nil
+}
+
+// GetEffectivePricingEntry returns pricing for a specific request type after provider overrides are applied.
+func (mc *ModelCatalog) GetEffectivePricingEntry(model string, provider schemas.ModelProvider, requestType schemas.RequestType) *PricingEntry {
+	pricing, ok := mc.getPricing(model, string(provider), requestType)
+	if !ok {
+		overridePricing := configstoreTables.TableModelPricing{
+			Model:    model,
+			Provider: string(provider),
+			Mode:     normalizeRequestType(requestType),
+		}
+		effective, matched := mc.applyPricingOverridesIfMatched(provider, model, requestType, overridePricing)
+		if !matched {
+			return nil
+		}
+		return convertTableModelPricingToPricingData(&effective)
+	}
+	return convertTableModelPricingToPricingData(pricing)
 }
 
 // GetModelCapabilityEntryForModel returns capability metadata for a model/provider pair.

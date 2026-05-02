@@ -444,11 +444,33 @@ func TestSchemaGovernanceGroupedRoutingRules(t *testing.T) {
 						"id": "rule-1",
 						"name": "grouped",
 						"grouped_routing_enabled": true,
+						"health_policy": {
+							"failure_threshold": 2,
+							"failure_window_seconds": 30,
+							"cooldown_seconds": 30,
+							"consecutive_failures": 0,
+							"slow_threshold_ms": 45000,
+							"slow_window_size": 10,
+							"slow_ratio_threshold": 999,
+							"slow_recovery_seconds": 0,
+							"request_deadline_ms": 0,
+							"soft_cooldown_multiplier": 2,
+							"cooldown_backoff_factor": 1,
+							"cooldown_max_seconds": 600,
+							"half_open_probe": false
+						},
 						"route_groups": [
 							{
 								"name": "primary",
 								"targets": [
 									{"provider": "openai", "model": "gpt-4.1", "weight": 1}
+								]
+							},
+							{
+								"name": "fallback",
+								"fallback_only": true,
+								"targets": [
+									{"provider": "openrouter", "model": "gpt-4.1", "weight": 1}
 								]
 							}
 						]

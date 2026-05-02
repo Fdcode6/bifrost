@@ -857,10 +857,15 @@ func (mc *ModelCatalog) getPricing(model, provider string, requestType schemas.R
 	defer mc.mu.RUnlock()
 
 	mode := normalizeRequestType(requestType)
+	providerName := schemas.ModelProvider(provider)
+	applyOverrides := func(pricing configstoreTables.TableModelPricing, lookupModel string) *configstoreTables.TableModelPricing {
+		effective := mc.applyPricingOverrides(providerName, lookupModel, requestType, pricing)
+		return &effective
+	}
 
 	pricing, ok := mc.pricingData[makeKey(model, provider, mode)]
 	if ok {
-		return &pricing, true
+		return applyOverrides(pricing, model), true
 	}
 
 	// Lookup in vertex if gemini not found
@@ -868,7 +873,7 @@ func (mc *ModelCatalog) getPricing(model, provider string, requestType schemas.R
 		mc.logger.Debug("primary lookup failed, trying vertex provider for the same model")
 		pricing, ok = mc.pricingData[makeKey(model, "vertex", mode)]
 		if ok {
-			return &pricing, true
+			return applyOverrides(pricing, model), true
 		}
 
 		// Lookup in chat if responses not found
@@ -876,7 +881,7 @@ func (mc *ModelCatalog) getPricing(model, provider string, requestType schemas.R
 			mc.logger.Debug("secondary lookup failed, trying vertex provider for the same model in chat completion")
 			pricing, ok = mc.pricingData[makeKey(model, "vertex", normalizeRequestType(schemas.ChatCompletionRequest))]
 			if ok {
-				return &pricing, true
+				return applyOverrides(pricing, model), true
 			}
 		}
 	}
@@ -888,7 +893,7 @@ func (mc *ModelCatalog) getPricing(model, provider string, requestType schemas.R
 			mc.logger.Debug("primary lookup failed, trying vertex provider for the same model with provider/model format %s", modelWithoutProvider)
 			pricing, ok = mc.pricingData[makeKey(modelWithoutProvider, "vertex", mode)]
 			if ok {
-				return &pricing, true
+				return applyOverrides(pricing, modelWithoutProvider), true
 			}
 
 			// Lookup in chat if responses not found
@@ -896,7 +901,7 @@ func (mc *ModelCatalog) getPricing(model, provider string, requestType schemas.R
 				mc.logger.Debug("secondary lookup failed, trying vertex provider for the same model in chat completion")
 				pricing, ok = mc.pricingData[makeKey(modelWithoutProvider, "vertex", normalizeRequestType(schemas.ChatCompletionRequest))]
 				if ok {
-					return &pricing, true
+					return applyOverrides(pricing, modelWithoutProvider), true
 				}
 			}
 		}
@@ -908,7 +913,7 @@ func (mc *ModelCatalog) getPricing(model, provider string, requestType schemas.R
 			mc.logger.Debug("primary lookup failed, trying with anthropic. prefix for the same model")
 			pricing, ok = mc.pricingData[makeKey("anthropic."+model, provider, mode)]
 			if ok {
-				return &pricing, true
+				return applyOverrides(pricing, model), true
 			}
 
 			// Lookup in chat if responses not found
@@ -916,7 +921,7 @@ func (mc *ModelCatalog) getPricing(model, provider string, requestType schemas.R
 				mc.logger.Debug("secondary lookup failed, trying chat provider for the same model in chat completion")
 				pricing, ok = mc.pricingData[makeKey("anthropic."+model, provider, normalizeRequestType(schemas.ChatCompletionRequest))]
 				if ok {
-					return &pricing, true
+					return applyOverrides(pricing, model), true
 				}
 			}
 		}
@@ -927,7 +932,7 @@ func (mc *ModelCatalog) getPricing(model, provider string, requestType schemas.R
 		mc.logger.Debug("primary lookup failed, trying chat provider for the same model in chat completion")
 		pricing, ok = mc.pricingData[makeKey(model, provider, normalizeRequestType(schemas.ChatCompletionRequest))]
 		if ok {
-			return &pricing, true
+			return applyOverrides(pricing, model), true
 		}
 	}
 
@@ -938,7 +943,7 @@ func (mc *ModelCatalog) getPricing(model, provider string, requestType schemas.R
 		mc.logger.Debug("primary lookup failed, trying image generation provider for the same model")
 		pricing, ok = mc.pricingData[makeKey(model, provider, normalizeRequestType(schemas.ImageGenerationRequest))]
 		if ok {
-			return &pricing, true
+			return applyOverrides(pricing, model), true
 		}
 	}
 

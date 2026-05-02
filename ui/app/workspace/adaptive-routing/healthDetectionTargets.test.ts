@@ -6,6 +6,9 @@ import {
 	getHealthDetectionProbeStateDescription,
 	getHealthDetectionProbeStateLabel,
 	getHealthDetectionSupportStatusLabel,
+	getHealthLevelDescription,
+	getHealthLevelLabel,
+	formatSlowRatio,
 	isHealthDetectionTargetEditable,
 } from "./healthDetectionTargets";
 
@@ -44,9 +47,9 @@ describe("healthDetectionTargets helpers", () => {
 		expect(getHealthDetectionProbeStateDescription("unsupported")).toBe("This target is visible but cannot be enrolled in active probing.");
 		expect(getHealthDetectionProbeStateDescription("off")).toBe("Active probing is turned off for this target.");
 		expect(getHealthDetectionProbeStateDescription("pending_first_probe")).toBe(
-			"The target is enabled and waiting for an initial validation probe.",
+			"The target is enabled and waiting for an initial liveness probe.",
 		);
-		expect(getHealthDetectionProbeStateDescription("eligible")).toBe("The target is enabled and eligible for background probing.");
+		expect(getHealthDetectionProbeStateDescription("eligible")).toBe("The target is enabled and eligible for background liveness probing.");
 		expect(getHealthDetectionProbeStateDescription("paused_idle")).toBe(
 			"Background probing is paused because this target has not received recent real traffic.",
 		);
@@ -58,8 +61,19 @@ describe("healthDetectionTargets helpers", () => {
 			isHealthDetectionTargetEditable({
 				...baseTarget,
 				support_status: "unsupported",
-				probe_state: "unsupported",
 			}),
 		).toBe(false);
+	});
+
+	it("formats three-state health levels", () => {
+		expect(getHealthLevelLabel("healthy")).toBe("Healthy");
+		expect(getHealthLevelLabel("degraded")).toBe("Degraded");
+		expect(getHealthLevelLabel("cooldown")).toBe("Cooldown");
+		expect(getHealthLevelDescription("degraded")).toContain("routed after healthy");
+	});
+
+	it("formats slow ratios for health snapshots", () => {
+		expect(formatSlowRatio(0.6)).toBe("60%");
+		expect(formatSlowRatio(undefined)).toBe("—");
 	});
 });

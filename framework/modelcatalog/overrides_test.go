@@ -23,7 +23,6 @@ func (noOpLogger) LogHTTPRequest(schemas.LogLevel, string) schemas.LogEventBuild
 }
 
 func TestSetProviderPricingOverrides_InvalidRegex(t *testing.T) {
-	t.Skip()
 	mc := newTestCatalog(nil, nil)
 	err := mc.SetProviderPricingOverrides(schemas.OpenAI, []schemas.ProviderPricingOverride{
 		{
@@ -35,7 +34,6 @@ func TestSetProviderPricingOverrides_InvalidRegex(t *testing.T) {
 }
 
 func TestGetPricing_OverridePrecedenceExactWildcardRegex(t *testing.T) {
-	t.Skip()
 	mc := newTestCatalog(nil, nil)
 	mc.logger = noOpLogger{}
 	mc.pricingData[makeKey("gpt-4o", "openai", "chat")] = configstoreTables.TableModelPricing{
@@ -75,7 +73,6 @@ func TestGetPricing_OverridePrecedenceExactWildcardRegex(t *testing.T) {
 }
 
 func TestGetPricing_WildcardBeatsRegex(t *testing.T) {
-	t.Skip()
 	mc := newTestCatalog(nil, nil)
 	mc.logger = noOpLogger{}
 	mc.pricingData[makeKey("gpt-4o-mini", "openai", "chat")] = configstoreTables.TableModelPricing{
@@ -108,7 +105,6 @@ func TestGetPricing_WildcardBeatsRegex(t *testing.T) {
 }
 
 func TestGetPricing_RequestTypeSpecificOverrideBeatsGeneric(t *testing.T) {
-	t.Skip()
 	mc := newTestCatalog(nil, nil)
 	mc.logger = noOpLogger{}
 	mc.pricingData[makeKey("gpt-4o", "openai", "responses")] = configstoreTables.TableModelPricing{
@@ -142,7 +138,6 @@ func TestGetPricing_RequestTypeSpecificOverrideBeatsGeneric(t *testing.T) {
 }
 
 func TestGetPricing_AppliesOverrideAfterFallbackResolution(t *testing.T) {
-	t.Skip()
 	mc := newTestCatalog(nil, nil)
 	mc.logger = noOpLogger{}
 	mc.pricingData[makeKey("gpt-4o", "vertex", "chat")] = configstoreTables.TableModelPricing{
@@ -169,7 +164,6 @@ func TestGetPricing_AppliesOverrideAfterFallbackResolution(t *testing.T) {
 }
 
 func TestGetPricing_ExactOverrideDoesNotMatchProviderPrefixedModel(t *testing.T) {
-	t.Skip()
 	mc := newTestCatalog(nil, nil)
 	mc.logger = noOpLogger{}
 	mc.pricingData[makeKey("openai/gpt-4o", "openai", "chat")] = configstoreTables.TableModelPricing{
@@ -196,7 +190,6 @@ func TestGetPricing_ExactOverrideDoesNotMatchProviderPrefixedModel(t *testing.T)
 }
 
 func TestGetPricing_NoMatchingOverrideLeavesPricingUnchanged(t *testing.T) {
-	t.Skip()
 	mc := newTestCatalog(nil, nil)
 	mc.logger = noOpLogger{}
 	baseCacheRead := 0.4
@@ -227,8 +220,35 @@ func TestGetPricing_NoMatchingOverrideLeavesPricingUnchanged(t *testing.T) {
 	assert.Equal(t, 0.4, *pricing.CacheReadInputTokenCost)
 }
 
+func TestGetEffectivePricingEntry_OverrideCreatesPricingForUnknownModel(t *testing.T) {
+	mc := newTestCatalog(nil, nil)
+	mc.logger = noOpLogger{}
+
+	input := 0.0000005
+	output := 0.0000007
+	provider := schemas.ModelProvider("mock-lab")
+	require.NoError(t, mc.SetProviderPricingOverrides(provider, []schemas.ProviderPricingOverride{
+		{
+			ModelPattern:       "cost-cheap-3-model",
+			MatchType:          schemas.PricingOverrideMatchExact,
+			RequestTypes:       []schemas.RequestType{schemas.ChatCompletionRequest},
+			InputCostPerToken:  &input,
+			OutputCostPerToken: &output,
+		},
+	}))
+
+	_, ok := mc.getPricing("cost-cheap-3-model", string(provider), schemas.ChatCompletionRequest)
+	require.False(t, ok)
+
+	pricing := mc.GetEffectivePricingEntry("cost-cheap-3-model", provider, schemas.ChatCompletionRequest)
+	require.NotNil(t, pricing)
+	assert.Equal(t, input, pricing.InputCostPerToken)
+	assert.Equal(t, output, pricing.OutputCostPerToken)
+	assert.Equal(t, string(provider), pricing.Provider)
+	assert.Equal(t, "chat", pricing.Mode)
+}
+
 func TestDeleteProviderPricingOverrides_StopsApplying(t *testing.T) {
-	t.Skip()
 	mc := newTestCatalog(nil, nil)
 	mc.logger = noOpLogger{}
 	mc.pricingData[makeKey("gpt-4o", "openai", "chat")] = configstoreTables.TableModelPricing{
@@ -262,7 +282,6 @@ func TestDeleteProviderPricingOverrides_StopsApplying(t *testing.T) {
 }
 
 func TestGetPricing_WildcardSpecificityLongerLiteralWins(t *testing.T) {
-	t.Skip()
 	mc := newTestCatalog(nil, nil)
 	mc.logger = noOpLogger{}
 	mc.pricingData[makeKey("gpt-4o-mini", "openai", "chat")] = configstoreTables.TableModelPricing{
@@ -295,7 +314,6 @@ func TestGetPricing_WildcardSpecificityLongerLiteralWins(t *testing.T) {
 }
 
 func TestGetPricing_ConfigOrderTiebreakFirstWinsWhenEqual(t *testing.T) {
-	t.Skip()
 	mc := newTestCatalog(nil, nil)
 	mc.logger = noOpLogger{}
 	mc.pricingData[makeKey("gpt-4o-mini", "openai", "chat")] = configstoreTables.TableModelPricing{
@@ -328,7 +346,6 @@ func TestGetPricing_ConfigOrderTiebreakFirstWinsWhenEqual(t *testing.T) {
 }
 
 func TestPatchPricing_PartialPatchOnlyChangesSpecifiedFields(t *testing.T) {
-	t.Skip()
 	baseCacheRead := 0.4
 	baseInputImage := 0.7
 	base := configstoreTables.TableModelPricing{

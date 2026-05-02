@@ -11,6 +11,8 @@ import (
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 )
 
+type RoutingTargetCostResolver func(provider schemas.ModelProvider, model string, requestType schemas.RequestType) (float64, bool)
+
 // headerKeyPattern matches header map access patterns like headers["X-Api-Key"] or headers['X-Api-Key']
 var headerKeyPattern = regexp.MustCompile(`headers\[["']([^"']+)["']\]`)
 
@@ -51,6 +53,7 @@ type RoutingDecision struct {
 	MatchedRuleID     string             // ID of the rule that matched
 	MatchedRuleName   string             // Name of the rule that matched
 	IsGroupedRouting  bool               // True when this decision was built by grouped health routing
+	HealthPolicy      *configstoreTables.HealthPolicy
 }
 
 // RoutingContext holds all data needed for routing rule evaluation
@@ -64,6 +67,7 @@ type RoutingContext struct {
 	Headers                  map[string]string                  // Request headers for dynamic routing
 	QueryParams              map[string]string                  // Query parameters for dynamic routing
 	BudgetAndRateLimitStatus *BudgetAndRateLimitStatus          // Budget and rate limit status by provider/model
+	TargetCostResolver       RoutingTargetCostResolver          // Optional effective price lookup for cost-aware grouped routing
 }
 
 type RoutingEngine struct {

@@ -54,8 +54,8 @@ type activeProbeTargetPreferenceReader interface {
 func defaultActiveHealthProbeConfig(cfg *Config) ActiveHealthProbeConfig {
 	resolved := ActiveHealthProbeConfig{
 		Enabled:        false,
-		Interval:       15 * time.Second,
-		IdlePause:      30 * time.Minute,
+		Interval:       60 * time.Second,
+		IdlePause:      5 * time.Minute,
 		Timeout:        5 * time.Second,
 		MaxConcurrency: 4,
 	}
@@ -108,6 +108,9 @@ func buildActiveProbePlans(
 			continue
 		}
 		for _, group := range rule.ParsedRouteGroups {
+			if group.FallbackOnly {
+				continue
+			}
 			for _, target := range group.Targets {
 				if target.Provider == nil || strings.TrimSpace(*target.Provider) == "" {
 					continue
@@ -180,6 +183,10 @@ func resolveActiveProbeRequestType(activity TargetActivitySnapshot) (schemas.Req
 	if supportsActiveProbeRequestType(activity.LastProbeRequestType) {
 		return activity.LastProbeRequestType, true
 	}
+	switch activity.LastRealAccessRequestType {
+	case schemas.ChatCompletionStreamRequest, schemas.ResponsesStreamRequest, schemas.TextCompletionStreamRequest:
+		return schemas.ChatCompletionRequest, true
+	}
 	if activity.LastRealAccessRequestType != "" || activity.LastProbeRequestType != "" {
 		return "", false
 	}
@@ -205,13 +212,6 @@ func applyActiveProbeResult(
 		return
 	}
 	tracker.RecordProbeResult(plan.TargetKey, plan.RequestType, result.Success, result.FailureMsg, now)
-	for _, ruleID := range plan.RuleIDs {
-		if result.Success {
-			tracker.RecordSuccessForRule(ruleID, plan.TargetKey)
-			continue
-		}
-		tracker.RecordFailureForRule(ruleID, plan.TargetKey, result.FailureMsg, now)
-	}
 }
 
 func (p *GovernancePlugin) SetBifrostClient(client *bifrost.Bifrost) {
@@ -377,6 +377,7 @@ func activeProbeResultFromError(err *schemas.BifrostError) activeProbeResult {
 func buildChatActiveProbeRequest(plan activeProbePlan) *schemas.BifrostChatRequest {
 	probeText := "ping"
 	maxTokens := 1
+	temperature := 0.0
 	return &schemas.BifrostChatRequest{
 		Provider: plan.Provider,
 		Model:    plan.Model,
@@ -390,6 +391,7 @@ func buildChatActiveProbeRequest(plan activeProbePlan) *schemas.BifrostChatReque
 		},
 		Params: &schemas.ChatParameters{
 			MaxCompletionTokens: &maxTokens,
+			Temperature:         &temperature,
 		},
 	}
 }
@@ -397,6 +399,7 @@ func buildChatActiveProbeRequest(plan activeProbePlan) *schemas.BifrostChatReque
 func buildResponsesActiveProbeRequest(plan activeProbePlan) *schemas.BifrostResponsesRequest {
 	probeText := "ping"
 	maxTokens := 1
+	temperature := 0.0
 	return &schemas.BifrostResponsesRequest{
 		Provider: plan.Provider,
 		Model:    plan.Model,
@@ -410,6 +413,7 @@ func buildResponsesActiveProbeRequest(plan activeProbePlan) *schemas.BifrostResp
 		},
 		Params: &schemas.ResponsesParameters{
 			MaxOutputTokens: &maxTokens,
+			Temperature:     &temperature,
 		},
 	}
 }
@@ -417,6 +421,7 @@ func buildResponsesActiveProbeRequest(plan activeProbePlan) *schemas.BifrostResp
 func buildTextActiveProbeRequest(plan activeProbePlan) *schemas.BifrostTextCompletionRequest {
 	probeText := "ping"
 	maxTokens := 1
+	temperature := 0.0
 	return &schemas.BifrostTextCompletionRequest{
 		Provider: plan.Provider,
 		Model:    plan.Model,
@@ -424,7 +429,8 @@ func buildTextActiveProbeRequest(plan activeProbePlan) *schemas.BifrostTextCompl
 			PromptStr: &probeText,
 		},
 		Params: &schemas.TextCompletionParameters{
-			MaxTokens: &maxTokens,
+			MaxTokens:   &maxTokens,
+			Temperature: &temperature,
 		},
 	}
 }

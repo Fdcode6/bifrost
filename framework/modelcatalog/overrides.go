@@ -45,21 +45,26 @@ func (mc *ModelCatalog) DeleteProviderPricingOverrides(provider schemas.ModelPro
 }
 
 func (mc *ModelCatalog) applyPricingOverrides(provider schemas.ModelProvider, model string, requestType schemas.RequestType, pricing configstoreTables.TableModelPricing) configstoreTables.TableModelPricing {
+	effective, _ := mc.applyPricingOverridesIfMatched(provider, model, requestType, pricing)
+	return effective
+}
+
+func (mc *ModelCatalog) applyPricingOverridesIfMatched(provider schemas.ModelProvider, model string, requestType schemas.RequestType, pricing configstoreTables.TableModelPricing) (configstoreTables.TableModelPricing, bool) {
 	mc.overridesMu.RLock()
 	overrides := mc.compiledOverrides[provider]
 	mc.overridesMu.RUnlock()
 	if len(overrides) == 0 {
-		return pricing
+		return pricing, false
 	}
 
 	modelCandidates := []string{model}
 	mode := normalizeRequestType(requestType)
 	best := selectBestOverride(overrides, modelCandidates, mode)
 	if best == nil {
-		return pricing
+		return pricing, false
 	}
 
-	return patchPricing(pricing, best.override)
+	return patchPricing(pricing, best.override), true
 }
 
 func compileProviderPricingOverride(order int, override schemas.ProviderPricingOverride) (compiledProviderPricingOverride, error) {

@@ -555,6 +555,55 @@ func TestGetHealthDetectionTargets_DefaultsSupportedTargetsToOff(t *testing.T) {
 	require.Equal(t, "off", resp.Targets[0].ProbeState)
 }
 
+func TestGetHealthDetectionTargets_SupportsStreamOnlyHistory(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	provider := "openai"
+	model := "gpt-4.1"
+	keyID := "relay-a"
+	targetKey := governance.TargetKey(provider, model, keyID)
+
+	healthTracker := governance.NewHealthTracker()
+	healthTracker.RecordRealAccess(targetKey, schemas.ChatCompletionStreamRequest, time.Now())
+
+	handler, err := NewAdaptiveRoutingHandler(
+		&mockAdaptiveRoutingRuntime{
+			config: governance.ActiveHealthProbeConfig{
+				Enabled:        true,
+				Interval:       15 * time.Second,
+				IdlePause:      30 * time.Minute,
+				Timeout:        5 * time.Second,
+				MaxConcurrency: 4,
+			},
+			store: &mockAdaptiveRoutingStore{rules: []*configstoreTables.TableRoutingRule{
+				newAdaptiveRoutingRule("rule-a", "Rule A", provider, model, &keyID, 2, 30, 30),
+			}},
+			healthTracker: healthTracker,
+		},
+		&mockAdaptiveRoutingConfigStore{},
+	)
+	require.NoError(t, err)
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.SetRequestURI("/api/governance/health-detection-targets")
+
+	handler.getHealthDetectionTargets(ctx)
+
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+
+	var resp struct {
+		Targets []struct {
+			SupportStatus string `json:"support_status"`
+			ProbeState    string `json:"probe_state"`
+		} `json:"targets"`
+	}
+	require.NoError(t, json.Unmarshal(ctx.Response.Body(), &resp))
+	require.Len(t, resp.Targets, 1)
+	require.Equal(t, "supported", resp.Targets[0].SupportStatus)
+	require.Equal(t, "off", resp.Targets[0].ProbeState)
+}
+
 func TestGetHealthDetectionTargets_ComputesCooldownRuleSummary(t *testing.T) {
 	SetLogger(&mockLogger{})
 

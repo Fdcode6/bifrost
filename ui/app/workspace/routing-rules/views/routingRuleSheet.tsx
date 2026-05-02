@@ -84,6 +84,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 	const [routeGroups, setRouteGroups] = useState<RouteGroupFormData[]>([]);
 	const [query, setQuery] = useState<RuleGroupType>(defaultQuery);
 	const [builderKey, setBuilderKey] = useState(0);
+	const [healthAdvancedOpen, setHealthAdvancedOpen] = useState(false);
 
 	const {
 		register,
@@ -130,7 +131,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 			setValue("priority", editingRule.priority);
 			setValue("enabled", editingRule.enabled);
 			setValue("grouped_routing_enabled", editingRule.grouped_routing_enabled || false);
-			setValue("health_policy", editingRule.health_policy || { ...DEFAULT_HEALTH_POLICY });
+			setValue("health_policy", { ...DEFAULT_HEALTH_POLICY, ...(editingRule.health_policy || {}) });
 			if (editingRule.targets && editingRule.targets.length > 0) {
 				setTargets(
 					editingRule.targets.map((t) => ({
@@ -149,6 +150,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 					editingRule.route_groups.map((g) => ({
 						name: g.name,
 						retry_limit: g.retry_limit,
+						fallback_only: g.fallback_only ?? false,
 						targets: g.targets.map((t) => ({
 							provider: t.provider || "",
 							model: t.model || "",
@@ -250,6 +252,26 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 					toast.error("Cooldown must be at least 1 second");
 					return;
 				}
+				if (data.health_policy.consecutive_failures < 0) {
+					toast.error("Consecutive failures must be 0 or greater");
+					return;
+				}
+				if (data.health_policy.slow_ratio_threshold <= 0) {
+					toast.error("Slow ratio threshold must be greater than 0");
+					return;
+				}
+				if (data.health_policy.slow_recovery_seconds < 0) {
+					toast.error("Slow recovery must be 0 or greater");
+					return;
+				}
+				if (data.health_policy.request_deadline_ms < 0) {
+					toast.error("Request deadline must be 0 or greater");
+					return;
+				}
+				if (data.health_policy.soft_cooldown_multiplier < 1 || data.health_policy.cooldown_backoff_factor < 1) {
+					toast.error("Cooldown multipliers must be at least 1");
+					return;
+				}
 			}
 		} else {
 			// Standard routing validation
@@ -313,6 +335,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 				? routeGroups.map((g) => ({
 						name: g.name,
 						retry_limit: g.retry_limit,
+						fallback_only: g.fallback_only,
 						targets: g.targets.map(({ provider, model, key_id, weight }) => ({
 							provider,
 							model,
@@ -595,22 +618,17 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 										<Input
 											id="hp-consecutive"
 											type="number"
-											min={1}
-											value={
-												healthPolicy?.consecutive_failures ??
-												DEFAULT_HEALTH_POLICY.consecutive_failures ??
-												healthPolicy?.failure_threshold ??
-												2
-											}
+											min={0}
+											value={healthPolicy?.consecutive_failures ?? DEFAULT_HEALTH_POLICY.consecutive_failures}
 											onChange={(e) =>
 												setValue("health_policy", {
 													...healthPolicy,
-													consecutive_failures: parseInt(e.target.value) || 1,
+													consecutive_failures: Number.isNaN(parseInt(e.target.value)) ? 0 : parseInt(e.target.value),
 												})
 											}
 											data-testid="health-policy-consecutive"
 										/>
-										<p className="text-muted-foreground text-[10px]">Consecutive failures (any pace) to trigger cooldown</p>
+										<p className="text-muted-foreground text-[10px]">0 uses the window threshold value</p>
 									</div>
 									<div className="space-y-1.5">
 										<Label htmlFor="hp-cooldown" className="text-xs">
@@ -630,6 +648,191 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 											data-testid="health-policy-cooldown"
 										/>
 									</div>
+								</div>
+
+								<div className="rounded-md border">
+									<button
+										type="button"
+										className="hover:bg-muted/40 flex w-full items-center justify-between px-3 py-2 text-left text-sm font-medium"
+										onClick={() => setHealthAdvancedOpen((open) => !open)}
+										data-testid="health-policy-advanced-toggle"
+									>
+										<span>Advanced health signals</span>
+										{healthAdvancedOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+									</button>
+									{healthAdvancedOpen && (
+										<div className="grid grid-cols-2 gap-3 border-t p-3">
+											<div className="space-y-1.5">
+												<Label htmlFor="hp-slow-threshold" className="text-xs">
+													Slow Threshold (ms)
+												</Label>
+												<Input
+													id="hp-slow-threshold"
+													type="number"
+													min={1}
+													value={healthPolicy?.slow_threshold_ms ?? DEFAULT_HEALTH_POLICY.slow_threshold_ms}
+													onChange={(e) =>
+														setValue("health_policy", {
+															...healthPolicy,
+															slow_threshold_ms: parseInt(e.target.value) || DEFAULT_HEALTH_POLICY.slow_threshold_ms,
+														})
+													}
+													data-testid="health-policy-slow-threshold"
+												/>
+											</div>
+											<div className="space-y-1.5">
+												<Label htmlFor="hp-slow-window" className="text-xs">
+													Slow Window Size
+												</Label>
+												<Input
+													id="hp-slow-window"
+													type="number"
+													min={1}
+													value={healthPolicy?.slow_window_size ?? DEFAULT_HEALTH_POLICY.slow_window_size}
+													onChange={(e) =>
+														setValue("health_policy", {
+															...healthPolicy,
+															slow_window_size: parseInt(e.target.value) || DEFAULT_HEALTH_POLICY.slow_window_size,
+														})
+													}
+													data-testid="health-policy-slow-window"
+												/>
+											</div>
+											<div className="space-y-1.5">
+												<Label htmlFor="hp-slow-ratio" className="text-xs">
+													Slow Ratio Threshold
+												</Label>
+												<Input
+													id="hp-slow-ratio"
+													type="number"
+													min={0.01}
+													step={0.01}
+													value={healthPolicy?.slow_ratio_threshold ?? DEFAULT_HEALTH_POLICY.slow_ratio_threshold}
+													onChange={(e) =>
+														setValue("health_policy", {
+															...healthPolicy,
+															slow_ratio_threshold: parseFloat(e.target.value) || DEFAULT_HEALTH_POLICY.slow_ratio_threshold,
+														})
+													}
+													data-testid="health-policy-slow-ratio"
+												/>
+												<p className="text-muted-foreground text-[10px]">Use 999 to disable ratio-based degraded routing</p>
+											</div>
+											<div className="space-y-1.5">
+												<Label htmlFor="hp-slow-recovery" className="text-xs">
+													Slow Recovery (s)
+												</Label>
+												<Input
+													id="hp-slow-recovery"
+													type="number"
+													min={0}
+													value={healthPolicy?.slow_recovery_seconds ?? DEFAULT_HEALTH_POLICY.slow_recovery_seconds}
+													onChange={(e) =>
+														setValue("health_policy", {
+															...healthPolicy,
+															slow_recovery_seconds: Number.isNaN(parseInt(e.target.value)) ? 0 : parseInt(e.target.value),
+														})
+													}
+													data-testid="health-policy-slow-recovery"
+												/>
+												<p className="text-muted-foreground text-[10px]">0 disables last-slow recency degraded routing</p>
+											</div>
+											<div className="space-y-1.5">
+												<Label htmlFor="hp-soft-multiplier" className="text-xs">
+													Soft Cooldown Multiplier
+												</Label>
+												<Input
+													id="hp-soft-multiplier"
+													type="number"
+													min={1}
+													step={0.1}
+													value={healthPolicy?.soft_cooldown_multiplier ?? DEFAULT_HEALTH_POLICY.soft_cooldown_multiplier}
+													onChange={(e) =>
+														setValue("health_policy", {
+															...healthPolicy,
+															soft_cooldown_multiplier: parseFloat(e.target.value) || DEFAULT_HEALTH_POLICY.soft_cooldown_multiplier,
+														})
+													}
+													data-testid="health-policy-soft-multiplier"
+												/>
+											</div>
+											<div className="space-y-1.5">
+												<Label htmlFor="hp-backoff" className="text-xs">
+													Cooldown Backoff Factor
+												</Label>
+												<Input
+													id="hp-backoff"
+													type="number"
+													min={1}
+													step={0.1}
+													value={healthPolicy?.cooldown_backoff_factor ?? DEFAULT_HEALTH_POLICY.cooldown_backoff_factor}
+													onChange={(e) =>
+														setValue("health_policy", {
+															...healthPolicy,
+															cooldown_backoff_factor: parseFloat(e.target.value) || DEFAULT_HEALTH_POLICY.cooldown_backoff_factor,
+														})
+													}
+													data-testid="health-policy-backoff"
+												/>
+											</div>
+											<div className="space-y-1.5">
+												<Label htmlFor="hp-cooldown-max" className="text-xs">
+													Max Cooldown (s)
+												</Label>
+												<Input
+													id="hp-cooldown-max"
+													type="number"
+													min={1}
+													value={healthPolicy?.cooldown_max_seconds ?? DEFAULT_HEALTH_POLICY.cooldown_max_seconds}
+													onChange={(e) =>
+														setValue("health_policy", {
+															...healthPolicy,
+															cooldown_max_seconds: parseInt(e.target.value) || DEFAULT_HEALTH_POLICY.cooldown_max_seconds,
+														})
+													}
+													data-testid="health-policy-cooldown-max"
+												/>
+											</div>
+											<div className="space-y-1.5">
+												<Label htmlFor="hp-deadline" className="text-xs">
+													Request Deadline (ms)
+												</Label>
+												<Input
+													id="hp-deadline"
+													type="number"
+													min={0}
+													value={healthPolicy?.request_deadline_ms ?? DEFAULT_HEALTH_POLICY.request_deadline_ms}
+													onChange={(e) =>
+														setValue("health_policy", {
+															...healthPolicy,
+															request_deadline_ms: Number.isNaN(parseInt(e.target.value)) ? 0 : parseInt(e.target.value),
+														})
+													}
+													data-testid="health-policy-deadline"
+												/>
+												<p className="text-muted-foreground text-[10px]">Current version reserves this field; 0 disables it</p>
+											</div>
+											<div className="col-span-2 flex items-center justify-between rounded-md border p-3">
+												<div className="space-y-0.5">
+													<Label htmlFor="hp-half-open" className="text-xs">
+														Half-open probe
+													</Label>
+													<p className="text-muted-foreground text-[10px]">Allow one recovery probe after cooldown expires</p>
+												</div>
+												<Switch
+													id="hp-half-open"
+													checked={healthPolicy?.half_open_probe ?? DEFAULT_HEALTH_POLICY.half_open_probe}
+													onCheckedChange={(checked) =>
+														setValue("health_policy", {
+															...healthPolicy,
+															half_open_probe: checked,
+														})
+													}
+													data-testid="health-policy-half-open"
+												/>
+											</div>
+										</div>
+									)}
 								</div>
 							</div>
 
@@ -1165,8 +1368,19 @@ function RouteGroupEditor({
 								className="h-9 text-sm"
 								data-testid={`route-group-${groupIndex}-retry`}
 							/>
-							<p className="text-muted-foreground text-[10px]">Extra attempts within this group (0 = no retries)</p>
+							<p className="text-muted-foreground text-[10px]">Regular groups try other targets; fallback-only groups may repeat targets</p>
 						</div>
+					</div>
+					<div className="flex items-center justify-between rounded-md border p-3">
+						<div className="space-y-0.5">
+							<Label className="text-xs">Fallback only</Label>
+							<p className="text-muted-foreground text-[10px]">Append after regular groups; primary only when regular groups are unavailable</p>
+						</div>
+						<Switch
+							checked={group.fallback_only}
+							onCheckedChange={(checked) => onUpdate({ ...group, fallback_only: checked })}
+							data-testid={`route-group-${groupIndex}-fallback-only`}
+						/>
 					</div>
 
 					{/* Group targets */}
