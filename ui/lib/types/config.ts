@@ -271,7 +271,7 @@ export interface CustomProviderConfig {
 	request_path_overrides?: Record<string, string>;
 }
 
-export type PricingOverrideMatchType = "exact" | "wildcard" | "regex";
+export type PricingOverrideMatchType = "exact" | "wildcard" | "contains" | "regex";
 
 export interface ProviderPricingOverride {
 	model_pattern: string;

@@ -454,7 +454,7 @@ export const formCustomProviderConfigSchema = z
 		},
 	);
 
-export const providerPricingOverrideMatchTypeSchema = z.enum(["exact", "wildcard", "regex"]);
+export const providerPricingOverrideMatchTypeSchema = z.enum(["exact", "wildcard", "contains", "regex"]);
 
 export const providerPricingOverrideRequestTypeSchema = z.enum([
 	"text_completion",
@@ -475,7 +475,7 @@ export const providerPricingOverrideRequestTypeSchema = z.enum([
 
 export const providerPricingOverrideSchema = z
 	.object({
-		model_pattern: z.string().min(1, "Model pattern is required"),
+		model_pattern: z.string().min(1, "模型匹配不能为空"),
 		match_type: providerPricingOverrideMatchTypeSchema,
 		request_types: z.array(providerPricingOverrideRequestTypeSchema).optional(),
 		input_cost_per_token: z.number().min(0).optional(),
@@ -510,14 +510,21 @@ export const providerPricingOverrideSchema = z
 			ctx.addIssue({
 				code: "custom",
 				path: ["model_pattern"],
-				message: "Exact match patterns cannot include '*'",
+				message: 'exact 是精确匹配，模型名里不能包含 "*"',
 			});
 		}
 		if (data.match_type === "wildcard" && !data.model_pattern.includes("*")) {
 			ctx.addIssue({
 				code: "custom",
 				path: ["model_pattern"],
-				message: "Wildcard patterns must include '*'",
+				message: 'wildcard 是通配符匹配，模型匹配必须包含 "*"，例如 "gemini-*"',
+			});
+		}
+		if (data.match_type === "contains" && data.model_pattern.includes("*")) {
+			ctx.addIssue({
+				code: "custom",
+				path: ["model_pattern"],
+				message: 'contains 是关键词包含匹配，不需要填写 "*"；直接填关键词即可',
 			});
 		}
 		if (data.match_type === "regex") {
@@ -527,7 +534,7 @@ export const providerPricingOverrideSchema = z
 				ctx.addIssue({
 					code: "custom",
 					path: ["model_pattern"],
-					message: "Invalid regex pattern",
+					message: "regex 正则表达式不合法",
 				});
 			}
 		}

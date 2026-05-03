@@ -2118,6 +2118,7 @@
       "enum": [
         "exact",
         "wildcard",
+        "contains",
         "regex"
       ]
     },

@@ -37,7 +37,7 @@ export function availableProviderConfigTabs({
 	});
 	tabs.push({
 		id: "pricing-overrides",
-		label: "Pricing Overrides",
+		label: "价格覆盖",
 	});
 	if (hasGovernanceAccess) {
 		tabs.push({

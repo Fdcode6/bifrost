@@ -432,6 +432,7 @@ type PricingOverrideMatchType string
 const (
 	PricingOverrideMatchExact    PricingOverrideMatchType = "exact"
 	PricingOverrideMatchWildcard PricingOverrideMatchType = "wildcard"
+	PricingOverrideMatchContains PricingOverrideMatchType = "contains"
 	PricingOverrideMatchRegex    PricingOverrideMatchType = "regex"
 )
 

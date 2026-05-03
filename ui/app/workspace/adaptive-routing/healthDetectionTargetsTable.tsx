@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { AlertTriangle, Loader2 } from "lucide-react";
+import { useMemo } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -10,6 +11,7 @@ import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useToast } from "@/hooks/use-toast";
 import { getErrorMessage } from "@/lib/store/apis/baseApi";
+import { useGetProvidersQuery } from "@/lib/store/apis/providersApi";
 import { useUpdateHealthDetectionTargetMutation } from "@/lib/store/apis/routingRulesApi";
 import type {
 	HealthDetectionMode,
@@ -20,12 +22,14 @@ import type {
 import { cn } from "@/lib/utils";
 
 import {
+	formatPerMillionTokenPrice,
 	formatHealthDetectionTimestamp,
 	getHealthLevelBadgeClass,
 	getHealthLevelLabel,
 	getHealthDetectionProbeStateDescription,
 	getHealthDetectionProbeStateLabel,
 	getHealthDetectionSupportStatusLabel,
+	getProviderTokenPricingOverrideForModel,
 	getRouteGroupLabel,
 	getWorstRouteGroupHealthLevel,
 	isHealthDetectionTargetEditable,
@@ -73,6 +77,8 @@ export default function HealthDetectionTargetsTable({
 }: HealthDetectionTargetsTableProps) {
 	const { toast } = useToast();
 	const [updateTarget] = useUpdateHealthDetectionTargetMutation();
+	const { data: providers } = useGetProvidersQuery();
+	const providersByName = useMemo(() => new Map((providers ?? []).map((provider) => [String(provider.name), provider])), [providers]);
 	const rows = targets ?? [];
 
 	return (
@@ -123,11 +129,13 @@ export default function HealthDetectionTargetsTable({
 					</div>
 				) : (
 					<div className="overflow-x-auto">
-						<Table className="min-w-[1420px]">
+						<Table className="min-w-[1580px]">
 							<TableHeader>
 								<TableRow>
 									<TableHead>Provider</TableHead>
 									<TableHead>Model</TableHead>
+									<TableHead>输入价 ($/1M)</TableHead>
+									<TableHead>输出价 ($/1M)</TableHead>
 									<TableHead>Key ID</TableHead>
 									<TableHead>引用规则</TableHead>
 									<TableHead>路由分组</TableHead>
@@ -147,11 +155,21 @@ export default function HealthDetectionTargetsTable({
 									const probeResultLabel =
 										target.last_probe_result === "success" ? "成功" : target.last_probe_result === "failure" ? "失败" : "—";
 									const worstHealthLevel = getWorstRouteGroupHealthLevel(target.route_groups);
+									const pricingOverride = getProviderTokenPricingOverrideForModel(providersByName.get(target.provider), target.model);
+									const pricingTitle = pricingOverride
+										? `${pricingOverride.match_type}: ${pricingOverride.model_pattern}`
+										: "没有命中的 Provider 价格覆盖";
 
 									return (
 										<TableRow key={target.target_id}>
 											<TableCell className="font-medium">{target.provider}</TableCell>
 											<TableCell className="font-mono text-sm">{target.model}</TableCell>
+											<TableCell className="font-mono text-xs" title={pricingTitle}>
+												{formatPerMillionTokenPrice(pricingOverride?.input_cost_per_token)}
+											</TableCell>
+											<TableCell className="font-mono text-xs" title={pricingTitle}>
+												{formatPerMillionTokenPrice(pricingOverride?.output_cost_per_token)}
+											</TableCell>
 											<TableCell className="font-mono text-sm">{target.key_id || "—"}</TableCell>
 											<TableCell>
 												<div className="flex flex-wrap gap-1">

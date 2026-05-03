@@ -104,6 +104,64 @@ func TestGetPricing_WildcardBeatsRegex(t *testing.T) {
 	assert.Equal(t, 11.0, pricing.InputCostPerToken)
 }
 
+func TestGetPricing_ContainsMatchesCaseInsensitive(t *testing.T) {
+	mc := newTestCatalog(nil, nil)
+	mc.logger = noOpLogger{}
+	mc.pricingData[makeKey("gemini-3.1-pro-preview-thinking-medium", "openai", "chat")] = configstoreTables.TableModelPricing{
+		Model:              "gemini-3.1-pro-preview-thinking-medium",
+		Provider:           "openai",
+		Mode:               "chat",
+		InputCostPerToken:  1,
+		OutputCostPerToken: 2,
+	}
+
+	contains := 13.0
+	require.NoError(t, mc.SetProviderPricingOverrides(schemas.OpenAI, []schemas.ProviderPricingOverride{
+		{
+			ModelPattern:      "GEMINI",
+			MatchType:         schemas.PricingOverrideMatchContains,
+			InputCostPerToken: &contains,
+		},
+	}))
+
+	pricing, ok := mc.getPricing("gemini-3.1-pro-preview-thinking-medium", "openai", schemas.ChatCompletionRequest)
+	require.True(t, ok)
+	require.NotNil(t, pricing)
+	assert.Equal(t, 13.0, pricing.InputCostPerToken)
+}
+
+func TestGetPricing_WildcardBeatsContains(t *testing.T) {
+	mc := newTestCatalog(nil, nil)
+	mc.logger = noOpLogger{}
+	mc.pricingData[makeKey("gemini-3.1-pro-preview-thinking-medium", "openai", "chat")] = configstoreTables.TableModelPricing{
+		Model:              "gemini-3.1-pro-preview-thinking-medium",
+		Provider:           "openai",
+		Mode:               "chat",
+		InputCostPerToken:  1,
+		OutputCostPerToken: 2,
+	}
+
+	contains := 13.0
+	wildcard := 14.0
+	require.NoError(t, mc.SetProviderPricingOverrides(schemas.OpenAI, []schemas.ProviderPricingOverride{
+		{
+			ModelPattern:      "gemini",
+			MatchType:         schemas.PricingOverrideMatchContains,
+			InputCostPerToken: &contains,
+		},
+		{
+			ModelPattern:      "gemini-*",
+			MatchType:         schemas.PricingOverrideMatchWildcard,
+			InputCostPerToken: &wildcard,
+		},
+	}))
+
+	pricing, ok := mc.getPricing("gemini-3.1-pro-preview-thinking-medium", "openai", schemas.ChatCompletionRequest)
+	require.True(t, ok)
+	require.NotNil(t, pricing)
+	assert.Equal(t, 14.0, pricing.InputCostPerToken)
+}
+
 func TestGetPricing_RequestTypeSpecificOverrideBeatsGeneric(t *testing.T) {
 	mc := newTestCatalog(nil, nil)
 	mc.logger = noOpLogger{}

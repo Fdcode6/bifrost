@@ -19,6 +19,32 @@ type mockModelsManager struct {
 	unfiltered map[schemas.ModelProvider][]string
 }
 
+func TestValidatePricingOverrides_ContainsMatchType(t *testing.T) {
+	input := 0.000002
+	if err := validatePricingOverrides([]schemas.ProviderPricingOverride{
+		{
+			ModelPattern:      "Gemini",
+			MatchType:         schemas.PricingOverrideMatchContains,
+			RequestTypes:      []schemas.RequestType{schemas.ChatCompletionRequest},
+			InputCostPerToken: &input,
+		},
+	}); err != nil {
+		t.Fatalf("contains match type should be valid: %v", err)
+	}
+}
+
+func TestValidatePricingOverrides_ContainsRejectsWildcardSyntax(t *testing.T) {
+	err := validatePricingOverrides([]schemas.ProviderPricingOverride{
+		{
+			ModelPattern: "gemini-*",
+			MatchType:    schemas.PricingOverrideMatchContains,
+		},
+	})
+	if err == nil {
+		t.Fatal("expected contains match type with wildcard syntax to be rejected")
+	}
+}
+
 func (m *mockModelsManager) ReloadProvider(_ context.Context, _ schemas.ModelProvider) (*configstoreTables.TableProvider, error) {
 	return nil, nil
 }

@@ -88,6 +88,11 @@ func compileProviderPricingOverride(order int, override schemas.ProviderPricingO
 			return compiledProviderPricingOverride{}, fmt.Errorf("wildcard model_pattern must contain '*'")
 		}
 		result.literalChars = len(strings.ReplaceAll(pattern, "*", ""))
+	case schemas.PricingOverrideMatchContains:
+		if strings.Contains(pattern, "*") {
+			return compiledProviderPricingOverride{}, fmt.Errorf("contains model_pattern should not contain '*'")
+		}
+		result.literalChars = len(pattern)
 	case schemas.PricingOverrideMatchRegex:
 		re, err := regexp.Compile(pattern)
 		if err != nil {
@@ -147,6 +152,8 @@ func matchesModel(override *compiledProviderPricingOverride, model string) bool 
 		return model == override.override.ModelPattern
 	case schemas.PricingOverrideMatchWildcard:
 		return wildcardMatch(override.override.ModelPattern, model)
+	case schemas.PricingOverrideMatchContains:
+		return strings.Contains(strings.ToLower(model), strings.ToLower(override.override.ModelPattern))
 	case schemas.PricingOverrideMatchRegex:
 		return override.regex != nil && override.regex.MatchString(model)
 	default:
@@ -160,10 +167,12 @@ func overridePriority(matchType schemas.PricingOverrideMatchType) int {
 		return 0
 	case schemas.PricingOverrideMatchWildcard:
 		return 1
-	case schemas.PricingOverrideMatchRegex:
+	case schemas.PricingOverrideMatchContains:
 		return 2
-	default:
+	case schemas.PricingOverrideMatchRegex:
 		return 3
+	default:
+		return 4
 	}
 }
 

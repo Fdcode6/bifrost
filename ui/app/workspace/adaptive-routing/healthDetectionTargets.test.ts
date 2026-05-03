@@ -3,12 +3,14 @@ import { describe, expect, it } from "vitest";
 import type { HealthDetectionTarget } from "@/lib/types/routingRules";
 
 import {
+	formatPerMillionTokenPrice,
 	getHealthDetectionProbeStateDescription,
 	getHealthDetectionProbeStateLabel,
 	getHealthDetectionSupportStatusLabel,
 	getHealthLevelBadgeClass,
 	getHealthLevelDescription,
 	getHealthLevelLabel,
+	getProviderTokenPricingOverrideForModel,
 	getRouteGroupLabel,
 	getWorstRouteGroupHealthLevel,
 	formatSlowRatio,
@@ -122,5 +124,71 @@ describe("healthDetectionTargets helpers", () => {
 	it("formats slow ratios for health snapshots", () => {
 		expect(formatSlowRatio(0.6)).toBe("60%");
 		expect(formatSlowRatio(undefined)).toBe("—");
+	});
+
+	it("formats token pricing in per-million units", () => {
+		expect(formatPerMillionTokenPrice(0.00000125)).toBe("$1.25");
+		expect(formatPerMillionTokenPrice(undefined)).toBe("—");
+	});
+
+	it("selects the best matching provider pricing override for a model", () => {
+		const override = getProviderTokenPricingOverrideForModel(
+			{
+				pricing_overrides: [
+					{
+						model_pattern: "gemini-*",
+						match_type: "wildcard",
+						input_cost_per_token: 0.000002,
+					},
+					{
+						model_pattern: "gemini-2.5-pro*",
+						match_type: "wildcard",
+						request_types: ["chat_completion", "chat_completion_stream"],
+						input_cost_per_token: 0.00000125,
+						output_cost_per_token: 0.00001,
+					},
+				],
+			},
+			"gemini-2.5-pro-preview",
+		);
+
+		expect(override?.input_cost_per_token).toBe(0.00000125);
+		expect(override?.output_cost_per_token).toBe(0.00001);
+	});
+
+	it("ignores pricing overrides that are not for chat requests", () => {
+		expect(
+			getProviderTokenPricingOverrideForModel(
+				{
+					pricing_overrides: [
+						{
+							model_pattern: "gemini-2.5-pro*",
+							match_type: "wildcard",
+							request_types: ["embedding"],
+							input_cost_per_token: 0.00000125,
+						},
+					],
+				},
+				"gemini-2.5-pro-preview",
+			),
+		).toBeUndefined();
+	});
+
+	it("matches contains pricing overrides case-insensitively", () => {
+		const override = getProviderTokenPricingOverrideForModel(
+			{
+				pricing_overrides: [
+					{
+						model_pattern: "GEMINI",
+						match_type: "contains",
+						request_types: ["chat_completion", "chat_completion_stream"],
+						input_cost_per_token: 0.000002,
+					},
+				],
+			},
+			"gemini-3.1-pro-preview-thinking-medium",
+		);
+
+		expect(override?.input_cost_per_token).toBe(0.000002);
 	});
 });

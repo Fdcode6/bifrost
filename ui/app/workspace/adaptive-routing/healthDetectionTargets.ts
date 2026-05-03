@@ -5,6 +5,9 @@ import type {
 	HealthSnapshot,
 	RouteGroupReference,
 } from "@/lib/types/routingRules";
+import type { ModelProvider, ProviderPricingOverride } from "@/lib/types/config";
+
+const TOKEN_PRICING_DENOMINATOR = 1_000_000;
 
 export function getHealthDetectionSupportStatusLabel(status: HealthDetectionSupportStatus): string {
 	return status === "supported" ? "支持" : "不支持";
@@ -128,4 +131,142 @@ export function formatSlowRatio(value?: number): string {
 		return "—";
 	}
 	return `${Math.round(value * 100)}%`;
+}
+
+function formatCompactPrice(value: number): string {
+	if (!Number.isFinite(value)) {
+		return "—";
+	}
+	return value.toFixed(6).replace(/\.?0+$/, "");
+}
+
+export function formatPerMillionTokenPrice(value?: number): string {
+	if (value === undefined || value === null || Number.isNaN(value)) {
+		return "—";
+	}
+	return `$${formatCompactPrice(value * TOKEN_PRICING_DENOMINATOR)}`;
+}
+
+function wildcardMatch(pattern: string, model: string): boolean {
+	const parts = pattern.split("*");
+	if (parts.length === 1) {
+		return model === pattern;
+	}
+
+	let remaining = model;
+	if (parts[0]) {
+		if (!remaining.startsWith(parts[0])) {
+			return false;
+		}
+		remaining = remaining.slice(parts[0].length);
+	}
+
+	for (let i = 1; i < parts.length - 1; i++) {
+		const part = parts[i];
+		if (!part) {
+			continue;
+		}
+		const index = remaining.indexOf(part);
+		if (index < 0) {
+			return false;
+		}
+		remaining = remaining.slice(index + part.length);
+	}
+
+	const last = parts[parts.length - 1];
+	return !last || remaining.endsWith(last);
+}
+
+function overrideMatchesModel(override: ProviderPricingOverride, model: string): boolean {
+	switch (override.match_type) {
+		case "exact":
+			return override.model_pattern === model;
+		case "wildcard":
+			return wildcardMatch(override.model_pattern, model);
+		case "contains":
+			return model.toLowerCase().includes(override.model_pattern.toLowerCase());
+		case "regex":
+			try {
+				return new RegExp(override.model_pattern).test(model);
+			} catch {
+				return false;
+			}
+		default:
+			return false;
+	}
+}
+
+function overrideAppliesToChatPricing(override: ProviderPricingOverride): boolean {
+	if (!override.request_types || override.request_types.length === 0) {
+		return true;
+	}
+	return override.request_types.includes("chat_completion") || override.request_types.includes("chat_completion_stream");
+}
+
+function overridePriority(override: ProviderPricingOverride): number {
+	switch (override.match_type) {
+		case "exact":
+			return 0;
+		case "wildcard":
+			return 1;
+		case "contains":
+			return 2;
+		case "regex":
+			return 3;
+		default:
+			return 4;
+	}
+}
+
+function literalChars(override: ProviderPricingOverride): number {
+	return override.match_type === "wildcard" ? override.model_pattern.replaceAll("*", "").length : override.model_pattern.length;
+}
+
+function isBetterPricingOverride(candidate: ProviderPricingOverride, best?: ProviderPricingOverride): boolean {
+	if (!best) {
+		return true;
+	}
+
+	const candidatePriority = overridePriority(candidate);
+	const bestPriority = overridePriority(best);
+	if (candidatePriority !== bestPriority) {
+		return candidatePriority < bestPriority;
+	}
+
+	const candidateHasRequestFilter = !!candidate.request_types?.length;
+	const bestHasRequestFilter = !!best.request_types?.length;
+	if (candidateHasRequestFilter !== bestHasRequestFilter) {
+		return candidateHasRequestFilter;
+	}
+
+	const candidateLiteralChars = literalChars(candidate);
+	const bestLiteralChars = literalChars(best);
+	if (candidateLiteralChars !== bestLiteralChars) {
+		return candidateLiteralChars > bestLiteralChars;
+	}
+
+	return false;
+}
+
+export function getProviderTokenPricingOverrideForModel(
+	provider: Pick<ModelProvider, "pricing_overrides"> | undefined,
+	model: string,
+): ProviderPricingOverride | undefined {
+	if (!provider?.pricing_overrides || !model) {
+		return undefined;
+	}
+
+	let best: ProviderPricingOverride | undefined;
+	for (const override of provider.pricing_overrides) {
+		if (!overrideAppliesToChatPricing(override)) {
+			continue;
+		}
+		if (!overrideMatchesModel(override, model)) {
+			continue;
+		}
+		if (isBetterPricingOverride(override, best)) {
+			best = override;
+		}
+	}
+	return best;
 }
