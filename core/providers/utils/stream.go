@@ -5,8 +5,8 @@ import (
 )
 
 const (
-	maxBufferedPreludeChunks = 8
-	maxBufferedPreludeBytes  = 32 * 1024
+	maxBufferedPreludeChunks = 32
+	maxBufferedPreludeBytes  = 128 * 1024
 )
 
 // CheckFirstStreamChunkForError reads the first chunk from a streaming channel to detect

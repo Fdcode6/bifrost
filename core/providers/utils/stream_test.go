@@ -344,9 +344,36 @@ func TestCheckFirstStreamChunk_TextPreludeThenError(t *testing.T) {
 	<-drainDone
 }
 
+func TestCheckFirstStreamChunk_DetectsErrorWithinThirtyTwoChunkPreludeWindow(t *testing.T) {
+	stream := make(chan *schemas.BifrostStreamChunk, 40)
+	for i := 0; i < 31; i++ {
+		stream <- newResponsesChunk(schemas.ResponsesStreamResponseTypeCreated, nil)
+	}
+	stream <- newErrorChunk("prelude timeout")
+	close(stream)
+
+	wrapped, drainDone, err := CheckFirstStreamChunkForError(stream)
+	if wrapped != nil {
+		t.Fatal("expected wrapped stream to be nil when error happens before effective chunk")
+	}
+	if err == nil || err.Error == nil || err.Error.Message != "prelude timeout" {
+		t.Fatalf("expected prelude timeout error, got %#v", err)
+	}
+	<-drainDone
+}
+
+func TestCheckFirstStreamChunk_PreludeWindowDefaults(t *testing.T) {
+	if maxBufferedPreludeChunks != 32 {
+		t.Fatalf("expected prelude chunk window to be 32, got %d", maxBufferedPreludeChunks)
+	}
+	if maxBufferedPreludeBytes != 128*1024 {
+		t.Fatalf("expected prelude byte window to be 128KB, got %d", maxBufferedPreludeBytes)
+	}
+}
+
 func TestCheckFirstStreamChunk_BufferLimitBeforeEffectiveChunk(t *testing.T) {
-	stream := make(chan *schemas.BifrostStreamChunk, 16)
-	for i := 0; i < 9; i++ {
+	stream := make(chan *schemas.BifrostStreamChunk, maxBufferedPreludeChunks+2)
+	for i := 0; i <= maxBufferedPreludeChunks; i++ {
 		stream <- newResponsesChunk(schemas.ResponsesStreamResponseTypeCreated, nil)
 	}
 	stream <- newErrorChunk("late timeout")
@@ -361,7 +388,7 @@ func TestCheckFirstStreamChunk_BufferLimitBeforeEffectiveChunk(t *testing.T) {
 	}
 
 	chunks := collectChunks(wrapped)
-	if len(chunks) != 10 {
+	if len(chunks) != maxBufferedPreludeChunks+2 {
 		t.Fatalf("expected all buffered chunks plus terminal error, got %d", len(chunks))
 	}
 	if chunks[len(chunks)-1].BifrostError == nil {
