@@ -52,6 +52,16 @@ export function isHealthDetectionTargetEditable(target: Pick<HealthDetectionTarg
 	return target.support_status === "supported";
 }
 
+export function isHealthDetectionTargetUnused(
+	target: Pick<HealthDetectionTarget, "referenced_rule_ids" | "route_groups" | "rule_health_summary">,
+): boolean {
+	return (
+		(!target.referenced_rule_ids || target.referenced_rule_ids.length === 0) &&
+		(!target.route_groups || target.route_groups.length === 0) &&
+		(target.rule_health_summary?.total_rule_count ?? 0) === 0
+	);
+}
+
 export function formatHealthDetectionTimestamp(value?: string): string {
 	if (!value) {
 		return "—";

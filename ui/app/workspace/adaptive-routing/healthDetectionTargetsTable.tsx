@@ -33,6 +33,7 @@ import {
 	getRouteGroupLabel,
 	getWorstRouteGroupHealthLevel,
 	isHealthDetectionTargetEditable,
+	isHealthDetectionTargetUnused,
 } from "./healthDetectionTargets";
 
 interface HealthDetectionTargetsTableProps {
@@ -122,7 +123,7 @@ export default function HealthDetectionTargetsTable({
 					<div className="px-6 py-12 text-center">
 						<AlertTriangle className="text-muted-foreground/50 mx-auto mb-3 h-10 w-10" />
 						<p className="text-sm font-medium">还没有可探测目标。</p>
-						<p className="text-muted-foreground mt-1 text-xs">添加分组健康路由目标后，可以在这里管理存活探测。</p>
+						<p className="text-muted-foreground mt-1 text-xs">给 Provider Key 配置模型，或添加分组健康路由目标后，可以在这里管理存活探测。</p>
 						<Button asChild variant="outline" className="mt-4">
 							<Link href="/workspace/routing-rules">打开路由规则</Link>
 						</Button>
@@ -152,9 +153,10 @@ export default function HealthDetectionTargetsTable({
 							<TableBody>
 								{rows.map((target) => {
 									const editable = isHealthDetectionTargetEditable(target);
+									const unused = isHealthDetectionTargetUnused(target);
 									const probeResultLabel =
 										target.last_probe_result === "success" ? "成功" : target.last_probe_result === "failure" ? "失败" : "—";
-									const worstHealthLevel = getWorstRouteGroupHealthLevel(target.route_groups);
+									const worstHealthLevel = unused ? undefined : getWorstRouteGroupHealthLevel(target.route_groups);
 									const pricingOverride = getProviderTokenPricingOverrideForModel(providersByName.get(target.provider), target.model);
 									const pricingTitle = pricingOverride
 										? `${pricingOverride.match_type}: ${pricingOverride.model_pattern}`
@@ -173,35 +175,56 @@ export default function HealthDetectionTargetsTable({
 											<TableCell className="font-mono text-sm">{target.key_id || "—"}</TableCell>
 											<TableCell>
 												<div className="flex flex-wrap gap-1">
-													{target.referenced_rule_names.map((ruleName) => (
-														<Badge key={`${target.target_id}-${ruleName}`} variant="outline" className="text-xs">
-															{ruleName}
+													{unused ? (
+														<Badge variant="secondary" className="text-xs">
+															未被路由引用
 														</Badge>
-													))}
+													) : (
+														target.referenced_rule_names.map((ruleName) => (
+															<Badge key={`${target.target_id}-${ruleName}`} variant="outline" className="text-xs">
+																{ruleName}
+															</Badge>
+														))
+													)}
 												</div>
 											</TableCell>
 											<TableCell>
 												<div className="flex max-w-80 flex-wrap gap-1">
-													{target.route_groups?.map((group) => (
-														<Badge
-															key={`${target.target_id}-${group.rule_id}-${group.group_index}-${group.group_name}`}
-															variant={group.fallback_only ? "secondary" : "outline"}
-															className="max-w-56 truncate text-xs"
-															title={`${group.rule_name} / ${getRouteGroupLabel(group)} / Retry ${group.retry_limit}`}
-														>
-															<span className="truncate">{getRouteGroupLabel(group)}</span>
+													{unused ? (
+														<Badge variant="secondary" className="text-xs">
+															未加入分组
 														</Badge>
-													))}
+													) : (
+														target.route_groups?.map((group) => (
+															<Badge
+																key={`${target.target_id}-${group.rule_id}-${group.group_index}-${group.group_name}`}
+																variant={group.fallback_only ? "secondary" : "outline"}
+																className="max-w-56 truncate text-xs"
+																title={`${group.rule_name} / ${getRouteGroupLabel(group)} / Retry ${group.retry_limit}`}
+															>
+																<span className="truncate">{getRouteGroupLabel(group)}</span>
+															</Badge>
+														))
+													)}
 												</div>
 											</TableCell>
 											<TableCell>
 												<div className="space-y-1">
-													<Badge className={cn("w-fit", getHealthLevelBadgeClass(worstHealthLevel))}>
-														{getHealthLevelLabel(worstHealthLevel)}
-													</Badge>
+													{unused ? (
+														<Badge variant="secondary" className="w-fit">
+															未使用
+														</Badge>
+													) : (
+														<Badge className={cn("w-fit", getHealthLevelBadgeClass(worstHealthLevel))}>
+															{getHealthLevelLabel(worstHealthLevel)}
+														</Badge>
+													)}
 													<span className="text-muted-foreground block text-xs">
-														{target.rule_health_summary.degraded_rule_count ?? 0} 降级, {target.rule_health_summary.cooldown_rule_count}{" "}
-														冷却中 / {target.rule_health_summary.total_rule_count}
+														{unused
+															? "未参与任何路由规则"
+															: `${target.rule_health_summary.degraded_rule_count ?? 0} 降级, ${
+																	target.rule_health_summary.cooldown_rule_count
+																} 冷却中 / ${target.rule_health_summary.total_rule_count}`}
 													</span>
 												</div>
 											</TableCell>
@@ -221,6 +244,15 @@ export default function HealthDetectionTargetsTable({
 														disabled={!editable}
 														data-testid={`adaptive-routing-target-toggle-${target.target_id}`}
 														onAsyncCheckedChange={async (checked) => {
+															if (
+																checked &&
+																unused &&
+																!window.confirm(
+																	"这个模型当前没有被任何路由规则使用。开启后会保存探测偏好，但未加入路由前不会参与请求分流。确认开启吗？",
+																)
+															) {
+																return;
+															}
 															await updateTarget({
 																targetId: target.target_id,
 																data: {
@@ -244,13 +276,19 @@ export default function HealthDetectionTargetsTable({
 											</TableCell>
 											<TableCell>
 												<div className="space-y-1">
-													<Badge className={cn("w-fit", getProbeStateBadgeClass(target.probe_state))}>
-														{getHealthDetectionProbeStateLabel(target.probe_state)}
-													</Badge>
+													{unused ? (
+														<Badge variant="secondary" className="w-fit">
+															未使用
+														</Badge>
+													) : (
+														<Badge className={cn("w-fit", getProbeStateBadgeClass(target.probe_state))}>
+															{getHealthDetectionProbeStateLabel(target.probe_state)}
+														</Badge>
+													)}
 													<p className="text-muted-foreground max-w-64 text-xs">
-														{getHealthDetectionProbeStateDescription(target.probe_state)}
+														{unused ? "该目标当前没有加入路由；这里只保存开关偏好，加入路由后生效。" : getHealthDetectionProbeStateDescription(target.probe_state)}
 													</p>
-													{mode === "passive" && target.probe_state !== "unsupported" ? (
+													{mode === "passive" && target.probe_state !== "unsupported" && !unused ? (
 														<p className="text-muted-foreground text-xs">后台探测当前全局关闭。该目标设置会保留，开启后生效。</p>
 													) : null}
 												</div>

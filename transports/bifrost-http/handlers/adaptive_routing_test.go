@@ -20,6 +20,7 @@ type mockAdaptiveRoutingConfigStore struct {
 	plugin        *configstoreTables.TablePlugin
 	createdPlugin *configstoreTables.TablePlugin
 	updatedPlugin *configstoreTables.TablePlugin
+	providers     map[schemas.ModelProvider]configstore.ProviderConfig
 	prefs         []configstoreTables.TableHealthDetectionTargetPreference
 	prefReadCount int
 }
@@ -84,6 +85,18 @@ func (m *mockAdaptiveRoutingConfigStore) UpsertHealthDetectionTargetPreference(_
 	}
 	m.prefs = append(m.prefs, prefCopy)
 	return nil
+}
+
+func (m *mockAdaptiveRoutingConfigStore) GetProvidersConfig(_ context.Context) (map[schemas.ModelProvider]configstore.ProviderConfig, error) {
+	if m.providers == nil {
+		return map[schemas.ModelProvider]configstore.ProviderConfig{}, nil
+	}
+	result := make(map[schemas.ModelProvider]configstore.ProviderConfig, len(m.providers))
+	for provider, cfg := range m.providers {
+		cfg.Keys = append([]schemas.Key(nil), cfg.Keys...)
+		result[provider] = cfg
+	}
+	return result, nil
 }
 
 type mockAdaptiveRoutingRuntime struct {
@@ -658,6 +671,71 @@ func TestGetHealthDetectionTargets_ComputesCooldownRuleSummary(t *testing.T) {
 	require.Equal(t, 1, resp.Targets[0].RuleHealthSummary.CooldownRuleCount)
 }
 
+func TestGetHealthDetectionTargets_IncludesConfiguredKeyModelsWithoutRouteReference(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	provider := schemas.ModelProvider("plato")
+	model := "gemini-3.1-pro-preview-thinking-medium"
+	keyID := "relay-unused"
+	enabled := true
+	store := &mockAdaptiveRoutingConfigStore{
+		providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+			provider: {
+				Keys: []schemas.Key{
+					{
+						ID:      keyID,
+						Name:    "unused-key",
+						Models:  []string{model},
+						Enabled: &enabled,
+					},
+				},
+			},
+		},
+		prefs: []configstoreTables.TableHealthDetectionTargetPreference{
+			{
+				TargetKey:        canonicalHealthDetectionTargetKey(string(provider), model, &keyID),
+				Provider:         string(provider),
+				Model:            model,
+				KeyID:            &keyID,
+				DetectionEnabled: true,
+			},
+		},
+	}
+
+	handler, err := NewAdaptiveRoutingHandler(
+		&mockAdaptiveRoutingRuntime{
+			config:        governance.ActiveHealthProbeConfig{},
+			store:         &mockAdaptiveRoutingStore{},
+			healthTracker: governance.NewHealthTracker(),
+		},
+		store,
+	)
+	require.NoError(t, err)
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.SetRequestURI("/api/governance/health-detection-targets")
+
+	handler.getHealthDetectionTargets(ctx)
+
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+
+	var resp HealthDetectionTargetsResponse
+	require.NoError(t, json.Unmarshal(ctx.Response.Body(), &resp))
+	require.Len(t, resp.Targets, 1)
+	target := resp.Targets[0]
+	require.Equal(t, string(provider), target.Provider)
+	require.Equal(t, model, target.Model)
+	require.NotNil(t, target.KeyID)
+	require.Equal(t, keyID, *target.KeyID)
+	require.Empty(t, target.ReferencedRuleIDs)
+	require.Empty(t, target.ReferencedRuleNames)
+	require.Empty(t, target.RouteGroups)
+	require.Equal(t, 0, target.RuleHealthSummary.TotalRuleCount)
+	require.Equal(t, "supported", target.SupportStatus)
+	require.True(t, target.DetectionEnabled)
+}
+
 func TestGetHealthDetectionTargetsIncludesRouteGroupReferences(t *testing.T) {
 	SetLogger(&mockLogger{})
 
@@ -793,6 +871,67 @@ func TestUpdateHealthDetectionTarget_EnablesPendingFirstProbe(t *testing.T) {
 	require.NoError(t, json.Unmarshal(ctx.Response.Body(), &resp))
 	require.True(t, resp.DetectionEnabled)
 	require.Equal(t, "pending_first_probe", resp.ProbeState)
+}
+
+func TestUpdateHealthDetectionTarget_AllowsConfiguredKeyModelWithoutRouteReference(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	provider := schemas.ModelProvider("plato")
+	model := "gemini-3.1-pro-preview-thinking-medium"
+	keyID := "relay-unused"
+	targetID := encodeHealthDetectionTargetID(string(provider), model, &keyID)
+	enabled := true
+	store := &mockAdaptiveRoutingConfigStore{
+		providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+			provider: {
+				Keys: []schemas.Key{
+					{
+						ID:      keyID,
+						Name:    "unused-key",
+						Models:  []string{model},
+						Enabled: &enabled,
+					},
+				},
+			},
+		},
+		prefs: []configstoreTables.TableHealthDetectionTargetPreference{
+			{
+				TargetKey:        canonicalHealthDetectionTargetKey(string(provider), model, &keyID),
+				Provider:         string(provider),
+				Model:            model,
+				KeyID:            &keyID,
+				DetectionEnabled: true,
+			},
+		},
+	}
+
+	handler, err := NewAdaptiveRoutingHandler(
+		&mockAdaptiveRoutingRuntime{
+			config:        governance.ActiveHealthProbeConfig{},
+			store:         &mockAdaptiveRoutingStore{},
+			healthTracker: governance.NewHealthTracker(),
+		},
+		store,
+	)
+	require.NoError(t, err)
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("PUT")
+	ctx.Request.SetRequestURI("/api/governance/health-detection-targets/" + targetID)
+	ctx.SetUserValue("target_id", targetID)
+	ctx.Request.SetBodyString(`{"detection_enabled":false}`)
+
+	handler.updateHealthDetectionTarget(ctx)
+
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	require.Len(t, store.prefs, 1)
+	require.False(t, store.prefs[0].DetectionEnabled)
+
+	var resp HealthDetectionTargetResponse
+	require.NoError(t, json.Unmarshal(ctx.Response.Body(), &resp))
+	require.False(t, resp.DetectionEnabled)
+	require.Empty(t, resp.ReferencedRuleIDs)
+	require.Empty(t, resp.RouteGroups)
 }
 
 func TestUpdateHealthDetectionTarget_RejectsUnsupportedTarget(t *testing.T) {

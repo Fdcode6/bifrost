@@ -20,6 +20,7 @@ import {
 	getWorstRouteGroupHealthLevel,
 	formatSlowRatio,
 	isHealthDetectionTargetEditable,
+	isHealthDetectionTargetUnused,
 } from "./healthDetectionTargets";
 
 const baseTarget: HealthDetectionTarget = {
@@ -80,6 +81,21 @@ describe("healthDetectionTargets helpers", () => {
 				support_status: "unsupported",
 			}),
 		).toBe(false);
+	});
+
+	it("detects configured targets that are not referenced by routing rules", () => {
+		expect(isHealthDetectionTargetUnused(baseTarget)).toBe(false);
+		expect(
+			isHealthDetectionTargetUnused({
+				...baseTarget,
+				referenced_rule_ids: [],
+				route_groups: [],
+				rule_health_summary: {
+					total_rule_count: 0,
+					cooldown_rule_count: 0,
+				},
+			}),
+		).toBe(true);
 	});
 
 	it("formats three-state health levels", () => {

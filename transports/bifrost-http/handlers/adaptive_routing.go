@@ -462,21 +462,7 @@ func (h *AdaptiveRoutingHandler) buildHealthDetectionTargets(ctx context.Context
 					seenInRule[canonicalKey] = struct{}{}
 				}
 
-				record, ok := records[canonicalKey]
-				if !ok {
-					record = &healthDetectionTargetRecord{
-						CanonicalKey:        canonicalKey,
-						TargetID:            encodeHealthDetectionTargetID(provider, model, keyID),
-						RuntimeTargetKey:    governance.TargetKey(provider, model, derefString(keyID)),
-						Provider:            provider,
-						Model:               model,
-						KeyID:               keyID,
-						ReferencedRuleIDs:   make([]string, 0, 1),
-						ReferencedRuleNames: make([]string, 0, 1),
-						RouteGroups:         make([]RouteGroupReferenceResponse, 0, 1),
-					}
-					records[canonicalKey] = record
-				}
+				record := getOrCreateHealthDetectionTargetRecord(records, provider, model, keyID)
 
 				healthLevel := string(governance.HealthHealthy)
 				if tracker != nil {
@@ -500,6 +486,10 @@ func (h *AdaptiveRoutingHandler) buildHealthDetectionTargets(ctx context.Context
 				record.ReferencedRuleNames = append(record.ReferencedRuleNames, rule.Name)
 			}
 		}
+	}
+
+	if err := h.addConfiguredProviderKeyTargets(ctx, records); err != nil {
+		return nil, err
 	}
 
 	targets := make([]HealthDetectionTargetResponse, 0, len(records))
@@ -537,6 +527,11 @@ func (h *AdaptiveRoutingHandler) buildHealthDetectionTargets(ctx context.Context
 	}
 
 	sort.Slice(targets, func(i, j int) bool {
+		iReferenced := len(targets[i].ReferencedRuleIDs) > 0
+		jReferenced := len(targets[j].ReferencedRuleIDs) > 0
+		if iReferenced != jReferenced {
+			return iReferenced
+		}
 		if targets[i].Provider != targets[j].Provider {
 			return targets[i].Provider < targets[j].Provider
 		}
@@ -547,6 +542,61 @@ func (h *AdaptiveRoutingHandler) buildHealthDetectionTargets(ctx context.Context
 	})
 
 	return targets, nil
+}
+
+func getOrCreateHealthDetectionTargetRecord(records map[string]*healthDetectionTargetRecord, provider, model string, keyID *string) *healthDetectionTargetRecord {
+	canonicalKey := canonicalHealthDetectionTargetKey(provider, model, keyID)
+	if record, ok := records[canonicalKey]; ok {
+		return record
+	}
+	record := &healthDetectionTargetRecord{
+		CanonicalKey:        canonicalKey,
+		TargetID:            encodeHealthDetectionTargetID(provider, model, keyID),
+		RuntimeTargetKey:    governance.TargetKey(provider, model, derefString(keyID)),
+		Provider:            provider,
+		Model:               model,
+		KeyID:               cloneStringPtr(keyID),
+		ReferencedRuleIDs:   make([]string, 0, 1),
+		ReferencedRuleNames: make([]string, 0, 1),
+		RouteGroups:         make([]RouteGroupReferenceResponse, 0, 1),
+	}
+	records[canonicalKey] = record
+	return record
+}
+
+func (h *AdaptiveRoutingHandler) addConfiguredProviderKeyTargets(ctx context.Context, records map[string]*healthDetectionTargetRecord) error {
+	if h.configStore == nil {
+		return nil
+	}
+
+	providers, err := h.configStore.GetProvidersConfig(ctx)
+	if err != nil {
+		return err
+	}
+	for provider, cfg := range providers {
+		providerName := strings.TrimSpace(string(provider))
+		if providerName == "" {
+			continue
+		}
+		for _, key := range cfg.Keys {
+			if key.Enabled != nil && !*key.Enabled {
+				continue
+			}
+			keyID := strings.TrimSpace(key.ID)
+			var keyIDPtr *string
+			if keyID != "" {
+				keyIDPtr = &keyID
+			}
+			for _, rawModel := range key.Models {
+				model := strings.TrimSpace(rawModel)
+				if model == "" {
+					continue
+				}
+				getOrCreateHealthDetectionTargetRecord(records, providerName, model, keyIDPtr)
+			}
+		}
+	}
+	return nil
 }
 
 func buildRouteGroupReferencesByTarget(rule *configstoreTables.TableRoutingRule, healthLevel string) map[string][]RouteGroupReferenceResponse {
