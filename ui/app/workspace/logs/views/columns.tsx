@@ -9,6 +9,20 @@ import { ColumnDef } from "@tanstack/react-table";
 import { ArrowUpDown, Trash2 } from "lucide-react";
 import moment from "moment";
 
+const LOGS_COLUMN_SIZES = {
+	status: 40,
+	timestamp: 220,
+	requestType: 96,
+	provider: 128,
+	model: 220,
+	latency: 120,
+	tokens: 150,
+	cost: 96,
+	input: 360,
+	metadata: 150,
+	actions: 64,
+} as const;
+
 function getMessage(log?: LogEntry) {
 	if (log?.object === "list_models") {
 		return "N/A";
@@ -71,8 +85,9 @@ export const createColumns = (onDelete: (log: LogEntry) => void, hasDeleteAccess
 	{
 		accessorKey: "status",
 		header: "",
-		size: 8,
-		maxSize: 8,
+		size: LOGS_COLUMN_SIZES.status,
+		minSize: LOGS_COLUMN_SIZES.status,
+		maxSize: LOGS_COLUMN_SIZES.status,
 		cell: ({ row }) => {
 			const status = row.original.status as Status;
 			return <div className={`h-full min-h-[24px] w-1 rounded-sm ${StatusBarColors[status]}`} />;
@@ -86,6 +101,8 @@ export const createColumns = (onDelete: (log: LogEntry) => void, hasDeleteAccess
 				<ArrowUpDown className="ml-2 h-4 w-4" />
 			</Button>
 		),
+		size: LOGS_COLUMN_SIZES.timestamp,
+		minSize: LOGS_COLUMN_SIZES.timestamp,
 		cell: ({ row }) => {
 			const timestamp = row.original.timestamp;
 			return <div className="text-xs">{moment(timestamp).format("YYYY-MM-DD hh:mm:ss A (Z)")}</div>;
@@ -94,6 +111,8 @@ export const createColumns = (onDelete: (log: LogEntry) => void, hasDeleteAccess
 	{
 		id: "request_type",
 		header: "Type",
+		size: LOGS_COLUMN_SIZES.requestType,
+		minSize: LOGS_COLUMN_SIZES.requestType,
 		cell: ({ row }) => {
 			return (
 				<Badge variant="outline" className={`${RequestTypeColors[row.original.object as keyof typeof RequestTypeColors]} text-xs`}>
@@ -103,30 +122,10 @@ export const createColumns = (onDelete: (log: LogEntry) => void, hasDeleteAccess
 		},
 	},
 	{
-		accessorKey: "input",
-		header: "Message",
-		cell: ({ row }) => {
-			const input = getMessage(row.original);
-			const isLargePayload = row.original.is_large_payload_request || row.original.is_large_payload_response;
-			return (
-				<div className="flex items-center gap-1.5">
-					{isLargePayload && (
-						<span className="shrink-0 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/50 dark:text-amber-400" title="Large payload - streamed directly to provider">
-							LP
-						</span>
-					)}
-					<div className="max-w-[400px] truncate font-mono text-sm font-normal" title={input || "-"}>
-						{input || (isLargePayload
-						? `Large payload ${row.original.is_large_payload_request && row.original.is_large_payload_response ? "request & response" : row.original.is_large_payload_request ? "request" : "response"}`
-						: "-")}
-					</div>
-				</div>
-			);
-		},
-	},
-	{
 		accessorKey: "provider",
 		header: "Provider",
+		size: LOGS_COLUMN_SIZES.provider,
+		minSize: LOGS_COLUMN_SIZES.provider,
 		cell: ({ row }) => {
 			const provider = row.original.provider as ProviderName;
 			return (
@@ -140,7 +139,9 @@ export const createColumns = (onDelete: (log: LogEntry) => void, hasDeleteAccess
 	{
 		accessorKey: "model",
 		header: "Model",
-		cell: ({ row }) => <div className="max-w-[120px] truncate font-mono text-xs font-normal">{row.original.model || "N/A"}</div>,
+		size: LOGS_COLUMN_SIZES.model,
+		minSize: LOGS_COLUMN_SIZES.model,
+		cell: ({ row }) => <div className="truncate font-mono text-xs font-normal">{row.original.model || "N/A"}</div>,
 	},
 	{
 		accessorKey: "latency",
@@ -150,10 +151,12 @@ export const createColumns = (onDelete: (log: LogEntry) => void, hasDeleteAccess
 				<ArrowUpDown className="ml-2 h-4 w-4" />
 			</Button>
 		),
+		size: LOGS_COLUMN_SIZES.latency,
+		minSize: LOGS_COLUMN_SIZES.latency,
 		cell: ({ row }) => {
 			const latency = row.original.latency;
 			return (
-				<div className="pl-4 font-mono text-sm">{latency === undefined || latency === null ? "N/A" : `${latency.toLocaleString()}ms`}</div>
+				<div className="font-mono text-sm">{latency === undefined || latency === null ? "N/A" : `${latency.toLocaleString()}ms`}</div>
 			);
 		},
 	},
@@ -165,14 +168,16 @@ export const createColumns = (onDelete: (log: LogEntry) => void, hasDeleteAccess
 				<ArrowUpDown className="ml-2 h-4 w-4" />
 			</Button>
 		),
+		size: LOGS_COLUMN_SIZES.tokens,
+		minSize: LOGS_COLUMN_SIZES.tokens,
 		cell: ({ row }) => {
 			const tokenUsage = row.original.token_usage;
 			if (!tokenUsage) {
-				return <div className="pl-4 font-mono text-sm">N/A</div>;
+				return <div className="font-mono text-sm">N/A</div>;
 			}
 
 			return (
-				<div className="pl-4 text-sm">
+				<div className="text-sm">
 					<div className="font-mono">
 						{tokenUsage.total_tokens.toLocaleString()}{" "}
 						{tokenUsage.completion_tokens != null && tokenUsage.prompt_tokens != null
@@ -191,14 +196,50 @@ export const createColumns = (onDelete: (log: LogEntry) => void, hasDeleteAccess
 				<ArrowUpDown className="ml-2 h-4 w-4" />
 			</Button>
 		),
+		size: LOGS_COLUMN_SIZES.cost,
+		minSize: LOGS_COLUMN_SIZES.cost,
 		cell: ({ row }) => {
 			if (!row.original.cost) {
-				return <div className="pl-4 font-mono text-xs">N/A</div>;
+				return <div className="font-mono text-xs">N/A</div>;
 			}
 
 			return (
-				<div className="pl-4 text-xs">
+				<div className="text-xs">
 					<div className="font-mono">{row.original.cost?.toFixed(4)}</div>
+				</div>
+			);
+		},
+	},
+	{
+		accessorKey: "input",
+		header: "Message",
+		size: LOGS_COLUMN_SIZES.input,
+		minSize: LOGS_COLUMN_SIZES.input,
+		cell: ({ row }) => {
+			const input = getMessage(row.original);
+			const isLargePayload = row.original.is_large_payload_request || row.original.is_large_payload_response;
+			return (
+				<div className="flex min-w-0 items-center gap-1.5">
+					{isLargePayload && (
+						<span
+							className="shrink-0 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/50 dark:text-amber-400"
+							title="Large payload - streamed directly to provider"
+						>
+							LP
+						</span>
+					)}
+					<div className="min-w-0 truncate font-mono text-sm font-normal" title={input || "-"}>
+						{input ||
+							(isLargePayload
+								? `Large payload ${
+										row.original.is_large_payload_request && row.original.is_large_payload_response
+											? "request & response"
+											: row.original.is_large_payload_request
+												? "request"
+												: "response"
+									}`
+								: "-")}
+					</div>
 				</div>
 			);
 		},
@@ -209,14 +250,19 @@ export const createColumns = (onDelete: (log: LogEntry) => void, hasDeleteAccess
 	const metadataColumns: ColumnDef<LogEntry>[] = metadataKeys.map((key) => ({
 		id: `metadata_${key}`,
 		header: key.charAt(0).toUpperCase() + key.slice(1),
+		size: LOGS_COLUMN_SIZES.metadata,
+		minSize: LOGS_COLUMN_SIZES.metadata,
 		cell: ({ row }) => {
 			const value = row.original.metadata?.[key];
-			return <div className="max-w-[150px] truncate font-mono text-xs">{value ?? "-"}</div>;
+			return <div className="truncate font-mono text-xs">{value ?? "-"}</div>;
 		},
 	}));
 
 	const actionsColumn: ColumnDef<LogEntry> = {
 		id: "actions",
+		size: LOGS_COLUMN_SIZES.actions,
+		minSize: LOGS_COLUMN_SIZES.actions,
+		maxSize: LOGS_COLUMN_SIZES.actions,
 		cell: ({ row }) => {
 			const log = row.original;
 			return (

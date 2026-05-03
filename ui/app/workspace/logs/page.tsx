@@ -569,19 +569,20 @@ export default function LogsPage() {
 		}
 	}, [filters, finalDistributionDimension, triggerGetFinalDistribution]);
 
+	const refreshLogData = useCallback(async () => {
+		await Promise.all([fetchLogs(), fetchStats(), fetchHistogram(), fetchFinalDistribution()]);
+	}, [fetchFinalDistribution, fetchHistogram, fetchLogs, fetchStats]);
+
 	const scheduleGroupedRefresh = useCallback(() => {
 		if (groupedRefreshTimeout.current) {
 			clearTimeout(groupedRefreshTimeout.current);
 		}
 
 		groupedRefreshTimeout.current = setTimeout(() => {
-			fetchLogs();
-			fetchStats();
-			fetchHistogram();
-			fetchFinalDistribution();
+			refreshLogData();
 			groupedRefreshTimeout.current = null;
 		}, 150);
-	}, [fetchFinalDistribution, fetchHistogram, fetchLogs, fetchStats]);
+	}, [refreshLogData]);
 
 	// Helper to toggle live updates
 	const handleLiveToggle = useCallback(
@@ -589,13 +590,10 @@ export default function LogsPage() {
 			setUrlState({ live_enabled: enabled });
 			// When re-enabling, refetch logs to get latest data
 			if (enabled) {
-				fetchLogs();
-				fetchStats();
-				fetchHistogram();
-				fetchFinalDistribution();
+				refreshLogData();
 			}
 		},
-		[setUrlState, fetchFinalDistribution, fetchHistogram, fetchLogs, fetchStats],
+		[setUrlState, refreshLogData],
 	);
 
 	// Fetch logs when filters or pagination change
@@ -1102,6 +1100,8 @@ export default function LogsPage() {
 								isSocketConnected={isSocketConnected}
 								liveEnabled={liveEnabled}
 								onLiveToggle={handleLiveToggle}
+								onRefresh={refreshLogData}
+								refreshing={fetchingLogs || fetchingStats || fetchingHistogram || fetchingFinalDistribution}
 								fetchLogs={fetchLogs}
 								fetchStats={fetchStats}
 								bodyRenderer={

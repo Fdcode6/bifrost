@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { getErrorMessage, useRecalculateLogCostsMutation } from "@/lib/store";
 import type { LogFilters as LogFiltersType } from "@/lib/types/logs";
-import { Calculator, MoreVertical, Pause, Play, Search } from "lucide-react";
+import { Calculator, MoreVertical, Pause, Play, RefreshCw, Search } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
@@ -51,16 +51,27 @@ interface LogFiltersProps {
 	onFiltersChange: (filters: LogFiltersType) => void;
 	liveEnabled: boolean;
 	onLiveToggle: (enabled: boolean) => void;
+	onRefresh: () => Promise<void>;
+	refreshing: boolean;
 	fetchLogs: () => Promise<void>;
 	fetchStats: () => Promise<void>;
 }
 
-export function LogFilters({ filters, onFiltersChange, liveEnabled, onLiveToggle, fetchLogs, fetchStats }: LogFiltersProps) {
+export function getManualRefreshButtonState(refreshing: boolean) {
+	return {
+		disabled: refreshing,
+		iconClassName: refreshing ? "h-4 w-4 animate-spin" : "h-4 w-4",
+		label: refreshing ? "Refreshing logs..." : "Refresh logs",
+	};
+}
+
+export function LogFilters({ filters, onFiltersChange, liveEnabled, onLiveToggle, onRefresh, refreshing, fetchLogs, fetchStats }: LogFiltersProps) {
 	const [openMoreActionsPopover, setOpenMoreActionsPopover] = useState(false);
 	const [localSearch, setLocalSearch] = useState(filters.content_search || "");
 	const searchTimeoutRef = useRef<NodeJS.Timeout | undefined>(undefined);
 	const filtersRef = useRef<LogFiltersType>(filters);
 	const [recalculateCosts, { isLoading: recalculating }] = useRecalculateLogCostsMutation();
+	const refreshButtonState = getManualRefreshButtonState(refreshing);
 
 	// Keep filtersRef in sync so debounced search always merges with latest filters (search within filtered results)
 	useEffect(() => {
@@ -147,7 +158,7 @@ export function LogFilters({ filters, onFiltersChange, liveEnabled, onLiveToggle
 	);
 
 	return (
-		<div className="flex items-center justify-between space-x-2">
+		<div className="flex flex-wrap items-center gap-2">
 			<Button variant={"outline"} size="sm" className="h-7.5" onClick={() => onLiveToggle(!liveEnabled)}>
 				{liveEnabled ? (
 					<>
@@ -161,7 +172,20 @@ export function LogFilters({ filters, onFiltersChange, liveEnabled, onLiveToggle
 					</>
 				)}
 			</Button>
-			<div className="border-input flex h-7.5 flex-1 items-center gap-2 rounded-sm border">
+			<Button
+				variant="outline"
+				size="sm"
+				className="h-7.5 w-[150px]"
+				onClick={() => void onRefresh()}
+				disabled={refreshButtonState.disabled}
+				aria-label={refreshButtonState.label}
+				title={refreshButtonState.label}
+				data-testid="logs-refresh-button"
+			>
+				<RefreshCw className={refreshButtonState.iconClassName} />
+				{refreshButtonState.label}
+			</Button>
+			<div className="border-input flex h-7.5 min-w-[240px] flex-1 items-center gap-2 rounded-sm border">
 				<Search className="mr-0.5 ml-2 size-4" />
 				<Input
 					type="text"

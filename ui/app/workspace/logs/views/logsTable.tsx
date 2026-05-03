@@ -44,6 +44,8 @@ interface DataTableProps {
 	isSocketConnected: boolean;
 	liveEnabled: boolean;
 	onLiveToggle: (enabled: boolean) => void;
+	onRefresh: () => Promise<void>;
+	refreshing: boolean;
 	fetchLogs: () => Promise<void>;
 	fetchStats: () => Promise<void>;
 	bodyRenderer?: (args: {
@@ -70,6 +72,8 @@ export function LogsDataTable({
 	isSocketConnected,
 	liveEnabled,
 	onLiveToggle,
+	onRefresh,
+	refreshing,
 	fetchLogs,
 	fetchStats,
 	bodyRenderer,
@@ -168,6 +172,9 @@ export function LogsDataTable({
 		},
 		onSortingChange: handleSortingChange,
 	});
+	const visibleColumns = table.getVisibleLeafColumns();
+	const visibleColumnCount = visibleColumns.length;
+	const tableWidth = visibleColumns.reduce((total, column) => total + column.getSize(), 0);
 
 	const currentPage = Math.floor(pagination.offset / pagination.limit) + 1;
 	const totalPages = Math.ceil(totalItems / pagination.limit);
@@ -191,6 +198,8 @@ export function LogsDataTable({
 						onFiltersChange={onFiltersChange}
 						liveEnabled={liveEnabled}
 						onLiveToggle={onLiveToggle}
+						onRefresh={onRefresh}
+						refreshing={refreshing}
 						fetchLogs={fetchLogs}
 						fetchStats={fetchStats}
 					/>
@@ -199,7 +208,12 @@ export function LogsDataTable({
 			</div>
 
 			<div ref={tableContainerRef} className="min-h-0 flex-1 overflow-hidden rounded-sm border" data-testid="logs-table">
-				<Table containerClassName="h-full overflow-auto">
+				<Table className="table-fixed" containerClassName="h-full overflow-auto" style={{ width: tableWidth }}>
+					<colgroup>
+						{visibleColumns.map((column) => (
+							<col key={column.id} style={{ width: column.getSize() }} />
+						))}
+					</colgroup>
 					<thead className={cn("sticky top-0 z-10 bg-[#f9f9f9] px-2 dark:bg-[#27272a] [&_tr]:border-b")}>
 						{table.getHeaderGroups().map((headerGroup) => (
 							<tr
@@ -229,7 +243,7 @@ export function LogsDataTable({
 					<TableBody>
 						{loading ? (
 							<TableRow>
-								<TableCell colSpan={columns.length} className="h-24 text-center">
+								<TableCell colSpan={visibleColumnCount} className="h-24 text-center">
 									<div className="flex items-center justify-center gap-2">
 										<RefreshCw className="h-4 w-4 animate-spin" />
 										Loading logs...
@@ -239,7 +253,7 @@ export function LogsDataTable({
 						) : (
 							<>
 								<TableRow className="hover:bg-transparent">
-									<TableCell colSpan={columns.length} className="h-12 text-center">
+									<TableCell colSpan={visibleColumnCount} className="h-12 text-center">
 										<div className="flex items-center justify-center gap-2">
 											{!isSocketConnected ? (
 												<>
@@ -263,7 +277,7 @@ export function LogsDataTable({
 								{bodyRenderer ? (
 									bodyRenderer({
 										table,
-										columnsCount: columns.length,
+										columnsCount: visibleColumnCount,
 										pinOffsets,
 										lastLeftPinId,
 										firstRightPinId,
@@ -294,7 +308,7 @@ export function LogsDataTable({
 									))
 								) : (
 									<TableRow>
-										<TableCell colSpan={columns.length} className="h-24 text-center">
+										<TableCell colSpan={visibleColumnCount} className="h-24 text-center">
 											No results found. Try adjusting your filters and/or time range.
 										</TableCell>
 									</TableRow>
