@@ -80,20 +80,19 @@ export default function HealthDetectionTargetsTable({
 			<CardHeader className="border-b">
 				<div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
 					<div className="space-y-1">
-						<CardTitle>Liveness Probe Targets</CardTitle>
+						<CardTitle>存活探测目标</CardTitle>
 						<CardDescription>
-							Each grouped routing target appears once here. Probe switches only control background liveness checks; route health still
-							comes from real requests.
+							每个分组路由目标只显示一次。这里的开关只控制后台存活探测，规则健康仍然来自真实请求。
 						</CardDescription>
 					</div>
 					<div className="flex items-center gap-2">
 						<Badge variant="outline" className="text-xs">
-							{rows.length} targets
+							{rows.length} 个目标
 						</Badge>
 						{isFetching && !isLoading ? (
 							<span className="text-muted-foreground flex items-center gap-1 text-xs">
 								<Loader2 className="h-3.5 w-3.5 animate-spin" />
-								Refreshing
+								刷新中
 							</span>
 						) : null}
 					</div>
@@ -103,25 +102,25 @@ export default function HealthDetectionTargetsTable({
 				{isLoading && rows.length === 0 ? (
 					<div className="text-muted-foreground flex items-center gap-2 px-6 py-8 text-sm">
 						<Loader2 className="h-4 w-4 animate-spin" />
-						Loading liveness probe targets…
+						正在加载存活探测目标...
 					</div>
 				) : error ? (
 					<div className="px-6 py-6">
 						<div className="border-destructive/30 bg-destructive/5 rounded-sm border p-4 text-sm">
-							<p className="font-medium">Unable to load liveness probe targets.</p>
+							<p className="font-medium">无法加载存活探测目标。</p>
 							<p className="text-muted-foreground mt-1">{getErrorMessage(error)}</p>
 							<Button variant="outline" size="sm" onClick={onRetry} className="mt-3">
-								Retry
+								重试
 							</Button>
 						</div>
 					</div>
 				) : rows.length === 0 ? (
 					<div className="px-6 py-12 text-center">
 						<AlertTriangle className="text-muted-foreground/50 mx-auto mb-3 h-10 w-10" />
-						<p className="text-sm font-medium">No eligible targets found.</p>
-						<p className="text-muted-foreground mt-1 text-xs">Add grouped health routing targets to manage detection here.</p>
+						<p className="text-sm font-medium">还没有可探测目标。</p>
+						<p className="text-muted-foreground mt-1 text-xs">添加分组健康路由目标后，可以在这里管理存活探测。</p>
 						<Button asChild variant="outline" className="mt-4">
-							<Link href="/workspace/routing-rules">Open Routing Rules</Link>
+							<Link href="/workspace/routing-rules">打开路由规则</Link>
 						</Button>
 					</div>
 				) : (
@@ -132,22 +131,23 @@ export default function HealthDetectionTargetsTable({
 									<TableHead>Provider</TableHead>
 									<TableHead>Model</TableHead>
 									<TableHead>Key ID</TableHead>
-									<TableHead>Referenced By</TableHead>
-									<TableHead>Routing Groups</TableHead>
-									<TableHead>Rule Health</TableHead>
-									<TableHead>Support Status</TableHead>
-									<TableHead className="w-36">Probe Enabled</TableHead>
-									<TableHead>Probe State</TableHead>
-									<TableHead>Rule Health Summary</TableHead>
-									<TableHead>Last Real Access</TableHead>
-									<TableHead>Last Probe</TableHead>
-									<TableHead>Last Probe Result</TableHead>
+									<TableHead>引用规则</TableHead>
+									<TableHead>路由分组</TableHead>
+									<TableHead>规则健康</TableHead>
+									<TableHead>支持状态</TableHead>
+									<TableHead className="w-36">启用探测</TableHead>
+									<TableHead>探测状态</TableHead>
+									<TableHead>规则健康汇总</TableHead>
+									<TableHead>最后真实请求</TableHead>
+									<TableHead>最后探测</TableHead>
+									<TableHead>最后探测结果</TableHead>
 								</TableRow>
 							</TableHeader>
 							<TableBody>
 								{rows.map((target) => {
 									const editable = isHealthDetectionTargetEditable(target);
-									const probeResultLabel = target.last_probe_result ? target.last_probe_result.toUpperCase() : "—";
+									const probeResultLabel =
+										target.last_probe_result === "success" ? "成功" : target.last_probe_result === "failure" ? "失败" : "—";
 									const worstHealthLevel = getWorstRouteGroupHealthLevel(target.route_groups);
 
 									return (
@@ -171,7 +171,7 @@ export default function HealthDetectionTargetsTable({
 															key={`${target.target_id}-${group.rule_id}-${group.group_index}-${group.group_name}`}
 															variant={group.fallback_only ? "secondary" : "outline"}
 															className="max-w-56 truncate text-xs"
-															title={`${group.rule_name} / ${getRouteGroupLabel(group)} / retry ${group.retry_limit}`}
+															title={`${group.rule_name} / ${getRouteGroupLabel(group)} / Retry ${group.retry_limit}`}
 														>
 															<span className="truncate">{getRouteGroupLabel(group)}</span>
 														</Badge>
@@ -184,8 +184,8 @@ export default function HealthDetectionTargetsTable({
 														{getHealthLevelLabel(worstHealthLevel)}
 													</Badge>
 													<span className="text-muted-foreground block text-xs">
-														{target.rule_health_summary.degraded_rule_count ?? 0} degraded,{" "}
-														{target.rule_health_summary.cooldown_rule_count} cooldown /{" "}
+														{target.rule_health_summary.degraded_rule_count ?? 0} 降级,{" "}
+														{target.rule_health_summary.cooldown_rule_count} 冷却中 /{" "}
 														{target.rule_health_summary.total_rule_count}
 													</span>
 												</div>
@@ -215,7 +215,7 @@ export default function HealthDetectionTargetsTable({
 																.unwrap()
 																.catch((mutationError) => {
 																	toast({
-																		title: "Failed to update liveness probe target",
+																		title: "存活探测目标更新失败",
 																		description: getErrorMessage(mutationError),
 																		variant: "destructive",
 																	});
@@ -223,7 +223,7 @@ export default function HealthDetectionTargetsTable({
 														}}
 													/>
 													<p className="text-muted-foreground text-xs">
-														{editable ? (target.detection_enabled ? "Enabled" : "Disabled") : target.support_reason || "Read-only"}
+														{editable ? (target.detection_enabled ? "已启用" : "已停用") : target.support_reason || "只读"}
 													</p>
 												</div>
 											</TableCell>
@@ -237,7 +237,7 @@ export default function HealthDetectionTargetsTable({
 													</p>
 													{mode === "passive" && target.probe_state !== "unsupported" ? (
 														<p className="text-muted-foreground text-xs">
-															Background probes are off globally. This target setting is saved for when probes are turned on.
+															后台探测当前全局关闭。该目标设置会保留，开启后生效。
 														</p>
 													) : null}
 												</div>
@@ -246,8 +246,8 @@ export default function HealthDetectionTargetsTable({
 												<span
 													className={cn("text-sm", target.rule_health_summary.cooldown_rule_count > 0 && "text-destructive font-medium")}
 												>
-													{target.rule_health_summary.degraded_rule_count ?? 0} degraded, {target.rule_health_summary.cooldown_rule_count}{" "}
-													cooldown / {target.rule_health_summary.total_rule_count}
+													{target.rule_health_summary.degraded_rule_count ?? 0} 降级, {target.rule_health_summary.cooldown_rule_count}{" "}
+													冷却中 / {target.rule_health_summary.total_rule_count}
 												</span>
 											</TableCell>
 											<TableCell className="text-muted-foreground text-sm">

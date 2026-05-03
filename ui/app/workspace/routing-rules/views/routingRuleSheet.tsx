@@ -64,7 +64,7 @@ const CELRuleBuilder = dynamic(
 			default: mod.CELRuleBuilder,
 		})),
 	{
-		loading: () => <div className="text-sm text-gray-500">Loading CEL builder...</div>,
+		loading: () => <div className="text-sm text-gray-500">正在加载 CEL 条件编辑器...</div>,
 		ssr: false,
 	},
 );
@@ -204,89 +204,89 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 	const onSubmit = (data: RoutingRuleFormData) => {
 		// Validate scope_id is required when scope is not global
 		if (data.scope !== "global" && !data.scope_id?.trim()) {
-			toast.error(`${data.scope === "team" ? "Team" : data.scope === "customer" ? "Customer" : "Virtual Key"} is required`);
+			toast.error(`请选择 ${data.scope === "team" ? "Team" : data.scope === "customer" ? "Customer" : "Virtual Key"}`);
 			return;
 		}
 
 		if (data.grouped_routing_enabled) {
 			// Grouped routing validation
 			if (routeGroups.length === 0) {
-				toast.error("At least one route group is required");
+				toast.error("至少需要一个路由分组");
 				return;
 			}
 			for (const group of routeGroups) {
 				if (!group.name.trim()) {
-					toast.error("Each route group must have a name");
+					toast.error("每个路由分组都需要填写名称");
 					return;
 				}
 				if (group.targets.length === 0) {
-					toast.error(`Route group "${group.name}" must have at least one target`);
+					toast.error(`路由分组 “${group.name}” 至少需要一个目标`);
 					return;
 				}
 				const groupWeight = group.targets.reduce((sum, t) => sum + (t.weight || 0), 0);
 				if (Math.abs(groupWeight - 1) > 0.001) {
-					toast.error(`Weights in group "${group.name}" must sum to 1 (current: ${groupWeight.toFixed(4)})`);
+					toast.error(`路由分组 “${group.name}” 的权重总和必须为 1（当前：${groupWeight.toFixed(4)}）`);
 					return;
 				}
 				for (const t of group.targets) {
 					if (!t.provider) {
-						toast.error(`Each target in group "${group.name}" must have a provider`);
+						toast.error(`路由分组 “${group.name}” 中每个目标都必须选择 Provider`);
 						return;
 					}
 					if (!t.model) {
-						toast.error(`Each target in group "${group.name}" must have a model`);
+						toast.error(`路由分组 “${group.name}” 中每个目标都必须选择 Model`);
 						return;
 					}
 				}
 			}
 			if (data.health_policy) {
 				if (data.health_policy.failure_threshold < 1) {
-					toast.error("Failure threshold must be at least 1");
+					toast.error("失败阈值至少为 1");
 					return;
 				}
 				if (data.health_policy.failure_window_seconds < 1) {
-					toast.error("Failure window must be at least 1 second");
+					toast.error("失败窗口至少为 1 秒");
 					return;
 				}
 				if (data.health_policy.cooldown_seconds < 1) {
-					toast.error("Cooldown must be at least 1 second");
+					toast.error("Cooldown 至少为 1 秒");
 					return;
 				}
 				if (data.health_policy.consecutive_failures < 0) {
-					toast.error("Consecutive failures must be 0 or greater");
+					toast.error("连续失败次数必须大于等于 0");
 					return;
 				}
 				if (data.health_policy.slow_ratio_threshold <= 0) {
-					toast.error("Slow ratio threshold must be greater than 0");
+					toast.error("慢请求占比阈值必须大于 0");
 					return;
 				}
 				if (data.health_policy.slow_recovery_seconds < 0) {
-					toast.error("Slow recovery must be 0 or greater");
+					toast.error("慢请求恢复窗口必须大于等于 0");
 					return;
 				}
 				if (data.health_policy.request_deadline_ms < 0) {
-					toast.error("Request deadline must be 0 or greater");
+					toast.error("请求 Deadline 必须大于等于 0");
 					return;
 				}
 				if (data.health_policy.soft_cooldown_multiplier < 1 || data.health_policy.cooldown_backoff_factor < 1) {
-					toast.error("Cooldown multipliers must be at least 1");
+					toast.error("Cooldown 倍率必须至少为 1");
 					return;
 				}
 			}
 		} else {
 			// Standard routing validation
 			if (targets.length === 0) {
-				toast.error("At least one routing target is required");
+				toast.error("至少需要一个路由目标");
 				return;
 			}
 			for (const t of targets) {
 				if (t.weight <= 0) {
-					toast.error("Each target weight must be greater than 0");
+					toast.error("每个目标的权重必须大于 0");
 					return;
 				}
 			}
 			if (Math.abs(totalWeight - 1) > 0.001) {
-				toast.error(`Target weights must sum to 1, current total: ${totalWeight.toFixed(4)}`);
+				toast.error(`目标权重总和必须为 1，当前总和：${totalWeight.toFixed(4)}`);
 				return;
 			}
 		}
@@ -294,14 +294,14 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 		// Validate regex patterns in routing rules
 		const regexErrors = validateRoutingRules(query);
 		if (regexErrors.length > 0) {
-			toast.error(`Invalid regex pattern:\n${regexErrors.join("\n")}`);
+			toast.error(`正则表达式无效:\n${regexErrors.join("\n")}`);
 			return;
 		}
 
 		// Validate rate limit and budget rules
 		const rateLimitErrors = validateRateLimitAndBudgetRules(query);
 		if (rateLimitErrors.length > 0) {
-			toast.error(`Invalid rule configuration:\n${rateLimitErrors.join("\n")}`);
+			toast.error(`规则配置无效:\n${rateLimitErrors.join("\n")}`);
 			return;
 		}
 
@@ -356,7 +356,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 
 		submitPromise
 			.then(() => {
-				toast.success(isEditing ? "Routing rule updated successfully" : "Routing rule created successfully");
+				toast.success(isEditing ? "路由规则已更新" : "路由规则已创建");
 				reset();
 				setTargets([{ ...DEFAULT_ROUTING_TARGET }]);
 				setRouteGroups([]);
@@ -383,9 +383,9 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 		<Sheet open={open} onOpenChange={onOpenChange}>
 			<SheetContent className="flex w-full min-w-1/2 flex-col gap-4 overflow-x-hidden p-8">
 				<SheetHeader className="flex flex-col items-start">
-					<SheetTitle>{isEditing ? "Edit Routing Rule" : "Create New Routing Rule"}</SheetTitle>
+					<SheetTitle>{isEditing ? "编辑路由规则" : "新建路由规则"}</SheetTitle>
 					<SheetDescription>
-						{isEditing ? "Update the routing rule configuration" : "Create a new CEL-based routing rule for intelligent request routing"}
+						{isEditing ? "更新这条路由规则的配置。" : "创建一条基于 CEL 条件的请求分流规则。"}
 					</SheetDescription>
 				</SheetHeader>
 
@@ -393,27 +393,27 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 					{/* Rule Name */}
 					<div className="space-y-3">
 						<Label htmlFor="name">
-							Rule Name <span className="text-red-500">*</span>
+							规则名称 <span className="text-red-500">*</span>
 						</Label>
 						<Input
 							id="name"
-							placeholder="e.g., Route GPT-4 to Azure"
-							{...register("name", { required: "Rule name is required", maxLength: 255 })}
+							placeholder="例如：把 GPT-4 发到 Azure"
+							{...register("name", { required: "规则名称必填", maxLength: 255 })}
 						/>
 						{errors.name && <p className="text-destructive text-sm">{errors.name.message}</p>}
 					</div>
 
 					{/* Description */}
 					<div className="space-y-3">
-						<Label htmlFor="description">Description</Label>
-						<Textarea id="description" placeholder="Describe what this rule does..." rows={2} {...register("description")} />
+						<Label htmlFor="description">描述</Label>
+						<Textarea id="description" placeholder="说明这条规则的用途..." rows={2} {...register("description")} />
 					</div>
 
 					{/* Enabled Switch */}
 					<div className="flex items-center justify-between rounded-lg border p-4">
 						<div className="space-y-0.5">
-							<Label htmlFor="enabled">Enable Rule</Label>
-							<p className="text-muted-foreground text-sm">Rule will be active and applied to matching requests</p>
+							<Label htmlFor="enabled">启用规则</Label>
+							<p className="text-muted-foreground text-sm">规则会对匹配请求生效</p>
 						</div>
 						<Switch id="enabled" checked={enabled} onCheckedChange={(checked) => setValue("enabled", checked)} />
 					</div>
@@ -421,7 +421,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 					{/* Scope and Priority - Side by Side */}
 					<div className="grid grid-cols-2 gap-4">
 						<div className="space-y-3">
-							<Label htmlFor="scope">Scope</Label>
+							<Label htmlFor="scope">作用范围</Label>
 							<Select
 								value={scope}
 								onValueChange={(value) => {
@@ -431,7 +431,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 								}}
 							>
 								<SelectTrigger className="w-full">
-									<SelectValue placeholder="Select scope..." />
+									<SelectValue placeholder="选择作用范围..." />
 								</SelectTrigger>
 								<SelectContent>
 									{ROUTING_RULE_SCOPES.map((scopeOption) => (
@@ -445,7 +445,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 
 						<div className="space-y-3">
 							<Label htmlFor="priority">
-								Priority <span className="text-red-500">*</span>
+								优先级 <span className="text-red-500">*</span>
 							</Label>
 							<Input
 								id="priority"
@@ -453,13 +453,13 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 								min={0}
 								max={1000}
 								{...register("priority", {
-									required: "Priority is required",
-									min: { value: 0, message: "Priority must be ≥ 0" },
-									max: { value: 1000, message: "Priority must be ≤ 1000" },
+									required: "优先级必填",
+									min: { value: 0, message: "优先级必须 ≥ 0" },
+									max: { value: 1000, message: "优先级必须 ≤ 1000" },
 									valueAsNumber: true,
 								})}
 							/>
-							<p className="text-muted-foreground text-xs">Lower numbers = higher priority (0 is highest)</p>
+							<p className="text-muted-foreground text-xs">数字越小优先级越高（0 最高）</p>
 							{errors.priority && <p className="text-destructive text-sm">{errors.priority.message}</p>}
 						</div>
 					</div>
@@ -472,7 +472,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 							{scope === "team" && teamsData.teams.length > 0 && (
 								<Select value={scopeId || ""} onValueChange={(value) => setValue("scope_id", value)}>
 									<SelectTrigger className="w-full">
-										<SelectValue placeholder="Select a team..." />
+										<SelectValue placeholder="选择 Team..." />
 									</SelectTrigger>
 									<SelectContent>
 										{teamsData.teams.map((team) => (
@@ -486,7 +486,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 							{scope === "customer" && customersData.customers.length > 0 && (
 								<Select value={scopeId || ""} onValueChange={(value) => setValue("scope_id", value)}>
 									<SelectTrigger className="w-full">
-										<SelectValue placeholder="Select a customer..." />
+										<SelectValue placeholder="选择 Customer..." />
 									</SelectTrigger>
 									<SelectContent>
 										{customersData.customers.map((customer) => (
@@ -500,7 +500,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 							{scope === "virtual_key" && vksData.virtual_keys.length > 0 && (
 								<Select value={scopeId || ""} onValueChange={(value) => setValue("scope_id", value)}>
 									<SelectTrigger className="w-full">
-										<SelectValue placeholder="Select a virtual key..." />
+										<SelectValue placeholder="选择 Virtual Key..." />
 									</SelectTrigger>
 									<SelectContent>
 										{vksData.virtual_keys.map((vk) => (
@@ -515,7 +515,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 								(scope === "customer" && customersData.customers.length === 0) ||
 								(scope === "virtual_key" && vksData.virtual_keys.length === 0)) && (
 								<p className="text-muted-foreground text-sm">
-									No {scope === "team" ? "teams" : scope === "customer" ? "customers" : "virtual keys"} available
+									暂无可用的 {scope === "team" ? "Team" : scope === "customer" ? "Customer" : "Virtual Key"}
 								</p>
 							)}
 							{errors.scope_id && <p className="text-destructive text-sm">{errors.scope_id.message}</p>}
@@ -526,9 +526,9 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 
 					{/* CEL Rule Builder */}
 					<div className="space-y-3">
-						<Label>Rule Builder</Label>
+						<Label>规则条件</Label>
 						<p className="text-muted-foreground text-sm">
-							Build conditions to determine when this rule should apply. Leave empty to apply this rule to all requests.
+							构建这条规则生效的条件；留空则匹配所有请求。
 						</p>
 						<CELRuleBuilder
 							key={builderKey}
@@ -542,9 +542,9 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 
 					{/* Note about Token/Request Limits and Budget Configuration */}
 					<p className="text-muted-foreground text-xs">
-						Note: Ensure token limits, request limits, and budget are configured in{" "}
-						<strong>Model Providers → Configurations → {"{provider}"} → Governance</strong> (provider-level) or{" "}
-						<strong>Model Providers → Budgets & Limits</strong> section (model-level) before using them in routing rules.
+						注意：使用 Token 限制、Request 限制或预算条件前，请先在{" "}
+						<strong>Model Providers → Configurations → {"{provider}"} → Governance</strong> (provider-level) 或{" "}
+						<strong>Model Providers → Budgets & Limits</strong> (model-level) 中配置对应限制。
 					</p>
 
 					<Separator />
@@ -552,8 +552,8 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 					{/* Grouped Health Routing Toggle */}
 					<div className="flex items-center justify-between rounded-lg border p-4">
 						<div className="space-y-0.5">
-							<Label htmlFor="grouped_routing_enabled">Grouped Health Routing</Label>
-							<p className="text-muted-foreground text-sm">Enable health-aware routing with route groups and automatic failover</p>
+							<Label htmlFor="grouped_routing_enabled">分组健康路由</Label>
+							<p className="text-muted-foreground text-sm">启用按路由分组和健康状态自动切换的请求分流</p>
 						</div>
 						<Switch
 							id="grouped_routing_enabled"
@@ -567,15 +567,14 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 						<>
 							{/* Health Policy */}
 							<div className="space-y-3">
-								<Label>Health Policy</Label>
+								<Label>健康策略</Label>
 								<p className="text-muted-foreground text-xs">
-									Configure when a target is considered unhealthy and placed in cooldown. Two triggers (either one activates cooldown):
-									window-based (burst failures) and consecutive (persistent failures regardless of time).
+									配置目标什么时候进入 Cooldown。窗口失败和连续失败任意一个触发，目标都会从常规路由里暂时降级。
 								</p>
 								<div className="grid grid-cols-2 gap-3">
 									<div className="space-y-1.5">
 										<Label htmlFor="hp-threshold" className="text-xs">
-											Window Threshold
+											窗口阈值
 										</Label>
 										<Input
 											id="hp-threshold"
@@ -590,11 +589,11 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 											}
 											data-testid="health-policy-threshold"
 										/>
-										<p className="text-muted-foreground text-[10px]">Failures within window to trigger cooldown</p>
+										<p className="text-muted-foreground text-[10px]">窗口内失败达到该数量后进入 Cooldown</p>
 									</div>
 									<div className="space-y-1.5">
 										<Label htmlFor="hp-window" className="text-xs">
-											Failure Window (s)
+											失败窗口（秒）
 										</Label>
 										<Input
 											id="hp-window"
@@ -609,11 +608,11 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 											}
 											data-testid="health-policy-window"
 										/>
-										<p className="text-muted-foreground text-[10px]">Sliding time window for counting failures</p>
+										<p className="text-muted-foreground text-[10px]">统计失败次数的滑动时间窗口</p>
 									</div>
 									<div className="space-y-1.5">
 										<Label htmlFor="hp-consecutive" className="text-xs">
-											Consecutive Failures
+											连续失败
 										</Label>
 										<Input
 											id="hp-consecutive"
@@ -628,11 +627,11 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 											}
 											data-testid="health-policy-consecutive"
 										/>
-										<p className="text-muted-foreground text-[10px]">0 uses the window threshold value</p>
+										<p className="text-muted-foreground text-[10px]">0 表示使用窗口阈值</p>
 									</div>
 									<div className="space-y-1.5">
 										<Label htmlFor="hp-cooldown" className="text-xs">
-											Cooldown (s)
+											Cooldown 冷却（秒）
 										</Label>
 										<Input
 											id="hp-cooldown"
@@ -657,14 +656,14 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 										onClick={() => setHealthAdvancedOpen((open) => !open)}
 										data-testid="health-policy-advanced-toggle"
 									>
-										<span>Advanced health signals</span>
+										<span>高级健康信号</span>
 										{healthAdvancedOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
 									</button>
 									{healthAdvancedOpen && (
 										<div className="grid grid-cols-2 gap-3 border-t p-3">
 											<div className="space-y-1.5">
 												<Label htmlFor="hp-slow-threshold" className="text-xs">
-													Slow Threshold (ms)
+													慢请求阈值（毫秒）
 												</Label>
 												<Input
 													id="hp-slow-threshold"
@@ -682,7 +681,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 											</div>
 											<div className="space-y-1.5">
 												<Label htmlFor="hp-slow-window" className="text-xs">
-													Slow Window Size
+													慢请求窗口大小
 												</Label>
 												<Input
 													id="hp-slow-window"
@@ -700,7 +699,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 											</div>
 											<div className="space-y-1.5">
 												<Label htmlFor="hp-slow-ratio" className="text-xs">
-													Slow Ratio Threshold
+													慢请求占比阈值
 												</Label>
 												<Input
 													id="hp-slow-ratio"
@@ -716,11 +715,11 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 													}
 													data-testid="health-policy-slow-ratio"
 												/>
-												<p className="text-muted-foreground text-[10px]">Use 999 to disable ratio-based degraded routing</p>
+												<p className="text-muted-foreground text-[10px]">填 999 可关闭按慢请求占比降级</p>
 											</div>
 											<div className="space-y-1.5">
 												<Label htmlFor="hp-slow-recovery" className="text-xs">
-													Slow Recovery (s)
+													慢请求恢复窗口（秒）
 												</Label>
 												<Input
 													id="hp-slow-recovery"
@@ -735,11 +734,11 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 													}
 													data-testid="health-policy-slow-recovery"
 												/>
-												<p className="text-muted-foreground text-[10px]">0 disables last-slow recency degraded routing</p>
+												<p className="text-muted-foreground text-[10px]">0 表示关闭最近慢请求降级</p>
 											</div>
 											<div className="space-y-1.5">
 												<Label htmlFor="hp-soft-multiplier" className="text-xs">
-													Soft Cooldown Multiplier
+													软失败 Cooldown 倍率
 												</Label>
 												<Input
 													id="hp-soft-multiplier"
@@ -758,7 +757,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 											</div>
 											<div className="space-y-1.5">
 												<Label htmlFor="hp-backoff" className="text-xs">
-													Cooldown Backoff Factor
+													Cooldown 退避倍率
 												</Label>
 												<Input
 													id="hp-backoff"
@@ -777,7 +776,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 											</div>
 											<div className="space-y-1.5">
 												<Label htmlFor="hp-cooldown-max" className="text-xs">
-													Max Cooldown (s)
+													最大 Cooldown（秒）
 												</Label>
 												<Input
 													id="hp-cooldown-max"
@@ -795,7 +794,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 											</div>
 											<div className="space-y-1.5">
 												<Label htmlFor="hp-deadline" className="text-xs">
-													Request Deadline (ms)
+													请求 Deadline（毫秒）
 												</Label>
 												<Input
 													id="hp-deadline"
@@ -810,14 +809,14 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 													}
 													data-testid="health-policy-deadline"
 												/>
-												<p className="text-muted-foreground text-[10px]">Current version reserves this field; 0 disables it</p>
+												<p className="text-muted-foreground text-[10px]">当前版本预留该字段；0 表示关闭</p>
 											</div>
 											<div className="col-span-2 flex items-center justify-between rounded-md border p-3">
 												<div className="space-y-0.5">
 													<Label htmlFor="hp-half-open" className="text-xs">
-														Half-open probe
+														Half-open 恢复探测
 													</Label>
-													<p className="text-muted-foreground text-[10px]">Allow one recovery probe after cooldown expires</p>
+													<p className="text-muted-foreground text-[10px]">Cooldown 到期后允许一次恢复探测</p>
 												</div>
 												<Switch
 													id="hp-half-open"
@@ -842,9 +841,9 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 							<div className="space-y-3">
 								<div className="flex items-center justify-between">
 									<div>
-										<Label>Route Groups</Label>
+										<Label>路由分组</Label>
 										<p className="text-muted-foreground mt-0.5 text-xs">
-											Groups are tried in order. Each group selects targets by weight, with retries within the group.
+											按分组顺序依次尝试；每个分组内按权重选择目标，并按 Retry 次数重试。
 										</p>
 									</div>
 									<Button
@@ -856,7 +855,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 												...prev,
 												{
 													...DEFAULT_ROUTE_GROUP,
-													name: `Group ${prev.length + 1}`,
+													name: `分组 ${prev.length + 1}`,
 													targets: [{ provider: "", model: "", key_id: "", weight: 1 }],
 												},
 											])
@@ -865,13 +864,13 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 										data-testid="route-group-add"
 									>
 										<Plus className="h-4 w-4" />
-										Add Group
+										添加分组
 									</Button>
 								</div>
 
 								{routeGroups.length === 0 && (
 									<p className="text-muted-foreground rounded-lg border border-dashed py-4 text-center text-sm">
-										No route groups configured. Add a group to get started.
+										还没有配置路由分组，添加一个分组后即可开始配置。
 									</p>
 								)}
 
@@ -916,9 +915,9 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 							<div className="space-y-3">
 								<div className="flex items-center justify-between">
 									<div>
-										<Label>Routing Targets</Label>
+										<Label>路由目标</Label>
 										<p className="text-muted-foreground mt-0.5 text-xs">
-											Weights must sum to 1. Leave provider or model empty to use the incoming request value.
+											权重总和必须为 1。Provider 或 Model 留空时使用请求传入的值。
 										</p>
 									</div>
 									<Button
@@ -930,7 +929,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 										data-testid="routing-rule-target-add"
 									>
 										<Plus className="h-4 w-4" />
-										Add Target
+										添加目标
 									</Button>
 								</div>
 
@@ -953,15 +952,15 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 								<div
 									className={`flex items-center justify-end gap-2 text-xs font-medium ${Math.abs(totalWeight - 1) > 0.001 ? "text-destructive" : "text-muted-foreground"}`}
 								>
-									Total weight: {totalWeight.toFixed(4)}
-									{Math.abs(totalWeight - 1) > 0.001 && <span className="text-destructive">(must equal 1)</span>}
+									总权重: {totalWeight.toFixed(4)}
+									{Math.abs(totalWeight - 1) > 0.001 && <span className="text-destructive">（总和必须等于 1）</span>}
 								</div>
 							</div>
 
 							{/* Fallbacks */}
 							<div className="space-y-3">
 								<div className="flex items-center justify-between">
-									<Label>Fallbacks</Label>
+									<Label>Fallback 兜底</Label>
 									<Button
 										type="button"
 										variant="outline"
@@ -970,12 +969,12 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 										className="gap-2"
 									>
 										<Plus className="h-4 w-4" />
-										Add Fallback
+										添加 Fallback
 									</Button>
 								</div>
 								<div className="space-y-2">
 									{(fallbacks || []).length === 0 ? (
-										<p className="text-muted-foreground text-sm">No fallbacks configured</p>
+										<p className="text-muted-foreground text-sm">还没有配置 Fallback</p>
 									) : (
 										(fallbacks || []).map((fallback, index) => {
 											// Parse provider/model from fallback string
@@ -1009,7 +1008,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 													<div className="flex-1">
 														<Select value={fbProvider} onValueChange={handleProviderChange}>
 															<SelectTrigger className="w-full">
-																<SelectValue placeholder="Select provider..." />
+																<SelectValue placeholder="选择 Provider..." />
 															</SelectTrigger>
 															<SelectContent>
 																{availableProviders.map((prov) => (
@@ -1028,7 +1027,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 															provider={fbProvider || undefined}
 															value={fbModel}
 															onChange={handleModelChange}
-															placeholder="Select model..."
+															placeholder="选择 Model..."
 															isSingleSelect
 															disabled={!fbProvider}
 															className="!h-9 !min-h-9 w-full"
@@ -1040,7 +1039,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 														size="sm"
 														onClick={handleRemove}
 														className="h-9 px-2"
-														aria-label={`Remove fallback ${index + 1}`}
+														aria-label={`删除 Fallback ${index + 1}`}
 													>
 														<Trash2 className="h-4 w-4" />
 													</Button>
@@ -1049,7 +1048,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 										})
 									)}
 								</div>
-								<p className="text-muted-foreground text-xs">Fallbacks will be used in the order they are defined</p>
+								<p className="text-muted-foreground text-xs">Fallback 会按配置顺序依次使用</p>
 							</div>
 						</>
 					)}
@@ -1058,11 +1057,11 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 					<div className="flex justify-end gap-3">
 						<Button type="button" variant="outline" onClick={handleCancel} disabled={isLoading}>
 							<X className="h-4 w-4" />
-							Cancel
+							取消
 						</Button>
 						<Button type="submit" disabled={isLoading}>
 							<Save className="h-4 w-4" />
-							{isEditing ? "Update Rule" : "Save Rule"}
+							{isEditing ? "更新规则" : "保存规则"}
 						</Button>
 					</div>
 				</form>
@@ -1087,11 +1086,11 @@ function TargetRow({ target, index, availableProviders, providersData, showRemov
 	return (
 		<div className="space-y-3 rounded-lg border p-3" data-testid={`routing-target-${index}`}>
 			<div className="flex items-center justify-between">
-				<span className="text-muted-foreground text-sm font-medium">Target {index + 1}</span>
+				<span className="text-muted-foreground text-sm font-medium">目标 {index + 1}</span>
 				<div className="flex items-center gap-2">
 					<div className="flex items-center gap-1.5">
 						<Label htmlFor={`routing-target-${index}-weight-input`} className="text-muted-foreground shrink-0 text-xs">
-							Weight
+							权重
 						</Label>
 						<Input
 							id={`routing-target-${index}-weight-input`}
@@ -1112,7 +1111,7 @@ function TargetRow({ target, index, availableProviders, providersData, showRemov
 							size="sm"
 							onClick={() => onRemove(index)}
 							className="h-8 w-8 p-0"
-							aria-label={`Remove target ${index + 1}`}
+							aria-label={`删除目标 ${index + 1}`}
 							data-testid={`routing-target-${index}-remove-button`}
 						>
 							<Trash2 className="h-3.5 w-3.5" />
@@ -1141,7 +1140,7 @@ function TargetRow({ target, index, availableProviders, providersData, showRemov
 								className="h-9 flex-1 text-sm"
 								data-testid={`routing-target-${index}-provider-select`}
 							>
-								<SelectValue placeholder="Incoming (optional)" />
+								<SelectValue placeholder="请求传入（可选）" />
 							</SelectTrigger>
 							<SelectContent>
 								{availableProviders.map((prov) => (
@@ -1165,7 +1164,7 @@ function TargetRow({ target, index, availableProviders, providersData, showRemov
 									onUpdate(index, "key_id", "");
 								}}
 								className="h-9 w-9 p-0"
-								aria-label={`Clear provider for target ${index + 1}`}
+								aria-label={`清空目标 ${index + 1} 的 Provider`}
 								data-testid={`routing-target-${index}-provider-clear`}
 							>
 								<X className="h-3.5 w-3.5" />
@@ -1184,7 +1183,7 @@ function TargetRow({ target, index, availableProviders, providersData, showRemov
 								provider={target.provider || undefined}
 								value={target.model}
 								onChange={(value) => onUpdate(index, "model", value)}
-								placeholder="Incoming (optional)"
+								placeholder="请求传入（可选）"
 								isSingleSelect
 								loadModelsOnEmptyProvider
 								className="!h-9 !min-h-9"
@@ -1199,7 +1198,7 @@ function TargetRow({ target, index, availableProviders, providersData, showRemov
 								size="sm"
 								onClick={() => onUpdate(index, "model", "")}
 								className="h-9 w-9 p-0"
-								aria-label={`Clear model for target ${index + 1}`}
+								aria-label={`清空目标 ${index + 1} 的 Model`}
 								data-testid={`routing-target-${index}-model-clear`}
 							>
 								<X className="h-3.5 w-3.5" />
@@ -1212,7 +1211,7 @@ function TargetRow({ target, index, availableProviders, providersData, showRemov
 			{target.provider && (availableKeys.length > 0 || target.key_id) && (
 				<div className="space-y-1.5">
 					<Label id={`routing-target-${index}-apikey-label`} className="text-xs">
-						API Key <span className="text-muted-foreground">(optional — leave unset for load-balanced selection)</span>
+						API Key <span className="text-muted-foreground">（可选；留空则使用负载均衡选择）</span>
 					</Label>
 					<div className="flex gap-1.5">
 						<Select value={target.key_id || ""} onValueChange={(value) => onUpdate(index, "key_id", value)}>
@@ -1222,7 +1221,7 @@ function TargetRow({ target, index, availableProviders, providersData, showRemov
 								className="h-9 flex-1 text-sm"
 								data-testid={`routing-target-${index}-apikey-select`}
 							>
-								<SelectValue placeholder="Select key (optional)" />
+								<SelectValue placeholder="选择 API Key（可选）" />
 							</SelectTrigger>
 							<SelectContent>
 								{availableKeys.map((key) => (
@@ -1232,7 +1231,7 @@ function TargetRow({ target, index, availableProviders, providersData, showRemov
 								))}
 								{target.key_id && !availableKeys.some((k) => k.id === target.key_id) && (
 									<SelectItem key={`pinned-${target.key_id}`} value={target.key_id}>
-										(pinned) {target.key_id}
+										（已固定）{target.key_id}
 									</SelectItem>
 								)}
 							</SelectContent>
@@ -1244,7 +1243,7 @@ function TargetRow({ target, index, availableProviders, providersData, showRemov
 								size="sm"
 								onClick={() => onUpdate(index, "key_id", "")}
 								className="h-9 w-9 p-0"
-								aria-label={`Clear API key for target ${index + 1}`}
+								aria-label={`清空目标 ${index + 1} 的 API Key`}
 								data-testid={`routing-target-${index}-apikey-clear`}
 							>
 								<X className="h-3.5 w-3.5" />
@@ -1313,19 +1312,19 @@ function RouteGroupEditor({
 					onClick={() => setCollapsed(!collapsed)}
 				>
 					{collapsed ? <ChevronDown className="h-4 w-4" /> : <ChevronUp className="h-4 w-4" />}
-					<span>{group.name || `Group ${groupIndex + 1}`}</span>
+					<span>{group.name || `分组 ${groupIndex + 1}`}</span>
 					<span className="text-muted-foreground font-normal">
-						({group.targets.length} target{group.targets.length !== 1 ? "s" : ""})
+						（{group.targets.length} 个目标）
 					</span>
 				</button>
 				<div className="flex items-center gap-1">
 					{onMoveUp && (
-						<Button type="button" variant="ghost" size="sm" onClick={onMoveUp} className="h-7 w-7 p-0" aria-label="Move group up">
+						<Button type="button" variant="ghost" size="sm" onClick={onMoveUp} className="h-7 w-7 p-0" aria-label="上移分组">
 							<ChevronUp className="h-3.5 w-3.5" />
 						</Button>
 					)}
 					{onMoveDown && (
-						<Button type="button" variant="ghost" size="sm" onClick={onMoveDown} className="h-7 w-7 p-0" aria-label="Move group down">
+						<Button type="button" variant="ghost" size="sm" onClick={onMoveDown} className="h-7 w-7 p-0" aria-label="下移分组">
 							<ChevronDown className="h-3.5 w-3.5" />
 						</Button>
 					)}
@@ -1335,7 +1334,7 @@ function RouteGroupEditor({
 						size="sm"
 						onClick={onRemove}
 						className="text-destructive hover:text-destructive h-7 w-7 p-0"
-						aria-label="Remove group"
+						aria-label="删除分组"
 						data-testid={`route-group-${groupIndex}-remove`}
 					>
 						<Trash2 className="h-3.5 w-3.5" />
@@ -1348,17 +1347,17 @@ function RouteGroupEditor({
 					{/* Group name & retry limit */}
 					<div className="grid grid-cols-2 gap-3">
 						<div className="space-y-1.5">
-							<Label className="text-xs">Group Name</Label>
+							<Label className="text-xs">分组名称</Label>
 							<Input
 								value={group.name}
 								onChange={(e) => onUpdate({ ...group, name: e.target.value })}
-								placeholder="e.g., Primary, Fallback"
+								placeholder="例如：Primary、Fallback"
 								className="h-9 text-sm"
 								data-testid={`route-group-${groupIndex}-name`}
 							/>
 						</div>
 						<div className="space-y-1.5">
-							<Label className="text-xs">Retry Limit</Label>
+							<Label className="text-xs">Retry 次数</Label>
 							<Input
 								type="number"
 								min={0}
@@ -1368,13 +1367,13 @@ function RouteGroupEditor({
 								className="h-9 text-sm"
 								data-testid={`route-group-${groupIndex}-retry`}
 							/>
-							<p className="text-muted-foreground text-[10px]">Regular groups try other targets; fallback-only groups may repeat targets</p>
+							<p className="text-muted-foreground text-[10px]">普通分组会尝试其他目标；Fallback 兜底组可重复同一目标</p>
 						</div>
 					</div>
 					<div className="flex items-center justify-between rounded-md border p-3">
 						<div className="space-y-0.5">
-							<Label className="text-xs">Fallback only</Label>
-							<p className="text-muted-foreground text-[10px]">Append after regular groups; primary only when regular groups are unavailable</p>
+							<Label className="text-xs">仅作为 Fallback</Label>
+							<p className="text-muted-foreground text-[10px]">排在普通分组之后，仅在普通分组不可用时使用</p>
 						</div>
 						<Switch
 							checked={group.fallback_only}
@@ -1386,7 +1385,7 @@ function RouteGroupEditor({
 					{/* Group targets */}
 					<div className="space-y-2">
 						<div className="flex items-center justify-between">
-							<Label className="text-xs">Targets</Label>
+							<Label className="text-xs">目标</Label>
 							<Button
 								type="button"
 								variant="outline"
@@ -1396,7 +1395,7 @@ function RouteGroupEditor({
 								data-testid={`route-group-${groupIndex}-target-add`}
 							>
 								<Plus className="h-3 w-3" />
-								Add
+								添加
 							</Button>
 						</div>
 
@@ -1417,8 +1416,8 @@ function RouteGroupEditor({
 						<div
 							className={`flex items-center justify-end gap-2 text-xs font-medium ${Math.abs(groupWeight - 1) > 0.001 ? "text-destructive" : "text-muted-foreground"}`}
 						>
-							Total: {groupWeight.toFixed(4)}
-							{Math.abs(groupWeight - 1) > 0.001 && <span className="text-destructive">(must equal 1)</span>}
+							总计: {groupWeight.toFixed(4)}
+							{Math.abs(groupWeight - 1) > 0.001 && <span className="text-destructive">（总和必须等于 1）</span>}
 						</div>
 					</div>
 				</div>
@@ -1467,7 +1466,7 @@ function GroupTargetRow({
 						}}
 					>
 						<SelectTrigger className="h-9 text-sm">
-							<SelectValue placeholder="Provider..." />
+							<SelectValue placeholder="选择 Provider..." />
 						</SelectTrigger>
 						<SelectContent>
 							{availableProviders.map((prov) => (
@@ -1486,7 +1485,7 @@ function GroupTargetRow({
 						provider={target.provider || undefined}
 						value={target.model}
 						onChange={(value) => onUpdate(targetIndex, { model: value })}
-						placeholder="Model..."
+						placeholder="选择 Model..."
 						isSingleSelect
 						disabled={!target.provider}
 						className="!h-9 !min-h-9"
@@ -1509,7 +1508,7 @@ function GroupTargetRow({
 						size="sm"
 						onClick={() => onRemove(targetIndex)}
 						className="h-9 w-9 shrink-0 p-0"
-						aria-label={`Remove target ${targetIndex + 1} from group ${groupIndex + 1}`}
+						aria-label={`删除分组 ${groupIndex + 1} 中的目标 ${targetIndex + 1}`}
 					>
 						<Trash2 className="h-3.5 w-3.5" />
 					</Button>
@@ -1518,7 +1517,7 @@ function GroupTargetRow({
 			{shouldShowRouteGroupKeySelector(target, availableKeys) && (
 				<div className="space-y-1.5 pl-0.5">
 					<Label id={`route-group-${groupIndex}-target-${targetIndex}-apikey-label`} className="text-[11px]">
-						API Key <span className="text-muted-foreground">(optional — leave unset for load-balanced selection)</span>
+						API Key <span className="text-muted-foreground">（可选；留空则使用负载均衡选择）</span>
 					</Label>
 					<div className="flex gap-1.5">
 						<Select value={target.key_id || ""} onValueChange={(value) => onUpdate(targetIndex, { key_id: value })}>
@@ -1528,7 +1527,7 @@ function GroupTargetRow({
 								className="h-9 flex-1 text-sm"
 								data-testid={`route-group-${groupIndex}-target-${targetIndex}-apikey-select`}
 							>
-								<SelectValue placeholder="Select key (optional)" />
+								<SelectValue placeholder="选择 API Key（可选）" />
 							</SelectTrigger>
 							<SelectContent>
 								{availableKeys.map((key) => (
@@ -1538,7 +1537,7 @@ function GroupTargetRow({
 								))}
 								{target.key_id && !availableKeys.some((key) => key.id === target.key_id) && (
 									<SelectItem key={`pinned-${target.key_id}`} value={target.key_id}>
-										(pinned) {target.key_id}
+										（已固定）{target.key_id}
 									</SelectItem>
 								)}
 							</SelectContent>
@@ -1550,7 +1549,7 @@ function GroupTargetRow({
 								size="sm"
 								onClick={() => onUpdate(targetIndex, { key_id: "" })}
 								className="h-9 w-9 p-0"
-								aria-label={`Clear API key for target ${targetIndex + 1} from group ${groupIndex + 1}`}
+								aria-label={`清空分组 ${groupIndex + 1} 中目标 ${targetIndex + 1} 的 API Key`}
 								data-testid={`route-group-${groupIndex}-target-${targetIndex}-apikey-clear`}
 							>
 								<X className="h-3.5 w-3.5" />

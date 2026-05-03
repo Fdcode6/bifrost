@@ -31,10 +31,10 @@ interface HealthDetectionSettingsCardProps {
 }
 
 const fieldDescriptions = {
-	active_health_probe_interval_seconds: "How often enabled targets are checked while probes are on.",
-	idle_pause_minutes: "Pause probes after this many minutes without real traffic. Probes resume when traffic returns.",
-	active_health_probe_timeout_seconds: "Maximum time allowed for one lightweight liveness request.",
-	active_health_probe_max_concurrency: "Maximum number of targets checked at the same time.",
+	active_health_probe_interval_seconds: "开启后，系统按这个频率检查已启用的目标。",
+	idle_pause_minutes: "目标连续这么久没有真实请求后暂停探测；真实请求回来后自动恢复。",
+	active_health_probe_timeout_seconds: "单次轻量存活探测最多等待多久。",
+	active_health_probe_max_concurrency: "每轮最多同时探测多少个目标。",
 } as const;
 
 export default function HealthDetectionSettingsCard({ config, error, isLoading, isFetching, onRetry }: HealthDetectionSettingsCardProps) {
@@ -101,11 +101,11 @@ export default function HealthDetectionSettingsCard({ config, error, isLoading, 
 			baselineRef.current = next;
 			setForm(next);
 			toast({
-				title: "Liveness probe settings updated",
+				title: "存活探测设置已更新",
 			});
 		} catch (saveError) {
 			toast({
-				title: "Failed to update liveness probe settings",
+				title: "存活探测设置更新失败",
 				description: getErrorMessage(saveError),
 				variant: "destructive",
 			});
@@ -126,7 +126,7 @@ export default function HealthDetectionSettingsCard({ config, error, isLoading, 
 					<div className="space-y-2">
 						<div className="flex items-center gap-2">
 							<Activity className="text-muted-foreground h-4 w-4" />
-							<CardTitle>Liveness Probes</CardTitle>
+							<CardTitle>存活探测</CardTitle>
 							{form ? (
 								<Badge variant="outline" className="text-xs">
 									{getDetectionModeLabel(form.mode)}
@@ -134,14 +134,13 @@ export default function HealthDetectionSettingsCard({ config, error, isLoading, 
 							) : null}
 						</div>
 						<CardDescription>
-							Background checks only verify whether enabled targets can answer. Routing health, degraded status, and cooldown still come
-							from real traffic.
+							后台探测只确认目标是否还能响应；路由健康、降级和 Cooldown 仍然只由真实请求决定。
 						</CardDescription>
 					</div>
 					<div className="flex flex-wrap items-center gap-2">
 						<Button asChild variant="outline" size="sm">
 							<Link href="/workspace/routing-rules">
-								Open Routing Rules
+								打开路由规则
 								<ArrowRight className="h-4 w-4" />
 							</Link>
 						</Button>
@@ -152,14 +151,14 @@ export default function HealthDetectionSettingsCard({ config, error, isLoading, 
 				{isLoading && !form ? (
 					<div className="text-muted-foreground flex items-center gap-2 py-6 text-sm">
 						<Loader2 className="h-4 w-4 animate-spin" />
-						Loading liveness probe settings…
+						正在加载存活探测设置...
 					</div>
 				) : error ? (
 					<div className="border-destructive/30 bg-destructive/5 rounded-sm border p-4 text-sm">
-						<p className="font-medium">Unable to load liveness probe settings.</p>
+						<p className="font-medium">无法加载存活探测设置。</p>
 						<p className="text-muted-foreground mt-1">{getErrorMessage(error)}</p>
 						<Button variant="outline" size="sm" onClick={onRetry} disabled={isFetching || isSaving} className="mt-3">
-							Retry
+							重试
 						</Button>
 					</div>
 				) : form ? (
@@ -176,9 +175,9 @@ export default function HealthDetectionSettingsCard({ config, error, isLoading, 
 						<div className="grid gap-6 lg:grid-cols-[minmax(0,1.05fr)_minmax(0,1.4fr)]">
 							<div className="space-y-3">
 								<div className="space-y-1">
-									<label className="text-sm font-medium">Background probes</label>
+									<label className="text-sm font-medium">后台存活探测</label>
 									<p className="text-muted-foreground text-xs">
-										Turn on lightweight checks for visibility only. They do not freeze, recover, or reprioritize targets.
+										开启后只用于观察目标是否存活，不会冻结、恢复或调整路由优先级。
 									</p>
 								</div>
 								<Select
@@ -199,8 +198,8 @@ export default function HealthDetectionSettingsCard({ config, error, isLoading, 
 										<SelectValue />
 									</SelectTrigger>
 									<SelectContent>
-										<SelectItem value="passive">Off - real traffic only</SelectItem>
-										<SelectItem value="hybrid">On - liveness only</SelectItem>
+										<SelectItem value="passive">关闭 - 只看真实请求</SelectItem>
+										<SelectItem value="hybrid">开启 - 仅做存活探测</SelectItem>
 									</SelectContent>
 								</Select>
 								<div className="bg-muted/20 rounded-sm border p-3 text-sm">
@@ -210,15 +209,15 @@ export default function HealthDetectionSettingsCard({ config, error, isLoading, 
 									</div>
 									<p className="text-muted-foreground text-xs">
 										{form.mode === "hybrid"
-											? "Real requests still control routing. Probes only update liveness columns and last probe result."
-											: "No background probe requests. Routing still uses real request outcomes."}
+											? "真实请求仍然决定路由健康；探测只更新存活状态和最后探测结果。"
+											: "不会发起后台探测请求；路由仍然使用真实请求结果。"}
 									</p>
 								</div>
 							</div>
 
 							<div className="space-y-4">
 								<div className="space-y-2">
-									<label className="text-sm font-medium">Probe interval (seconds)</label>
+									<label className="text-sm font-medium">探测频率（秒）</label>
 									<Input
 										type="number"
 										min={1}
@@ -238,13 +237,13 @@ export default function HealthDetectionSettingsCard({ config, error, isLoading, 
 										aria-expanded={advancedOpen}
 										data-testid="adaptive-routing-probe-advanced-toggle"
 									>
-										<span>Advanced probe limits</span>
+										<span>高级探测限制</span>
 										<ChevronDown className={`h-4 w-4 transition-transform ${advancedOpen ? "rotate-180" : ""}`} />
 									</button>
 									{advancedOpen ? (
 										<div className="grid gap-4 border-t p-3 sm:grid-cols-2">
 											<div className="space-y-2">
-												<label className="text-sm font-medium">Probe timeout (seconds)</label>
+												<label className="text-sm font-medium">探测超时（秒）</label>
 												<Input
 													type="number"
 													min={1}
@@ -256,7 +255,7 @@ export default function HealthDetectionSettingsCard({ config, error, isLoading, 
 												<p className="text-muted-foreground text-xs">{fieldDescriptions.active_health_probe_timeout_seconds}</p>
 											</div>
 											<div className="space-y-2">
-												<label className="text-sm font-medium">Max concurrency</label>
+												<label className="text-sm font-medium">最大并发</label>
 												<Input
 													type="number"
 													min={1}
@@ -268,7 +267,7 @@ export default function HealthDetectionSettingsCard({ config, error, isLoading, 
 												<p className="text-muted-foreground text-xs">{fieldDescriptions.active_health_probe_max_concurrency}</p>
 											</div>
 											<div className="space-y-2 sm:col-span-2">
-												<label className="text-sm font-medium">Idle pause (minutes)</label>
+												<label className="text-sm font-medium">空闲暂停（分钟）</label>
 												<Input
 													type="number"
 													min={1}
@@ -285,17 +284,17 @@ export default function HealthDetectionSettingsCard({ config, error, isLoading, 
 							</div>
 						</div>
 
-						{hasInvalidNumbers ? <p className="text-destructive text-xs">All numeric settings must be at least 1.</p> : null}
+						{hasInvalidNumbers ? <p className="text-destructive text-xs">所有数值设置都必须至少为 1。</p> : null}
 					</>
 				) : null}
 			</CardContent>
 			<CardFooter className="justify-end gap-2 border-t">
 				<Button variant="outline" onClick={handleDiscard} disabled={discardDisabled} dataTestId="adaptive-routing-discard">
-					Discard Changes
+					放弃更改
 				</Button>
 				<Button onClick={handleSave} disabled={saveDisabled} isLoading={isSaving} dataTestId="adaptive-routing-save">
 					{!isSaving ? <Save className="h-4 w-4" /> : null}
-					Save
+					保存
 				</Button>
 			</CardFooter>
 		</Card>

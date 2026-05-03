@@ -89,7 +89,7 @@ export function stringToFallbacks(str: string): string[] {
  */
 export function getScopeLabel(scope: string): string {
 	const labels: Record<string, string> = {
-		global: "Global",
+		global: "全局",
 		team: "Team",
 		customer: "Customer",
 		virtual_key: "Virtual Key",

@@ -237,7 +237,7 @@ export enum RoutingRuleScope {
 }
 
 export const ROUTING_RULE_SCOPES = [
-	{ value: RoutingRuleScope.Global, label: "Global" },
+	{ value: RoutingRuleScope.Global, label: "全局" },
 	{ value: RoutingRuleScope.Team, label: "Team" },
 	{ value: RoutingRuleScope.Customer, label: "Customer" },
 	{ value: RoutingRuleScope.VirtualKey, label: "Virtual Key" },

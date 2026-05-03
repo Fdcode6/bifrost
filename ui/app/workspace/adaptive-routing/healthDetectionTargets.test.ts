@@ -45,30 +45,24 @@ const baseTarget: HealthDetectionTarget = {
 
 describe("healthDetectionTargets helpers", () => {
 	it("returns readable labels for support status", () => {
-		expect(getHealthDetectionSupportStatusLabel("supported")).toBe("Supported");
-		expect(getHealthDetectionSupportStatusLabel("unsupported")).toBe("Unsupported");
+		expect(getHealthDetectionSupportStatusLabel("supported")).toBe("支持");
+		expect(getHealthDetectionSupportStatusLabel("unsupported")).toBe("不支持");
 	});
 
 	it("returns readable labels for probe state", () => {
-		expect(getHealthDetectionProbeStateLabel("unsupported")).toBe("Unsupported");
-		expect(getHealthDetectionProbeStateLabel("off")).toBe("Off");
-		expect(getHealthDetectionProbeStateLabel("pending_first_probe")).toBe("Waiting for First Probe");
-		expect(getHealthDetectionProbeStateLabel("eligible")).toBe("Probe Eligible");
-		expect(getHealthDetectionProbeStateLabel("paused_idle")).toBe("Paused: Idle");
+		expect(getHealthDetectionProbeStateLabel("unsupported")).toBe("不支持");
+		expect(getHealthDetectionProbeStateLabel("off")).toBe("关闭");
+		expect(getHealthDetectionProbeStateLabel("pending_first_probe")).toBe("等待首次探测");
+		expect(getHealthDetectionProbeStateLabel("eligible")).toBe("可探测");
+		expect(getHealthDetectionProbeStateLabel("paused_idle")).toBe("空闲暂停");
 	});
 
 	it("returns probe state descriptions that match the design copy", () => {
-		expect(getHealthDetectionProbeStateDescription("unsupported")).toBe(
-			"This target is visible, but it cannot run background liveness probes.",
-		);
-		expect(getHealthDetectionProbeStateDescription("off")).toBe("Background liveness probes are off for this target.");
-		expect(getHealthDetectionProbeStateDescription("pending_first_probe")).toBe(
-			"The target is enabled and waiting for an initial liveness probe.",
-		);
-		expect(getHealthDetectionProbeStateDescription("eligible")).toBe("The target can run background liveness probes.");
-		expect(getHealthDetectionProbeStateDescription("paused_idle")).toBe(
-			"Probes are paused because this target has not received recent real traffic.",
-		);
+		expect(getHealthDetectionProbeStateDescription("unsupported")).toBe("该目标可见，但不能执行后台存活探测。");
+		expect(getHealthDetectionProbeStateDescription("off")).toBe("该目标未启用后台存活探测。");
+		expect(getHealthDetectionProbeStateDescription("pending_first_probe")).toBe("该目标已启用，正在等待首次存活探测。");
+		expect(getHealthDetectionProbeStateDescription("eligible")).toBe("该目标可以执行后台存活探测。");
+		expect(getHealthDetectionProbeStateDescription("paused_idle")).toBe("该目标最近没有真实请求，存活探测已暂停。");
 	});
 
 	it("treats unsupported targets as read-only rows", () => {
@@ -82,10 +76,10 @@ describe("healthDetectionTargets helpers", () => {
 	});
 
 	it("formats three-state health levels", () => {
-		expect(getHealthLevelLabel("healthy")).toBe("Healthy");
-		expect(getHealthLevelLabel("degraded")).toBe("Degraded");
-		expect(getHealthLevelLabel("cooldown")).toBe("Cooldown");
-		expect(getHealthLevelDescription("degraded")).toContain("routed after healthy");
+		expect(getHealthLevelLabel("healthy")).toBe("健康");
+		expect(getHealthLevelLabel("degraded")).toBe("降级");
+		expect(getHealthLevelLabel("cooldown")).toBe("冷却中");
+		expect(getHealthLevelDescription("degraded")).toContain("排在健康目标之后");
 		expect(getHealthLevelBadgeClass("cooldown")).toContain("red");
 	});
 

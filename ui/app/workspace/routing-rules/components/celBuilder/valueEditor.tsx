@@ -109,7 +109,7 @@ export function ValueEditor({ value, handleOnChange, operator, fieldData, type, 
 				<ModelMultiselect
 					value={selectedModels}
 					onChange={handleMultiModelChange}
-					placeholder="Select models..."
+					placeholder="选择 Model..."
 					loadModelsOnEmptyProvider
 					className="!min-h-9 w-[360px]"
 				/>
@@ -121,7 +121,7 @@ export function ValueEditor({ value, handleOnChange, operator, fieldData, type, 
 			<ModelMultiselect
 				value={value || ""}
 				onChange={handleOnChange}
-				placeholder="Search for a model..."
+				placeholder="搜索 Model..."
 				isSingleSelect
 				loadModelsOnEmptyProvider
 				className="w-[360px] border-input"
@@ -175,7 +175,7 @@ export function ValueEditor({ value, handleOnChange, operator, fieldData, type, 
 					defaultOptions={allOptions}
 					isNonAsync={true}
 					isClearable={false}
-					placeholder="Select providers..."
+					placeholder="选择 Provider..."
 					className="w-[360px]"
 					triggerClassName="!shadow-none !border-border h-10"
 					menuClassName="!z-[100] w-full cursor-pointer"
@@ -199,7 +199,7 @@ export function ValueEditor({ value, handleOnChange, operator, fieldData, type, 
 							<span>{getProviderLabel(value)}</span>
 						</div>
 					) : (
-						<SelectValue placeholder={fieldData.placeholder || "Select..."} />
+						<SelectValue placeholder={fieldData.placeholder || "选择..."} />
 					)}
 				</SelectTrigger>
 				<SelectContent>
@@ -243,7 +243,7 @@ export function ValueEditor({ value, handleOnChange, operator, fieldData, type, 
 				type="text"
 				value={keyValuePair.value}
 				onChange={(e) => handleKeyValueValueChange(e.target.value)}
-				placeholder="Value"
+				placeholder="值"
 				className="w-[180px]"
 				data-testid="cel-builder-keyvalue-value-input"
 			/>
@@ -252,10 +252,10 @@ export function ValueEditor({ value, handleOnChange, operator, fieldData, type, 
 
 
 	const placeholder = isArrayOperator
-		? "Enter comma-separated values or JSON array"
+		? "输入逗号分隔的值或 JSON 数组"
 		: isRegexOperator
 			? "e.g., .* (any), openai|anthropic (multiple), ^gpt.* (prefix)"
-			: fieldData?.placeholder || "Enter value...";
+			: fieldData?.placeholder || "输入值...";
 
 	// Use textarea for array inputs
 	if (isArrayOperator) {

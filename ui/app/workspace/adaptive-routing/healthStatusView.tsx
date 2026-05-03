@@ -55,7 +55,7 @@ export default function HealthStatusView() {
 	const enabledTargetCount = targets.filter((target) => target.detection_enabled).length;
 	const cooldownTargetCount = targets.filter((target) => target.rule_health_summary.cooldown_rule_count > 0).length;
 	const degradedTargetCount = targets.filter((target) => (target.rule_health_summary.degraded_rule_count ?? 0) > 0).length;
-	const detectionModeLabel = configData ? getDetectionModeLabel(configData.mode) : "Unavailable";
+	const detectionModeLabel = configData ? getDetectionModeLabel(configData.mode) : "不可用";
 	const isRefreshing = isHealthFetching || isConfigFetching || isTargetsFetching;
 
 	const handleRefresh = () => {
@@ -68,15 +68,15 @@ export default function HealthStatusView() {
 				<div>
 					<h2 className="text-2xl font-bold tracking-tight">Adaptive Routing</h2>
 					<p className="text-muted-foreground mt-1 text-sm">
-						Liveness probe controls for grouped routing targets, plus the rule-level health table that still decides routing.
+						管理分组路由目标的存活探测，并查看真正决定路由的规则级健康状态。
 					</p>
 					<p className="text-muted-foreground mt-2 text-xs">
-						Detailed per-request routing decisions remain in Logs under Routing Decision Logs.
+						每次请求的详细路由决策仍可在 Logs 的 Routing Decision Logs 中查看。
 					</p>
 				</div>
 				<Button variant="outline" size="sm" onClick={handleRefresh} disabled={isRefreshing} className="gap-2">
 					<RefreshCw className={`h-4 w-4 ${isRefreshing ? "animate-spin" : ""}`} />
-					Refresh
+					刷新
 				</Button>
 			</div>
 
@@ -92,46 +92,46 @@ export default function HealthStatusView() {
 				<div className="rounded-lg border p-4">
 					<div className="text-muted-foreground flex items-center gap-2 text-sm">
 						<Activity className="h-4 w-4" />
-						Rules with Health Routing
+						启用健康路由的规则
 					</div>
 					<p className="mt-1 text-2xl font-semibold">{rules.length}</p>
 				</div>
 				<div className="rounded-lg border p-4">
 					<div className="text-muted-foreground flex items-center gap-2 text-sm">
 						<ShieldCheck className="h-4 w-4" />
-						Targets in Unified List
+						目标总数
 					</div>
 					<p className="mt-1 text-2xl font-semibold">{targets.length}</p>
 				</div>
 				<div className="rounded-lg border p-4">
 					<div className="text-muted-foreground flex items-center gap-2 text-sm">
 						<ShieldAlert className="h-4 w-4" />
-						Probes Enabled
+						已启用探测
 					</div>
 					<p className="mt-1 text-2xl font-semibold">{enabledTargetCount}</p>
 					<p className="text-muted-foreground mt-1 text-xs">
-						{degradedTargetCount} degraded, {cooldownTargetCount} cooldown
+						{degradedTargetCount} 降级, {cooldownTargetCount} 冷却中
 					</p>
 				</div>
 			</div>
 
 			<div className="grid gap-3 lg:grid-cols-2">
 				<div className="bg-muted/20 rounded-md border p-4">
-					<p className="text-sm font-medium">Probe State is liveness activity, not rule health.</p>
+					<p className="text-sm font-medium">Probe 状态只是存活活动，不是规则健康。</p>
 					<p className="text-muted-foreground mt-1 text-xs">
-						Use the table below to manage dead-or-alive checks, but use the rule table further down as the routing authority.
+						下方目标表用于管理目标是否做存活探测；真正的路由依据在规则健康表中。
 					</p>
 				</div>
 				<div className="bg-muted/20 rounded-md border p-4">
-					<p className="text-sm font-medium">Runtime activity reflects the current gateway node only.</p>
+					<p className="text-sm font-medium">运行时活动只代表当前 gateway 节点。</p>
 					<p className="text-muted-foreground mt-1 text-xs">
-						Recent probes and recent real access are local runtime signals, not a cluster-wide view.
+						最近探测和最近真实请求都是本节点的运行时信号，不代表整个集群。
 					</p>
 				</div>
 				{configData?.mode === "passive" ? (
 					<div className="rounded-md border border-amber-200 bg-amber-50 p-4 lg:col-span-2 dark:border-amber-900/60 dark:bg-amber-950/20">
 						<p className="text-sm font-medium text-amber-900 dark:text-amber-200">
-							Background probes are off globally. Only real request outcomes update rule health.
+							后台存活探测当前全局关闭。规则健康只由真实请求结果更新。
 						</p>
 					</div>
 				) : null}
@@ -149,25 +149,25 @@ export default function HealthStatusView() {
 			<div className="space-y-4">
 				<div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
 					<div>
-						<h3 className="text-lg font-semibold">Rule Health by Routing Rule</h3>
+						<h3 className="text-lg font-semibold">按路由规则查看健康状态</h3>
 						<p className="text-muted-foreground text-sm">
-							Rule-specific cooldown, failure counts, and last failures remain the final routing health view.
+							每条规则自己的 Cooldown、失败计数和最后失败信息，是最终的路由健康视图。
 						</p>
 					</div>
 					<Badge variant="outline" className="w-fit text-xs">
-						Probe Mode: {detectionModeLabel}
+						探测模式: {detectionModeLabel}
 					</Badge>
 				</div>
 
 				{isHealthLoading ? (
-					<p className="text-muted-foreground py-8 text-center text-sm">Loading health data…</p>
+					<p className="text-muted-foreground py-8 text-center text-sm">正在加载健康数据...</p>
 				) : rules.length === 0 ? (
 					<div className="rounded-lg border border-dashed py-12 text-center">
 						<Activity className="text-muted-foreground/50 mx-auto mb-3 h-10 w-10" />
-						<p className="text-muted-foreground text-sm">No grouped health routing rules found</p>
-						<p className="text-muted-foreground mt-1 text-xs">Enable grouped health routing on a routing rule to see rule health here.</p>
+						<p className="text-muted-foreground text-sm">还没有分组健康路由规则</p>
+						<p className="text-muted-foreground mt-1 text-xs">在路由规则中启用分组健康路由后，这里会显示规则健康状态。</p>
 						<Button asChild variant="outline" className="mt-4">
-							<Link href="/workspace/routing-rules">Open Routing Rules</Link>
+							<Link href="/workspace/routing-rules">打开路由规则</Link>
 						</Button>
 					</div>
 				) : (
@@ -177,32 +177,32 @@ export default function HealthStatusView() {
 								<div>
 									<h4 className="text-lg font-semibold">{rule.rule_name}</h4>
 									<p className="text-muted-foreground text-xs">
-										Policy: threshold={rule.policy.failure_threshold} window={rule.policy.failure_window_seconds}s cooldown=
-										{rule.policy.cooldown_seconds}s consecutive=
+										策略: 阈值={rule.policy.failure_threshold} 窗口={rule.policy.failure_window_seconds}s Cooldown=
+										{rule.policy.cooldown_seconds}s 连续失败=
 										{rule.policy.consecutive_failures || rule.policy.failure_threshold}
 									</p>
 								</div>
 								<Badge variant="outline" className="w-fit text-xs">
-									{rule.targets.filter((target) => target.status === "available").length}/{rule.targets.length} available
+									{rule.targets.filter((target) => target.status === "available").length}/{rule.targets.length} 可用
 								</Badge>
 							</div>
 							<div className="overflow-x-auto rounded-md border">
 								<Table className="min-w-[1320px]">
 									<TableHeader>
 										<TableRow>
-											<TableHead>Target</TableHead>
-											<TableHead className="w-52">Group</TableHead>
-											<TableHead className="w-28">Status</TableHead>
-											<TableHead className="w-28">Source</TableHead>
-											<TableHead className="w-28">Window Fail</TableHead>
-											<TableHead className="w-32">Consecutive</TableHead>
+											<TableHead>目标</TableHead>
+											<TableHead className="w-52">分组</TableHead>
+											<TableHead className="w-28">状态</TableHead>
+											<TableHead className="w-28">来源</TableHead>
+											<TableHead className="w-28">窗口失败</TableHead>
+											<TableHead className="w-32">连续失败</TableHead>
 											<TableHead className="w-28">P95</TableHead>
-											<TableHead className="w-28">Slow Ratio</TableHead>
-											<TableHead className="w-28">Samples</TableHead>
-											<TableHead className="w-28">Streak</TableHead>
-											<TableHead>Last Observed</TableHead>
-											<TableHead>Cooldown Until</TableHead>
-											<TableHead>Last Failure</TableHead>
+											<TableHead className="w-28">慢请求占比</TableHead>
+											<TableHead className="w-28">样本</TableHead>
+											<TableHead className="w-28">冷却次数</TableHead>
+											<TableHead>最后观测</TableHead>
+											<TableHead>冷却到</TableHead>
+											<TableHead>最后失败</TableHead>
 										</TableRow>
 									</TableHeader>
 									<TableBody>
@@ -216,7 +216,7 @@ export default function HealthStatusView() {
 																key={`${target.key}-${group.group_index}-${group.group_name}`}
 																variant={group.fallback_only ? "secondary" : "outline"}
 																className="max-w-44 truncate text-xs"
-																title={`${getRouteGroupLabel(group)} / retry ${group.retry_limit}`}
+																title={`${getRouteGroupLabel(group)} / Retry ${group.retry_limit}`}
 															>
 																<span className="truncate">{getRouteGroupLabel(group)}</span>
 															</Badge>
@@ -261,7 +261,7 @@ export default function HealthStatusView() {
 												<TableCell className="text-muted-foreground text-sm">{formatHealthMetric(target.p95_latency_ms, "ms")}</TableCell>
 												<TableCell className="text-muted-foreground text-sm">{formatSlowRatio(target.slow_ratio)}</TableCell>
 												<TableCell className="text-muted-foreground text-sm">
-													{target.sample_count} ({target.slow_count} slow)
+													{target.sample_count} ({target.slow_count} 慢)
 												</TableCell>
 												<TableCell className="text-muted-foreground text-sm">{target.cooldown_streak}</TableCell>
 												<TableCell className="text-muted-foreground text-sm">

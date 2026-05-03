@@ -77,7 +77,7 @@ export function CELRuleBuilder({
 		return (
 			<div className="flex items-center justify-center space-x-2 rounded-md border p-8">
 				<Loader2 className="h-5 w-5 animate-spin" />
-				<span className="text-muted-foreground text-sm">Loading CEL builder...</span>
+				<span className="text-muted-foreground text-sm">正在加载 CEL 条件编辑器...</span>
 			</div>
 		);
 	}
@@ -108,8 +108,8 @@ export function CELRuleBuilder({
 								combinatorSelector: CombinatorSelector,
 							}}
 							translations={{
-								addRule: { label: "Add Rule" },
-								addGroup: { label: "Add Rule Group" },
+								addRule: { label: "添加条件" },
+								addGroup: { label: "添加条件组" },
 							}}
 						/>
 					</QueryBuilderWrapper>
@@ -118,22 +118,22 @@ export function CELRuleBuilder({
 
 			<div className="space-y-2">
 				<div className="flex items-center justify-between">
-					<Label>CEL Expression Preview</Label>
+					<Label>CEL 表达式预览</Label>
 					<Button variant="outline" size="sm" onClick={handleCopy} disabled={!celExpression} className="gap-2" type="button">
 						{copied ? (
 							<>
 								<Check className="h-4 w-4" />
-								Copied
+								已复制
 							</>
 						) : (
 							<>
 								<Copy className="h-4 w-4" />
-								Copy
+								复制
 							</>
 						)}
 					</Button>
 				</div>
-				<Textarea value={celExpression || "No rules defined yet"} readOnly className="font-mono text-sm" rows={4} />
+				<Textarea value={celExpression || "还没有定义条件"} readOnly className="font-mono text-sm" rows={4} />
 			</div>
 		</div>
 	);

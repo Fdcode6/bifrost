@@ -40,7 +40,7 @@ export const baseRoutingFields: CELFieldDefinition[] = [
 	{
 		name: "provider",
 		label: "Provider",
-		placeholder: "Select provider",
+		placeholder: "选择 Provider",
 		inputType: "select",
 		valueEditorType: (operator: string) =>
 			operator === "matches" ? "text" : operator === "in" || operator === "notIn" ? "select" : "select",
@@ -49,8 +49,8 @@ export const baseRoutingFields: CELFieldDefinition[] = [
 	},
 	{
 		name: "request_type",
-		label: "Request Type",
-		placeholder: "Select request type",
+		label: "Request 类型",
+		placeholder: "选择 Request 类型",
 		inputType: "select",
 		valueEditorType: (operator: string) =>
 			operator === "matches" ? "text" : operator === "in" || operator === "notIn" ? "select" : "select",
@@ -68,7 +68,7 @@ export const baseRoutingFields: CELFieldDefinition[] = [
 			{ name: "transcription", label: "Transcription" },
 			{ name: "count_tokens", label: "Count Tokens" },
 		],
-		description: "Filter rules by the type of API request (chat, text, embeddings, images, audio, etc.)",
+		description: "按 API 请求类型筛选规则（chat、text、embeddings、images、audio 等）。",
 	},
 	{
 		name: "headers",
@@ -81,37 +81,37 @@ export const baseRoutingFields: CELFieldDefinition[] = [
 	},
 	{
 		name: "tokens_used",
-		label: "Tokens Used (%)",
+		label: "Token 使用率 (%)",
 		placeholder: "e.g., 80",
 		inputType: "text",
 		valueEditorType: "number",
 		operators: ["=", "!=", ">", "<", ">=", "<="],
 		defaultOperator: ">=",
-		description: "Check token usage as percentage. Checked against max of model and provider configs.",
+		description: "按百分比检查 Token 使用量，对照 Model 和 Provider 配置中的最大值。",
 	},
 	{
 		name: "request",
-		label: "Request (%)",
+		label: "Request 使用率 (%)",
 		placeholder: "e.g., 80",
 		inputType: "text",
 		valueEditorType: "number",
 		operators: ["=", "!=", ">", "<", ">=", "<="],
 		defaultOperator: ">=",
-		description: "Check request usage as percentage. Checked against max of model and provider configs.",
+		description: "按百分比检查 Request 使用量，对照 Model 和 Provider 配置中的最大值。",
 	},
 	{
 		name: "budget_used",
-		label: "Budget Used (%)",
+		label: "预算使用率 (%)",
 		placeholder: "e.g., 50",
 		inputType: "text",
 		valueEditorType: "number",
 		operators: ["=", "!=", ">", "<", ">=", "<="],
 		defaultOperator: ">=",
-		description: "Check budget usage as percentage. Checked against max of model and provider configs.",
+		description: "按百分比检查预算使用量，对照 Model 和 Provider 配置中的最大值。",
 	},
 	{
 		name: "params",
-		label: "Query Parameter",
+		label: "Query 参数",
 		placeholder: "e.g., api_key, user_id",
 		inputType: "keyValue",
 		valueEditorType: "keyValue",
@@ -133,7 +133,7 @@ export function getRoutingFields(providers: string[] = [], models: string[] = []
 					name: provider,
 					label: getProviderLabel(provider),
 				}))
-			: [{ name: "_no_providers", label: "No providers configured", disabled: true }];
+			: [{ name: "_no_providers", label: "还没有配置 Provider", disabled: true }];
 
 	// Create model field values
 	const modelValues =
@@ -146,7 +146,7 @@ export function getRoutingFields(providers: string[] = [], models: string[] = []
 
 	// Create metric options for scope input: providers + models
 	const scopeOptions = [
-		{ name: "", label: "(provider-level)" }, // Empty scope for provider-level
+		{ name: "", label: "（Provider 级别）" }, // Empty scope for provider-level
 		...providers.map((provider) => ({
 			name: provider,
 			label: `${provider} (provider)`,

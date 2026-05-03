@@ -85,7 +85,7 @@ export function FieldSelector({ value, handleOnChange, options, rule, path, sche
 		<div className="flex items-center gap-2">
 			<Select value={value || ""} onValueChange={handleOnChange}>
 				<SelectTrigger className="w-[180px]" data-testid="cel-builder-field-selector-select">
-					<SelectValue placeholder="Select field..." />
+					<SelectValue placeholder="选择字段..." />
 				</SelectTrigger>
 				<SelectContent>
 					{options.map((option) => {
@@ -107,12 +107,12 @@ export function FieldSelector({ value, handleOnChange, options, rule, path, sche
 			</Select>
 			{isKeyValueField && (
 				<>
-					<span className="text-muted-foreground text-sm whitespace-nowrap">has key</span>
+					<span className="text-muted-foreground text-sm whitespace-nowrap">包含 key</span>
 					<Input
 						type="text"
 						value={headerKey}
 						onChange={(e) => handleKeyChange(e.target.value)}
-						placeholder={`${fieldData?.label || "Key"} name (e.g., x-api-key)`}
+						placeholder={`${fieldData?.label || "Key"} 名称（例如 x-api-key）`}
 						className="w-[180px]"
 						data-testid="cel-builder-field-selector-key-input"
 					/>

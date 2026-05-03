@@ -60,7 +60,7 @@ export function RoutingRulesTable({ rules, totalCount, isLoading, onEdit, canDel
 
 		try {
 			await deleteRoutingRule(deleteRuleId).unwrap();
-			toast.success("Routing rule deleted successfully");
+			toast.success("路由规则已删除");
 			setDeleteRuleId(null);
 		} catch (error: any) {
 			toast.error(getErrorMessage(error));
@@ -73,13 +73,13 @@ export function RoutingRulesTable({ rules, totalCount, isLoading, onEdit, canDel
 				<Table>
 					<TableHeader>
 						<TableRow>
-							<TableHead>Name</TableHead>
-							<TableHead>Targets</TableHead>
-							<TableHead>Scope</TableHead>
-							<TableHead className="text-right">Priority</TableHead>
-							<TableHead>Expression</TableHead>
-							<TableHead>Status</TableHead>
-							<TableHead className="text-right">Actions</TableHead>
+							<TableHead>名称</TableHead>
+							<TableHead>目标</TableHead>
+							<TableHead>作用范围</TableHead>
+							<TableHead className="text-right">优先级</TableHead>
+							<TableHead>表达式</TableHead>
+							<TableHead>状态</TableHead>
+							<TableHead className="text-right">操作</TableHead>
 						</TableRow>
 					</TableHeader>
 					<TableBody>
@@ -106,8 +106,8 @@ export function RoutingRulesTable({ rules, totalCount, isLoading, onEdit, canDel
 				<div className="relative max-w-sm flex-1">
 					<Search className="text-muted-foreground absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2" />
 					<Input
-						aria-label="Search routing rules by name"
-						placeholder="Search by name..."
+						aria-label="按名称搜索路由规则"
+						placeholder="按名称搜索..."
 						value={search}
 						onChange={(e) => onSearchChange(e.target.value)}
 						className="pl-9"
@@ -120,20 +120,20 @@ export function RoutingRulesTable({ rules, totalCount, isLoading, onEdit, canDel
 				<Table>
 					<TableHeader>
 						<TableRow className="bg-muted/50">
-							<TableHead className="font-semibold">Name</TableHead>
-							<TableHead className="font-semibold">Targets</TableHead>
-							<TableHead className="font-semibold">Scope</TableHead>
-							<TableHead className="text-right font-semibold">Priority</TableHead>
-							<TableHead className="font-semibold">Expression</TableHead>
-							<TableHead className="font-semibold">Status</TableHead>
-							<TableHead className="text-right font-semibold">Actions</TableHead>
+							<TableHead className="font-semibold">名称</TableHead>
+							<TableHead className="font-semibold">目标</TableHead>
+							<TableHead className="font-semibold">作用范围</TableHead>
+							<TableHead className="text-right font-semibold">优先级</TableHead>
+							<TableHead className="font-semibold">表达式</TableHead>
+							<TableHead className="font-semibold">状态</TableHead>
+							<TableHead className="text-right font-semibold">操作</TableHead>
 						</TableRow>
 					</TableHeader>
 					<TableBody>
 						{sortedRules.length === 0 ? (
 							<TableRow>
 								<TableCell colSpan={7} className="h-24 text-center">
-									<span className="text-muted-foreground text-sm">No matching routing rules found.</span>
+									<span className="text-muted-foreground text-sm">没有找到匹配的路由规则。</span>
 								</TableCell>
 							</TableRow>
 						) : (
@@ -165,12 +165,12 @@ export function RoutingRulesTable({ rules, totalCount, isLoading, onEdit, canDel
 								</TableCell>
 								<TableCell>
 									<Badge variant={rule.enabled ? "default" : "secondary"}>
-										{rule.enabled ? "Enabled" : "Disabled"}
+										{rule.enabled ? "已启用" : "已停用"}
 									</Badge>
 								</TableCell>
 								<TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
 									<div className="flex items-center justify-end gap-2">
-										<Button variant="ghost" size="sm" onClick={() => onEdit(rule)} aria-label="Edit routing rule">
+										<Button variant="ghost" size="sm" onClick={() => onEdit(rule)} aria-label="编辑路由规则">
 											<Edit className="h-4 w-4" />
 										</Button>
 										{canDelete && (
@@ -179,7 +179,7 @@ export function RoutingRulesTable({ rules, totalCount, isLoading, onEdit, canDel
 												size="sm"
 												className="text-destructive hover:bg-destructive/10 hover:text-destructive border-destructive/30"
 												onClick={() => setDeleteRuleId(rule.id)}
-												aria-label="Delete routing rule"
+												aria-label="删除路由规则"
 											>
 												<Trash2 className="h-4 w-4" />
 											</Button>
@@ -197,7 +197,7 @@ export function RoutingRulesTable({ rules, totalCount, isLoading, onEdit, canDel
 			{totalCount > 0 && (
 				<div className="flex items-center justify-between px-2">
 					<p className="text-muted-foreground text-sm">
-						Showing {offset + 1}-{Math.min(offset + limit, totalCount)} of {totalCount}
+						显示 {offset + 1}-{Math.min(offset + limit, totalCount)}，共 {totalCount} 条
 					</p>
 					<div className="flex gap-2">
 						<Button
@@ -208,7 +208,7 @@ export function RoutingRulesTable({ rules, totalCount, isLoading, onEdit, canDel
 							data-testid="routing-rules-pagination-prev-btn"
 						>
 							<ChevronLeft className="mr-1 h-4 w-4" />
-							Previous
+							上一页
 						</Button>
 						<Button
 							variant="outline"
@@ -217,7 +217,7 @@ export function RoutingRulesTable({ rules, totalCount, isLoading, onEdit, canDel
 							onClick={() => onOffsetChange(offset + limit)}
 							data-testid="routing-rules-pagination-next-btn"
 						>
-							Next
+							下一页
 							<ChevronRight className="ml-1 h-4 w-4" />
 						</Button>
 					</div>
@@ -227,15 +227,15 @@ export function RoutingRulesTable({ rules, totalCount, isLoading, onEdit, canDel
 			<AlertDialog open={!!deleteRuleId} onOpenChange={(open) => !open && setDeleteRuleId(null)}>
 				<AlertDialogContent>
 					<AlertDialogHeader>
-						<AlertDialogTitle>Delete Routing Rule</AlertDialogTitle>
+						<AlertDialogTitle>删除路由规则</AlertDialogTitle>
 						<AlertDialogDescription>
-							Are you sure you want to delete &quot;{ruleToDelete?.name}&quot;? This action cannot be undone.
+							确认删除 “{ruleToDelete?.name}”？此操作无法撤销。
 						</AlertDialogDescription>
 					</AlertDialogHeader>
 					<AlertDialogFooter>
-						<AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>
+						<AlertDialogCancel disabled={isDeleting}>取消</AlertDialogCancel>
 						<AlertDialogAction onClick={handleDelete} disabled={isDeleting} className="bg-destructive hover:bg-destructive/90">
-							{isDeleting ? "Deleting..." : "Delete"}
+							{isDeleting ? "删除中..." : "删除"}
 						</AlertDialogAction>
 					</AlertDialogFooter>
 				</AlertDialogContent>
@@ -251,8 +251,8 @@ function TargetsSummary({ targets }: { targets: RoutingTarget[] }) {
 
 	const first = targets[0];
 	const label = [
-		first.provider ? getProviderLabel(first.provider) : "Any",
-		first.model || "Any model",
+		first.provider ? getProviderLabel(first.provider) : "任意 Provider",
+		first.model || "任意 Model",
 	].join(" / ");
 
 	return (
@@ -271,7 +271,7 @@ function TargetsSummary({ targets }: { targets: RoutingTarget[] }) {
 				)}
 			</div>
 			{targets.length > 1 && (
-				<span className="text-xs text-muted-foreground">+{targets.length - 1} more target{targets.length > 2 ? "s" : ""}</span>
+				<span className="text-xs text-muted-foreground">另有 {targets.length - 1} 个目标</span>
 			)}
 		</div>
 	);

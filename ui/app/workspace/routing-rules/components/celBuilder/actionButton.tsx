@@ -12,7 +12,7 @@ import { ActionProps } from "react-querybuilder";
 export function ActionButton({ handleOnClick, label, className, title }: ActionProps) {
 	const labelStr = typeof label === "string" ? label : "";
 	const labelLower = labelStr.toLowerCase();
-	const isAddButton = labelLower.includes("add");
+	const isAddButton = labelLower.includes("add") || labelStr.includes("添加");
 	const isRemoveButton =
 		labelLower.includes("remove") ||
 		labelLower === "x" ||
@@ -23,8 +23,10 @@ export function ActionButton({ handleOnClick, label, className, title }: ActionP
 
 	// Icon-only remove button needs an accessible name (no visible label is rendered)
 	const iconOnly = isRemoveButton;
+	const localizedTitle =
+		title === "Remove rule" ? "删除条件" : title === "Remove group" ? "删除条件组" : typeof title === "string" ? title.trim() : "";
 	const ariaLabel = iconOnly
-		? (labelStr?.trim() || (typeof title === "string" ? title.trim() : "") || "Remove")
+		? (labelStr?.trim() || localizedTitle || "删除")
 		: undefined;
 
 	return (

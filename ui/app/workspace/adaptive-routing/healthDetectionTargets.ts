@@ -7,21 +7,21 @@ import type {
 } from "@/lib/types/routingRules";
 
 export function getHealthDetectionSupportStatusLabel(status: HealthDetectionSupportStatus): string {
-	return status === "supported" ? "Supported" : "Unsupported";
+	return status === "supported" ? "支持" : "不支持";
 }
 
 export function getHealthDetectionProbeStateLabel(state: HealthDetectionProbeState): string {
 	switch (state) {
 		case "unsupported":
-			return "Unsupported";
+			return "不支持";
 		case "off":
-			return "Off";
+			return "关闭";
 		case "pending_first_probe":
-			return "Waiting for First Probe";
+			return "等待首次探测";
 		case "eligible":
-			return "Probe Eligible";
+			return "可探测";
 		case "paused_idle":
-			return "Paused: Idle";
+			return "空闲暂停";
 		default:
 			return state;
 	}
@@ -30,15 +30,15 @@ export function getHealthDetectionProbeStateLabel(state: HealthDetectionProbeSta
 export function getHealthDetectionProbeStateDescription(state: HealthDetectionProbeState): string {
 	switch (state) {
 		case "unsupported":
-			return "This target is visible, but it cannot run background liveness probes.";
+			return "该目标可见，但不能执行后台存活探测。";
 		case "off":
-			return "Background liveness probes are off for this target.";
+			return "该目标未启用后台存活探测。";
 		case "pending_first_probe":
-			return "The target is enabled and waiting for an initial liveness probe.";
+			return "该目标已启用，正在等待首次存活探测。";
 		case "eligible":
-			return "The target can run background liveness probes.";
+			return "该目标可以执行后台存活探测。";
 		case "paused_idle":
-			return "Probes are paused because this target has not received recent real traffic.";
+			return "该目标最近没有真实请求，存活探测已暂停。";
 		default:
 			return "";
 	}
@@ -64,24 +64,24 @@ export function formatHealthDetectionTimestamp(value?: string): string {
 export function getHealthLevelLabel(level?: HealthSnapshot["health_level"]): string {
 	switch (level) {
 		case "cooldown":
-			return "Cooldown";
+			return "冷却中";
 		case "degraded":
-			return "Degraded";
+			return "降级";
 		case "healthy":
 		default:
-			return "Healthy";
+			return "健康";
 	}
 }
 
 export function getHealthLevelDescription(level?: HealthSnapshot["health_level"]): string {
 	switch (level) {
 		case "cooldown":
-			return "Unavailable until cooldown expires.";
+			return "Cooldown 结束前不会参与常规路由。";
 		case "degraded":
-			return "Still usable, but routed after healthy regular targets.";
+			return "仍可使用，但会排在健康目标之后。";
 		case "healthy":
 		default:
-			return "Eligible for normal routing.";
+			return "可正常参与路由。";
 	}
 }
 
