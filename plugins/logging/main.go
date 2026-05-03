@@ -640,6 +640,17 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 
 	isFinalChunk := bifrost.IsFinalChunk(ctx)
 
+	var (
+		pendingVal any
+		hasPending bool
+	)
+	pendingVal, hasPending = p.pendingLogs.Load(requestID)
+	if hasPending && requestType == "" {
+		if pending, ok := pendingVal.(*PendingLogData); ok && pending.InitialData != nil {
+			requestType = schemas.RequestType(pending.InitialData.Object)
+		}
+	}
+
 	var tracer schemas.Tracer
 	var traceID string
 	if bifrost.IsStreamRequestType(requestType) && requestType != schemas.PassthroughStreamRequest {
@@ -667,14 +678,14 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 
 	// Retrieve pending input data from PreLLMHook
 	preservePendingForRetry := shouldPreservePendingLogForStreamingRetry(ctx, requestType, bifrostErr)
-	var (
-		pendingVal any
-		hasPending bool
-	)
 	if preservePendingForRetry {
 		pendingVal, hasPending = p.pendingLogs.Load(requestID)
 	} else {
-		pendingVal, hasPending = p.pendingLogs.LoadAndDelete(requestID)
+		if hasPending {
+			p.pendingLogs.Delete(requestID)
+		} else {
+			pendingVal, hasPending = p.pendingLogs.LoadAndDelete(requestID)
+		}
 	}
 	if !hasPending {
 		// If we have an error (e.g., cancellation/timeout), still write a minimal error entry
@@ -689,6 +700,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 				ID:              requestID,
 				Provider:        string(bifrostErr.ExtraFields.Provider),
 				Model:           bifrostErr.ExtraFields.ModelRequested,
+				Object:          string(requestType),
 				RouteLayerIndex: getRouteLayerIndexFromContext(ctx),
 				Status:          "error",
 				Stream:          bifrost.IsStreamRequestType(requestType),

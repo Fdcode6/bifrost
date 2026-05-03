@@ -4714,7 +4714,12 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 	}
 
 	pipeline := bifrost.getPluginPipeline()
-	defer bifrost.releasePluginPipeline(pipeline)
+	releasePipeline := true
+	defer func() {
+		if releasePipeline {
+			bifrost.releasePluginPipeline(pipeline)
+		}
+	}()
 
 	preReq, shortCircuit, preCount := pipeline.RunLLMPreHooks(ctx, req)
 	if shortCircuit != nil {
@@ -4729,13 +4734,43 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 		// Handle short-circuit with stream
 		if shortCircuit.Stream != nil {
 			outputStream := make(chan *schemas.BifrostStreamChunk)
+			releasePipeline = false
 
 			// Create a post hook runner cause pipeline object is put back in the pool on defer
+			shortCircuitRequestType := req.RequestType
 			pipelinePostHookRunner := func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
-				return pipeline.RunPostLLMHooks(ctx, result, err, preCount)
+				if result != nil {
+					extraFields := result.GetExtraFields()
+					extraFields.RequestType = shortCircuitRequestType
+					extraFields.Provider = provider
+					extraFields.ModelRequested = model
+				}
+				if err != nil {
+					err.ExtraFields.RequestType = shortCircuitRequestType
+					err.ExtraFields.Provider = provider
+					err.ExtraFields.ModelRequested = model
+				}
+				resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, result, err, preCount)
+				if bifrostErr != nil {
+					bifrostErr.ExtraFields.RequestType = shortCircuitRequestType
+					bifrostErr.ExtraFields.Provider = provider
+					bifrostErr.ExtraFields.ModelRequested = model
+					return nil, bifrostErr
+				}
+				if resp != nil {
+					extraFields := resp.GetExtraFields()
+					extraFields.RequestType = shortCircuitRequestType
+					extraFields.Provider = provider
+					extraFields.ModelRequested = model
+				}
+				return resp, nil
 			}
 
 			go func() {
+				defer func() {
+					pipeline.FinalizeStreamingPostHookSpans(ctx)
+					bifrost.releasePluginPipeline(pipeline)
+				}()
 				defer close(outputStream)
 
 				for streamMsg := range shortCircuit.Stream {
@@ -5260,11 +5295,34 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		var postHookRunner schemas.PostHookRunner
 		var pipeline *PluginPipeline
 		if IsStreamRequestType(req.RequestType) {
+			attemptRequestType := req.RequestType
+			attemptProvider := provider.GetProviderKey()
+			attemptModel := model
 			pipeline = bifrost.getPluginPipeline()
 			postHookRunner = func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+				if result != nil {
+					extraFields := result.GetExtraFields()
+					extraFields.RequestType = attemptRequestType
+					extraFields.Provider = attemptProvider
+					extraFields.ModelRequested = attemptModel
+				}
+				if err != nil {
+					err.ExtraFields.RequestType = attemptRequestType
+					err.ExtraFields.Provider = attemptProvider
+					err.ExtraFields.ModelRequested = attemptModel
+				}
 				resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, result, err, len(*bifrost.llmPlugins.Load()))
 				if bifrostErr != nil {
+					bifrostErr.ExtraFields.RequestType = attemptRequestType
+					bifrostErr.ExtraFields.Provider = attemptProvider
+					bifrostErr.ExtraFields.ModelRequested = attemptModel
 					return nil, bifrostErr
+				}
+				if resp != nil {
+					extraFields := resp.GetExtraFields()
+					extraFields.RequestType = attemptRequestType
+					extraFields.Provider = attemptProvider
+					extraFields.ModelRequested = attemptModel
 				}
 				return resp, nil
 			}

@@ -91,6 +91,15 @@ type errorCountingLLMPlugin struct {
 	errorPostHooks int
 }
 
+type requestTypeRecordingLLMPlugin struct {
+	requestTypes chan schemas.RequestType
+}
+
+type shortCircuitStreamLLMPlugin struct {
+	release     chan struct{}
+	requestType schemas.RequestType
+}
+
 type nilSuccessLLMPlugin struct{}
 
 func (p *nilSuccessLLMPlugin) GetName() string {
@@ -118,6 +127,74 @@ func (p *errorCountingLLMPlugin) GetName() string {
 
 func (p *errorCountingLLMPlugin) Cleanup() error {
 	return nil
+}
+
+func (p *requestTypeRecordingLLMPlugin) GetName() string {
+	return "request-type-recording-test-plugin"
+}
+
+func (p *requestTypeRecordingLLMPlugin) Cleanup() error {
+	return nil
+}
+
+func (p *requestTypeRecordingLLMPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	return req, nil, nil
+}
+
+func (p *requestTypeRecordingLLMPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	var requestType schemas.RequestType
+	if resp != nil {
+		requestType = resp.GetExtraFields().RequestType
+	} else if bifrostErr != nil {
+		requestType = bifrostErr.ExtraFields.RequestType
+	}
+
+	select {
+	case p.requestTypes <- requestType:
+	default:
+	}
+	return resp, bifrostErr, nil
+}
+
+func (p *shortCircuitStreamLLMPlugin) GetName() string {
+	return "short-circuit-stream-test-plugin"
+}
+
+func (p *shortCircuitStreamLLMPlugin) Cleanup() error {
+	return nil
+}
+
+func (p *shortCircuitStreamLLMPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	stream := make(chan *schemas.BifrostStreamChunk, 1)
+	go func() {
+		defer close(stream)
+		<-p.release
+
+		content := "short circuit"
+		stream <- &schemas.BifrostStreamChunk{
+			BifrostChatResponse: &schemas.BifrostChatResponse{
+				ID:    "chatcmpl-short-circuit",
+				Model: req.ChatRequest.Model,
+				Choices: []schemas.BifrostResponseChoice{{
+					ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+						Delta: &schemas.ChatStreamResponseChoiceDelta{
+							Content: &content,
+						},
+					},
+				}},
+			},
+		}
+	}()
+	return req, &schemas.LLMPluginShortCircuit{Stream: stream}, nil
+}
+
+func (p *shortCircuitStreamLLMPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	if resp != nil {
+		p.requestType = resp.GetExtraFields().RequestType
+	} else if bifrostErr != nil {
+		p.requestType = bifrostErr.ExtraFields.RequestType
+	}
+	return resp, bifrostErr, nil
 }
 
 func (p *errorCountingLLMPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
@@ -1121,12 +1198,190 @@ type nilChatProvider struct {
 	schemas.Provider
 }
 
+type delayedStreamProvider struct {
+	schemas.Provider
+	release chan struct{}
+}
+
 func (p *nilChatProvider) GetProviderKey() schemas.ModelProvider {
 	return schemas.OpenAI
 }
 
+func (p *delayedStreamProvider) GetProviderKey() schemas.ModelProvider {
+	return schemas.Ollama
+}
+
+func (p *delayedStreamProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	stream := make(chan *schemas.BifrostStreamChunk, 2)
+	go func() {
+		defer close(stream)
+		content := "initial"
+		providerUtils.ProcessAndSendResponse(ctx, postHookRunner, &schemas.BifrostResponse{
+			ChatResponse: &schemas.BifrostChatResponse{
+				ID:    "chatcmpl-delayed",
+				Model: request.Model,
+				Choices: []schemas.BifrostResponseChoice{{
+					ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+						Delta: &schemas.ChatStreamResponseChoiceDelta{
+							Content: &content,
+						},
+					},
+				}},
+			},
+		}, stream)
+
+		<-p.release
+
+		delayedContent := "delayed"
+		providerUtils.ProcessAndSendResponse(ctx, postHookRunner, &schemas.BifrostResponse{
+			ChatResponse: &schemas.BifrostChatResponse{
+				ID:    "chatcmpl-delayed",
+				Model: request.Model,
+				Choices: []schemas.BifrostResponseChoice{{
+					ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+						Delta: &schemas.ChatStreamResponseChoiceDelta{
+							Content: &delayedContent,
+						},
+					},
+				}},
+			},
+		}, stream)
+	}()
+	return stream, nil
+}
+
 func (p *nilChatProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	return nil, nil
+}
+
+func TestTryStreamRequest_ShortCircuitPostHookUsesOriginalRequestTypeAfterRequestReuse(t *testing.T) {
+	plugin := &shortCircuitStreamLLMPlugin{release: make(chan struct{})}
+	bifrost, err := Init(context.Background(), schemas.BifrostConfig{
+		Account:    NewMockAccount(),
+		Logger:     NewDefaultLogger(schemas.LogLevelError),
+		LLMPlugins: []schemas.LLMPlugin{plugin},
+	})
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	bifrost.requestQueues.Store(schemas.Ollama, &ProviderQueue{
+		queue: make(chan *ChannelMessage, 1),
+		done:  make(chan struct{}),
+	})
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionStreamRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.Ollama,
+			Model:    "llama-test",
+		},
+	}
+
+	stream, bifrostErr := bifrost.tryStreamRequest(ctx, req)
+	if bifrostErr != nil {
+		t.Fatalf("tryStreamRequest() error = %v", bifrostErr)
+	}
+	if stream == nil {
+		t.Fatal("expected short-circuit stream")
+	}
+
+	req.RequestType = schemas.EmbeddingRequest
+	close(plugin.release)
+
+	select {
+	case <-stream:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for short-circuit stream chunk")
+	}
+	if plugin.requestType != schemas.ChatCompletionStreamRequest {
+		t.Fatalf("expected original request type %q, got %q", schemas.ChatCompletionStreamRequest, plugin.requestType)
+	}
+}
+
+func TestRequestWorker_StreamPostHookUsesOriginalRequestTypeAfterMessageReuse(t *testing.T) {
+	recorder := &requestTypeRecordingLLMPlugin{requestTypes: make(chan schemas.RequestType, 2)}
+	bifrost, err := Init(context.Background(), schemas.BifrostConfig{
+		Account:    NewMockAccount(),
+		Logger:     NewDefaultLogger(schemas.LogLevelError),
+		LLMPlugins: []schemas.LLMPlugin{recorder},
+	})
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	provider := &delayedStreamProvider{release: make(chan struct{})}
+	pq := &ProviderQueue{
+		queue: make(chan *ChannelMessage, 1),
+		done:  make(chan struct{}),
+	}
+
+	var worker sync.WaitGroup
+	worker.Add(1)
+	go func() {
+		defer worker.Done()
+		bifrost.requestWorker(provider, createTestConfig(0, 100*time.Millisecond, time.Second), pq)
+	}()
+	t.Cleanup(func() {
+		pq.closeQueue()
+		worker.Wait()
+	})
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+
+	msg := &ChannelMessage{
+		BifrostRequest: schemas.BifrostRequest{
+			RequestType: schemas.ChatCompletionStreamRequest,
+			ChatRequest: &schemas.BifrostChatRequest{
+				Provider: schemas.Ollama,
+				Model:    "llama-test",
+			},
+		},
+		Context:        ctx,
+		Response:       make(chan *schemas.BifrostResponse, 1),
+		ResponseStream: make(chan chan *schemas.BifrostStreamChunk, 1),
+		Err:            make(chan schemas.BifrostError, 1),
+	}
+
+	pq.queue <- msg
+
+	var stream chan *schemas.BifrostStreamChunk
+	select {
+	case stream = <-msg.ResponseStream:
+	case err := <-msg.Err:
+		t.Fatalf("unexpected request worker error: %#v", err)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for stream response")
+	}
+
+	select {
+	case <-stream:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for first stream chunk")
+	}
+	select {
+	case <-recorder.requestTypes:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for first post-hook request type")
+	}
+
+	msg.RequestType = schemas.EmbeddingRequest
+	close(provider.release)
+
+	select {
+	case <-stream:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for delayed stream chunk")
+	}
+	select {
+	case got := <-recorder.requestTypes:
+		if got != schemas.ChatCompletionStreamRequest {
+			t.Fatalf("expected original request type %q, got %q", schemas.ChatCompletionStreamRequest, got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for post-hook request type")
+	}
 }
 
 func TestHandleProviderRequest_RejectsNilChatResponse(t *testing.T) {

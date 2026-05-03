@@ -464,6 +464,40 @@ func TestPostLLMHook_PreludeRetryPreservesPendingForFinalSuccess(t *testing.T) {
 	}
 }
 
+func TestPostLLMHook_NonFinalStreamChunkUsesPendingRequestType(t *testing.T) {
+	store := newTestStore(t)
+	plugin := newAsyncTestPlugin(t, store)
+
+	requestID := "req-stream-pending-type"
+	plugin.pendingLogs.Store(requestID, &PendingLogData{
+		RequestID: requestID,
+		Timestamp: time.Date(2026, 4, 17, 10, 0, 0, 0, time.UTC),
+		InitialData: &InitialLogData{
+			Object:   string(schemas.ResponsesStreamRequest),
+			Provider: "openai",
+			Model:    "gpt-4.1",
+		},
+		CreatedAt: time.Now(),
+		Status:    "processing",
+	})
+
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(time.Minute))
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, requestID)
+
+	_, _, err := plugin.PostLLMHook(ctx, &schemas.BifrostResponse{
+		ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+			Type: schemas.ResponsesStreamResponseTypeInProgress,
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("PostLLMHook() error = %v", err)
+	}
+
+	if _, ok := plugin.pendingLogs.Load(requestID); !ok {
+		t.Fatal("expected pending log to remain for a non-final streaming chunk")
+	}
+}
+
 func intPtr(value int) *int {
 	return &value
 }
