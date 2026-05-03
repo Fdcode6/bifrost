@@ -1,4 +1,5 @@
 import type {
+	HealthPolicy,
 	HealthDetectionProbeState,
 	HealthDetectionSupportStatus,
 	HealthDetectionTarget,
@@ -131,6 +132,52 @@ export function formatSlowRatio(value?: number): string {
 		return "—";
 	}
 	return `${Math.round(value * 100)}%`;
+}
+
+export function formatHealthPolicyLatencyThreshold(value?: number): string {
+	if (value === undefined || value === null || Number.isNaN(value) || value <= 0) {
+		return "未设置";
+	}
+	if (value >= 1000 && value % 1000 === 0) {
+		return `${value / 1000} 秒`;
+	}
+	if (value >= 1000) {
+		return `${(value / 1000).toFixed(1).replace(/\.0$/, "")} 秒`;
+	}
+	return `${value}ms`;
+}
+
+export function formatHealthPolicySeconds(value?: number): string {
+	if (value === undefined || value === null || Number.isNaN(value)) {
+		return "未设置";
+	}
+	if (value <= 0) {
+		return "关闭";
+	}
+	return `${value} 秒`;
+}
+
+export function formatHealthPolicyRatioThreshold(value?: number): string {
+	if (value === undefined || value === null || Number.isNaN(value) || value <= 0) {
+		return "未设置";
+	}
+	if (value > 1) {
+		return "关闭";
+	}
+	return `${Math.round(value * 100)}%`;
+}
+
+export function getFailurePolicySummary(policy: HealthPolicy): string {
+	const consecutiveFailures = policy.consecutive_failures || policy.failure_threshold;
+	return `故障降级：${policy.failure_threshold} 次失败 / ${policy.failure_window_seconds} 秒窗口 / 冷却 ${policy.cooldown_seconds} 秒 / 连续失败 ${consecutiveFailures} 次`;
+}
+
+export function getSlowPolicySummary(policy: HealthPolicy): string {
+	const ratio = formatHealthPolicyRatioThreshold(policy.slow_ratio_threshold);
+	const recovery = formatHealthPolicySeconds(policy.slow_recovery_seconds);
+	const ratioText = ratio === "关闭" ? "慢请求比例降级关闭" : `慢请求 >= ${ratio} 降级`;
+	const recoveryText = recovery === "关闭" ? "不使用最近慢请求保护" : `${recovery}后恢复观察`;
+	return `慢请求降级：超过 ${formatHealthPolicyLatencyThreshold(policy.slow_threshold_ms)}算慢 / 最近 ${policy.slow_window_size} 次统计 / ${ratioText} / ${recoveryText}`;
 }
 
 function formatCompactPrice(value: number): string {

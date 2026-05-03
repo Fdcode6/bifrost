@@ -17,9 +17,11 @@ import { getDetectionModeLabel } from "./healthDetectionConfig";
 import {
 	formatHealthMetric,
 	formatSlowRatio,
+	getFailurePolicySummary,
 	getHealthLevelDescription,
 	getHealthLevelLabel,
 	getRouteGroupLabel,
+	getSlowPolicySummary,
 } from "./healthDetectionTargets";
 import HealthDetectionSettingsCard from "./healthDetectionSettingsCard";
 import HealthDetectionTargetsTable from "./healthDetectionTargetsTable";
@@ -166,11 +168,10 @@ export default function HealthStatusView() {
 							<div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
 								<div>
 									<h4 className="text-lg font-semibold">{rule.rule_name}</h4>
-									<p className="text-muted-foreground text-xs">
-										策略: 阈值={rule.policy.failure_threshold} 窗口={rule.policy.failure_window_seconds}s Cooldown=
-										{rule.policy.cooldown_seconds}s 连续失败=
-										{rule.policy.consecutive_failures || rule.policy.failure_threshold}
-									</p>
+									<div className="text-muted-foreground mt-1 flex flex-col gap-1 text-xs">
+										<p>{getFailurePolicySummary(rule.policy)}</p>
+										<p>{getSlowPolicySummary(rule.policy)}</p>
+									</div>
 								</div>
 								<Badge variant="outline" className="w-fit text-xs">
 									{rule.targets.filter((target) => target.status === "available").length}/{rule.targets.length} 可用

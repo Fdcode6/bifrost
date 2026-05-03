@@ -3,13 +3,18 @@ import { describe, expect, it } from "vitest";
 import type { HealthDetectionTarget } from "@/lib/types/routingRules";
 
 import {
+	formatHealthPolicyLatencyThreshold,
+	formatHealthPolicyRatioThreshold,
+	formatHealthPolicySeconds,
 	formatPerMillionTokenPrice,
 	getHealthDetectionProbeStateDescription,
 	getHealthDetectionProbeStateLabel,
 	getHealthDetectionSupportStatusLabel,
+	getFailurePolicySummary,
 	getHealthLevelBadgeClass,
 	getHealthLevelDescription,
 	getHealthLevelLabel,
+	getSlowPolicySummary,
 	getProviderTokenPricingOverrideForModel,
 	getRouteGroupLabel,
 	getWorstRouteGroupHealthLevel,
@@ -124,6 +129,36 @@ describe("healthDetectionTargets helpers", () => {
 	it("formats slow ratios for health snapshots", () => {
 		expect(formatSlowRatio(0.6)).toBe("60%");
 		expect(formatSlowRatio(undefined)).toBe("—");
+	});
+
+	it("formats health policy thresholds for rule summaries", () => {
+		expect(formatHealthPolicyLatencyThreshold(45000)).toBe("45 秒");
+		expect(formatHealthPolicyLatencyThreshold(1250)).toBe("1.3 秒");
+		expect(formatHealthPolicyLatencyThreshold(800)).toBe("800ms");
+		expect(formatHealthPolicySeconds(0)).toBe("关闭");
+		expect(formatHealthPolicyRatioThreshold(0.5)).toBe("50%");
+		expect(formatHealthPolicyRatioThreshold(999)).toBe("关闭");
+	});
+
+	it("builds readable failure and slow policy summaries", () => {
+		const policy = {
+			failure_threshold: 5,
+			failure_window_seconds: 120,
+			cooldown_seconds: 120,
+			consecutive_failures: 0,
+			slow_threshold_ms: 45000,
+			slow_window_size: 10,
+			slow_ratio_threshold: 0.5,
+			slow_recovery_seconds: 60,
+			request_deadline_ms: 0,
+			soft_cooldown_multiplier: 0.5,
+			cooldown_backoff_factor: 2,
+			cooldown_max_seconds: 600,
+			half_open_probe: true,
+		};
+
+		expect(getFailurePolicySummary(policy)).toBe("故障降级：5 次失败 / 120 秒窗口 / 冷却 120 秒 / 连续失败 5 次");
+		expect(getSlowPolicySummary(policy)).toBe("慢请求降级：超过 45 秒算慢 / 最近 10 次统计 / 慢请求 >= 50% 降级 / 60 秒后恢复观察");
 	});
 
 	it("formats token pricing in per-million units", () => {
