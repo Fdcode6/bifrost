@@ -55,13 +55,6 @@ func getDefaultTestConfig() *Config {
 		Dimension:         1536,
 		Threshold:         0.8,
 		CleanUpOnShutdown: true,
-		Keys: []schemas.Key{
-			{
-				Value:  *schemas.NewEnvVar("env.OPENAI_API_KEY"),
-				Models: []string{},
-				Weight: 1.0,
-			},
-		},
 	}
 }
 
@@ -132,9 +125,9 @@ func TestSemanticCache_AllVectorStores_BasicFlow(t *testing.T) {
 						},
 					},
 					ExtraFields: schemas.BifrostResponseExtraFields{
-						Provider:       schemas.OpenAI,
-						ModelRequested: "gpt-4o-mini",
-						RequestType:    schemas.ChatCompletionRequest,
+						Provider:               schemas.OpenAI,
+						OriginalModelRequested: "gpt-4o-mini",
+						RequestType:            schemas.ChatCompletionRequest,
 					},
 				},
 			}
@@ -331,9 +324,9 @@ func TestSemanticCache_AllVectorStores_ParameterFiltering(t *testing.T) {
 						},
 					},
 					ExtraFields: schemas.BifrostResponseExtraFields{
-						Provider:       schemas.OpenAI,
-						ModelRequested: "gpt-4o-mini",
-						RequestType:    schemas.ChatCompletionRequest,
+						Provider:               schemas.OpenAI,
+						OriginalModelRequested: "gpt-4o-mini",
+						RequestType:            schemas.ChatCompletionRequest,
 					},
 				},
 			}

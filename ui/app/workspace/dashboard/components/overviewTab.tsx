@@ -1,9 +1,8 @@
-"use client";
-
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type {
 	CostHistogramResponse,
 	LatencyHistogramResponse,
+	LogStats,
 	LogsHistogramResponse,
 	ModelHistogramResponse,
 	TokenHistogramResponse,
@@ -16,7 +15,8 @@ import {
 	LATENCY_COLORS,
 	getModelColor,
 } from "../utils/chartUtils";
-import CacheTokenMeterChart from "./charts/cacheTokenMeterChart";
+import ExternalCacheTokenMeterChart from "./charts/externalCacheTokenMeterChart";
+import LocalCacheTokenMeterChart from "./charts/localCacheTokenMeterChart";
 import { ChartCard } from "./charts/chartCard";
 import { type ChartType, ChartTypeToggle } from "./charts/chartTypeToggle";
 import { CostChart } from "./charts/costChart";
@@ -33,6 +33,7 @@ export interface OverviewTabProps {
 	costData: CostHistogramResponse | null;
 	modelData: ModelHistogramResponse | null;
 	latencyData: LatencyHistogramResponse | null;
+	logsStats: LogStats | null;
 
 	// Loading states
 	loadingHistogram: boolean;
@@ -40,6 +41,7 @@ export interface OverviewTabProps {
 	loadingCost: boolean;
 	loadingModels: boolean;
 	loadingLatency: boolean;
+	loadingStats: boolean;
 
 	// Time range
 	startTime: number;
@@ -79,11 +81,13 @@ export function OverviewTab({
 	costData,
 	modelData,
 	latencyData,
+	logsStats,
 	loadingHistogram,
 	loadingTokens,
 	loadingCost,
 	loadingModels,
 	loadingLatency,
+	loadingStats,
 	startTime,
 	endTime,
 	volumeChartType,
@@ -164,9 +168,14 @@ export function OverviewTab({
 					<TokenUsageChart data={tokenData} chartType={tokenChartType} startTime={startTime} endTime={endTime} />
 				</ChartCard>
 
-				{/* Cache Hit Rate Meter */}
-				<ChartCard title="Cache Hit Rate" loading={loadingTokens} testId="chart-cache-meter">
-					<CacheTokenMeterChart data={tokenData} />
+				{/* External Cache Hit Rate Meter */}
+				<ChartCard title="External Cache Hit Rate" loading={loadingTokens} testId="chart-cache-external">
+					<ExternalCacheTokenMeterChart data={tokenData} />
+				</ChartCard>
+
+				{/* Local Cache Hit Rate Meter */}
+				<ChartCard title="Local Cache Hit Rate" loading={loadingStats} testId="chart-cache-local">
+					<LocalCacheTokenMeterChart data={logsStats} />
 				</ChartCard>
 
 				{/* Cost Chart */}
@@ -192,13 +201,20 @@ export function OverviewTab({
 											{costModels.length > 1 && (
 												<Tooltip>
 													<TooltipTrigger asChild>
-														<span tabIndex={0} data-testid="cost-legend-more-trigger" className="text-muted-foreground cursor-default">+{costModels.length - 1} more</span>
+														<span tabIndex={0} data-testid="cost-legend-more-trigger" className="text-muted-foreground cursor-default">
+															+{costModels.length - 1} more
+														</span>
 													</TooltipTrigger>
 													<TooltipContent>
 														<div className="flex flex-col gap-1">
 															{costModels.slice(1).map((model, idx) => (
 																<span key={model} className="flex items-center gap-1">
-																	<span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: getModelColor(idx + 1) }} />
+																	<span
+																		className="h-2 w-2 shrink-0 rounded-full"
+																		style={{
+																			backgroundColor: getModelColor(idx + 1),
+																		}}
+																	/>
 																	{model}
 																</span>
 															))}
@@ -258,13 +274,20 @@ export function OverviewTab({
 											{usageModels.length > 1 && (
 												<Tooltip>
 													<TooltipTrigger asChild>
-														<span tabIndex={0} data-testid="usage-legend-more-trigger" className="text-muted-foreground cursor-default">+{usageModels.length - 1} more</span>
+														<span tabIndex={0} data-testid="usage-legend-more-trigger" className="text-muted-foreground cursor-default">
+															+{usageModels.length - 1} more
+														</span>
 													</TooltipTrigger>
 													<TooltipContent>
 														<div className="flex flex-col gap-1">
 															{usageModels.slice(1).map((model, idx) => (
 																<span key={model} className="flex items-center gap-1">
-																	<span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: getModelColor(idx + 1) }} />
+																	<span
+																		className="h-2 w-2 shrink-0 rounded-full"
+																		style={{
+																			backgroundColor: getModelColor(idx + 1),
+																		}}
+																	/>
 																	{model}
 																</span>
 															))}

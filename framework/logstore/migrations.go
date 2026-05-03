@@ -203,10 +203,46 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddLogsAndDashboardPerformanceIndexes(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddImageEditInputColumn(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddImageVariationInputColumn(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddPluginLogsColumn(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddAliasColumn(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddGovernanceContextColumns(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationRecreateMatViewsWithGovernanceColumns(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationAddOCROutputColumn(ctx, db); err != nil {
 		return err
 	}
 	if err := migrationAddRequestIDColumnToMCPToolLogs(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddHasObjectColumn(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddAttemptTrailColumn(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddSelectedPromptColumns(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddUserNameColumn(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddOCRInputColumn(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddStopReasonColumn(ctx, db); err != nil {
 		return err
 	}
 	return nil
@@ -254,7 +290,7 @@ func migrationUpdateObjectColumnValues(ctx context.Context, db *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 
 			updateSQL := `
-				UPDATE logs 
+				UPDATE logs
 				SET object_type = CASE object_type
 					WHEN 'chat.completion' THEN 'chat_completion'
 					WHEN 'text.completion' THEN 'text_completion'
@@ -271,7 +307,7 @@ func migrationUpdateObjectColumnValues(ctx context.Context, db *gorm.DB) error {
 				WHERE object_type IN (
 					'chat.completion', 'text.completion', 'list',
 					'audio.speech', 'audio.transcription', 'chat.completion.chunk',
-					'audio.speech.chunk', 'audio.transcription.chunk', 
+					'audio.speech.chunk', 'audio.transcription.chunk',
 					'response', 'response.completion.chunk'
 				)`
 
@@ -287,7 +323,7 @@ func migrationUpdateObjectColumnValues(ctx context.Context, db *gorm.DB) error {
 
 			// Use a single CASE statement for efficient bulk rollback
 			rollbackSQL := `
-				UPDATE logs 
+				UPDATE logs
 				SET object_type = CASE object_type
 					WHEN 'chat_completion' THEN 'chat.completion'
 					WHEN 'text_completion' THEN 'text.completion'
@@ -785,17 +821,17 @@ func migrationUpdateTimestampFormat(ctx context.Context, db *gorm.DB) error {
 
 			updateSQL := `
 				UPDATE logs
-				SET "timestamp" = strftime('%Y-%m-%dT%H:%M:%S', "timestamp", 'utc') || '.' || 
+				SET "timestamp" = strftime('%Y-%m-%dT%H:%M:%S', "timestamp", 'utc') || '.' ||
                     CAST(CAST(strftime('%f', "timestamp") * 1000 AS INTEGER) % 1000 AS TEXT) || 'Z'
-				WHERE 
-					"timestamp" NOT LIKE '%Z' 
+				WHERE
+					"timestamp" NOT LIKE '%Z'
 					AND "timestamp" NOT LIKE '%+00%';
 				UPDATE logs
-				SET created_at = strftime('%Y-%m-%dT%H:%M:%S', created_at, 'utc') || '.' || 
-                    CAST(CAST(strftime('%f', created_at) * 1000 AS INTEGER) % 1000 AS TEXT) || 
+				SET created_at = strftime('%Y-%m-%dT%H:%M:%S', created_at, 'utc') || '.' ||
+                    CAST(CAST(strftime('%f', created_at) * 1000 AS INTEGER) % 1000 AS TEXT) ||
                     'Z'
-				WHERE 
-					created_at NOT LIKE '%Z' 
+				WHERE
+					created_at NOT LIKE '%Z'
 					AND created_at NOT LIKE '%+00%';
 				`
 
@@ -2051,17 +2087,18 @@ var performanceIndexes = []performanceIndexDef{
 	{
 		table: "logs",
 		name:  "idx_logs_content_summary_fts",
-		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_content_summary_fts ON logs USING GIN (to_tsvector('simple', content_summary)) WHERE content_summary IS NOT NULL",
+		// left() caps input characters to stay within to_tsvector's 1MB output limit.
+		sql: "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_content_summary_fts ON logs USING GIN (to_tsvector('simple', left(content_summary, 800000))) WHERE content_summary IS NOT NULL",
 	},
 	{
 		table: "mcp_tool_logs",
 		name:  "idx_mcp_logs_arguments_fts",
-		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_arguments_fts ON mcp_tool_logs USING GIN (to_tsvector('simple', arguments)) WHERE arguments IS NOT NULL",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_arguments_fts ON mcp_tool_logs USING GIN (to_tsvector('simple', left(arguments, 800000))) WHERE arguments IS NOT NULL",
 	},
 	{
 		table: "mcp_tool_logs",
 		name:  "idx_mcp_logs_result_fts",
-		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_result_fts ON mcp_tool_logs USING GIN (to_tsvector('simple', result)) WHERE result IS NOT NULL",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_result_fts ON mcp_tool_logs USING GIN (to_tsvector('simple', left(result, 800000))) WHERE result IS NOT NULL",
 	},
 	{
 		table: "logs",
@@ -2077,6 +2114,46 @@ var performanceIndexes = []performanceIndexDef{
 		table: "logs",
 		name:  "idx_logs_ts_provider_status",
 		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_ts_provider_status ON logs(timestamp, provider, status)",
+	},
+	{
+		table: "logs",
+		name:  "idx_logs_alias",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_alias ON logs(alias)",
+	},
+	{
+		table: "logs",
+		name:  "idx_logs_team_id",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_team_id ON logs(team_id)",
+	},
+	{
+		table: "logs",
+		name:  "idx_logs_customer_id",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_customer_id ON logs(customer_id)",
+	},
+	{
+		table: "logs",
+		name:  "idx_logs_user_id",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_user_id ON logs(user_id)",
+	},
+	{
+		table: "logs",
+		name:  "idx_logs_business_unit_id",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_business_unit_id ON logs(business_unit_id)",
+	},
+	{
+		table: "logs",
+		name:  "idx_logs_parent_request_id",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_parent_request_id ON logs(parent_request_id) WHERE parent_request_id IS NOT NULL",
+	},
+	{
+		table: "logs",
+		name:  "idx_logs_status_parent_request_id",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_status_parent_request_id ON logs(status, parent_request_id) WHERE parent_request_id IS NOT NULL",
+	},
+	{
+		table: "logs",
+		name:  "idx_logs_stop_reason",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_stop_reason ON logs(stop_reason)",
 	},
 }
 
@@ -2123,7 +2200,293 @@ func ensurePerformanceIndexes(ctx context.Context, conn *sql.Conn) error {
 	return nil
 }
 
-// migrationAddOCROutputColumn adds the ocr_output column to the logs table.
+// migrationAddImageEditInputColumn adds the image_edit_input column to the logs table.
+func migrationAddImageEditInputColumn(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_image_edit_input_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&Log{}, "image_edit_input") {
+				if err := migrator.AddColumn(&Log{}, "image_edit_input"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&Log{}, "image_edit_input") {
+				if err := migrator.DropColumn(&Log{}, "image_edit_input"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding image edit input column: %s", err.Error())
+
+	}
+	return nil
+}
+
+// migrationAddPluginLogsColumn adds the plugin_logs column to the logs table.
+func migrationAddPluginLogsColumn(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_plugin_logs_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&Log{}, "plugin_logs") {
+				if err := migrator.AddColumn(&Log{}, "plugin_logs"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&Log{}, "plugin_logs") {
+				if err := migrator.DropColumn(&Log{}, "plugin_logs"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding plugin logs column: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddAliasColumn adds the alias column to the logs table.
+// The alias field stores the original model name the caller used when routing resolved it to a different model via alias mapping.
+// Index creation is deferred to ensurePerformanceIndexes (called post-startup in a background goroutine)
+// because CREATE INDEX CONCURRENTLY cannot run inside a transaction and a regular CREATE INDEX
+// takes a SHARE lock that blocks writes on large tables during rolling deploys.
+func migrationAddAliasColumn(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_alias_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			if !mig.HasColumn(&Log{}, "alias") {
+				if err := mig.AddColumn(&Log{}, "alias"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			if mig.HasColumn(&Log{}, "alias") {
+				if err := mig.DropColumn(&Log{}, "alias"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding alias column: %s", err.Error())
+
+	}
+	return nil
+}
+
+// migrationAddHasObjectColumn adds the has_object boolean column to the logs table.
+// Used by the hybrid log store to track whether a log's payload is stored in object storage.
+func migrationAddHasObjectColumn(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_has_object_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mgr := tx.Migrator()
+			if !mgr.HasColumn(&Log{}, "has_object") {
+				if err := mgr.AddColumn(&Log{}, "has_object"); err != nil {
+
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mgr := tx.Migrator()
+			if mgr.HasColumn(&Log{}, "has_object") {
+				if err := mgr.DropColumn(&Log{}, "has_object"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding has_object column: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddImageVariationInputColumn adds the image_variation_input column to the logs table.
+func migrationAddImageVariationInputColumn(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_image_variation_input_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&Log{}, "image_variation_input") {
+				if err := migrator.AddColumn(&Log{}, "image_variation_input"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&Log{}, "image_variation_input") {
+				if err := migrator.DropColumn(&Log{}, "image_variation_input"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding image variation input column: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddUserNameColumn adds the user_name column to the logs table.
+// Adding a nullable column is instant in Postgres (metadata-only change, no table rewrite).
+func migrationAddUserNameColumn(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_user_name_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			if !mig.HasColumn(&Log{}, "user_name") {
+				if err := mig.AddColumn(&Log{}, "user_name"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			if mig.HasColumn(&Log{}, "user_name") {
+				if err := mig.DropColumn(&Log{}, "user_name"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding user_name column: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddGovernanceContextColumns adds user_id, team_id, team_name, customer_id, customer_name,
+// business_unit_id, business_unit_name columns to the logs table.
+func migrationAddGovernanceContextColumns(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+
+	columns := []string{"user_id", "team_id", "team_name", "customer_id", "customer_name", "business_unit_id", "business_unit_name"}
+
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_governance_context_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			for _, col := range columns {
+				if !mig.HasColumn(&Log{}, col) {
+					if err := mig.AddColumn(&Log{}, col); err != nil {
+						return err
+					}
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			for _, col := range columns {
+				if mig.HasColumn(&Log{}, col) {
+					if err := mig.DropColumn(&Log{}, col); err != nil {
+						return err
+					}
+				}
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding governance context columns: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationRecreateMatViewsWithGovernanceColumns drops and recreates materialized views
+// so they include the new governance context columns (user_id, team_id, customer_id, business_unit_id).
+// The views are recreated by ensureMatViews on startup, so we just need to drop the old ones.
+func migrationRecreateMatViewsWithGovernanceColumns(ctx context.Context, db *gorm.DB) error {
+	// Materialized views are PostgreSQL-only; skip on other dialects
+	if db.Dialector.Name() != "postgres" {
+		return nil
+	}
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_recreate_matviews_with_governance_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, view := range []string{"mv_logs_hourly", "mv_logs_filterdata"} {
+				if err := tx.Exec("DROP MATERIALIZED VIEW IF EXISTS " + view + " CASCADE").Error; err != nil {
+					return fmt.Errorf("failed to drop %s: %w", view, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			// No rollback needed — ensureMatViews will recreate on next startup
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while recreating matviews with governance columns: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddOCROutputColumn adds the ocr_output column to the Log table
 func migrationAddOCROutputColumn(ctx context.Context, db *gorm.DB) error {
 	opts := *migrator.DefaultOptions
 	opts.UseTransaction = true
@@ -2156,3 +2519,148 @@ func migrationAddOCROutputColumn(ctx context.Context, db *gorm.DB) error {
 	}
 	return nil
 }
+
+// migrationAddAttemptTrailColumn adds the attempt_trail column to the Log table.
+// This column stores a JSON-serialized []schemas.KeyAttemptRecord capturing the per-attempt
+// key selection history for requests that use key-based providers.
+func migrationAddAttemptTrailColumn(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_attempt_trail_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&Log{}, "attempt_trail") {
+				if err := migrator.AddColumn(&Log{}, "attempt_trail"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&Log{}, "attempt_trail") {
+				if err := migrator.DropColumn(&Log{}, "attempt_trail"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding attempt trail column: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddSelectedPromptColumns adds selected_prompt_name, selected_prompt_version, selected_prompt_id for logs UI.
+func migrationAddSelectedPromptColumns(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+
+	columns := []string{"selected_prompt_name", "selected_prompt_version", "selected_prompt_id"}
+
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_selected_prompt_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			for _, col := range columns {
+				if !mig.HasColumn(&Log{}, col) {
+					if err := mig.AddColumn(&Log{}, col); err != nil {
+						return err
+					}
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			for _, col := range columns {
+				if mig.HasColumn(&Log{}, col) {
+					if err := mig.DropColumn(&Log{}, col); err != nil {
+						return err
+					}
+				}
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding selected prompt columns: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddOCRInputColumn adds the ocr_input column to the logs table.
+func migrationAddOCRInputColumn(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_ocr_input_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			if !mig.HasColumn(&Log{}, "ocr_input") {
+				if err := mig.AddColumn(&Log{}, "ocr_input"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			if mig.HasColumn(&Log{}, "ocr_input") {
+				if err := mig.DropColumn(&Log{}, "ocr_input"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding ocr_input column: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddStopReasonColumn adds the stop_reason column to the logs table.
+// This column stores the reason why the model stopped generating (e.g., "stop", "length", "content_filter", "tool_calls").
+func migrationAddStopReasonColumn(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_stop_reason_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			if !mig.HasColumn(&Log{}, "stop_reason") {
+				if err := mig.AddColumn(&Log{}, "stop_reason"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mig := tx.Migrator()
+			if mig.HasColumn(&Log{}, "stop_reason") {
+				if err := mig.DropColumn(&Log{}, "stop_reason"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding stop_reason column: %s", err.Error())
+	}
+	return nil
+}
+

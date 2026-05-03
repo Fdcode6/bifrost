@@ -160,7 +160,7 @@ bifrost:
     enableLogging: true
     disableContentLogging: true
     disableDbPingsInHealth: true
-    logRetentionDays: 30    
+    logRetentionDays: 30
     enforceGovernanceHeader: true
     allowDirectKeys: true
     maxRequestBodySizeMb: 50
@@ -168,6 +168,7 @@ bifrost:
       convertTextToChat: true
       convertChatToResponses: true
       shouldDropParams: true
+      shouldConvertParams: true
     prometheusLabels:
       - "team"
       - "env"
@@ -206,6 +207,7 @@ assert_field_value 'client.max_request_body_size_mb' '.client.max_request_body_s
 assert_field_value 'client.compat.convert_text_to_chat' '.client.compat.convert_text_to_chat' 'true'
 assert_field_value 'client.compat.convert_chat_to_responses' '.client.compat.convert_chat_to_responses' 'true'
 assert_field_value 'client.compat.should_drop_params' '.client.compat.should_drop_params' 'true'
+assert_field_value 'client.compat.should_convert_params' '.client.compat.should_convert_params' 'true'
 assert_field 'client.prometheus_labels' '.client.prometheus_labels'
 assert_field 'client.header_filter_config.allowlist' '.client.header_filter_config.allowlist'
 assert_field 'client.header_filter_config.denylist' '.client.header_filter_config.denylist'
@@ -327,8 +329,8 @@ assert_field_value 'providers.openai.network_config.base_url' '.providers.openai
 assert_field 'providers.openai.network_config.extra_headers' '.providers.openai.network_config.extra_headers'
 assert_field_value 'providers.openai.network_config.default_request_timeout_in_seconds' '.providers.openai.network_config.default_request_timeout_in_seconds' '120'
 assert_field_value 'providers.openai.network_config.max_retries' '.providers.openai.network_config.max_retries' '5'
-assert_field_value 'providers.openai.network_config.retry_backoff_initial_ms' '.providers.openai.network_config.retry_backoff_initial_ms' '200'
-assert_field_value 'providers.openai.network_config.retry_backoff_max_ms' '.providers.openai.network_config.retry_backoff_max_ms' '10000'
+assert_field_value 'providers.openai.network_config.retry_backoff_initial' '.providers.openai.network_config.retry_backoff_initial' '200'
+assert_field_value 'providers.openai.network_config.retry_backoff_max' '.providers.openai.network_config.retry_backoff_max' '10000'
 
 # Concurrency config
 assert_field_value 'providers.openai.concurrency_and_buffer_size.concurrency' '.providers.openai.concurrency_and_buffer_size.concurrency' '50'
@@ -377,6 +379,10 @@ bifrost:
       - id: "budget-1"
         max_limit: 100
         reset_duration: "1M"
+      - id: "budget-vk-1"
+        max_limit: 50
+        reset_duration: "1M"
+        virtual_key_id: "vk-1"
     rateLimits:
       - id: "rl-1"
         token_max_limit: 50000
@@ -408,14 +414,12 @@ bifrost:
         is_active: true
         team_id: "team-1"
         customer_id: "cust-1"
-        budget_id: "budget-1"
         rate_limit_id: "rl-1"
         provider_configs:
           - provider: "openai"
             weight: 1.0
             allowed_models:
               - "gpt-4o"
-            budget_id: "budget-1"
             rate_limit_id: "rl-1"
             keys:
               - key_id: "key-uuid-1"
@@ -476,6 +480,8 @@ render_config "$TMPDIR/values-governance.yaml"
 assert_field_value 'governance.budgets[0].id' '.governance.budgets.[0].id' '"budget-1"'
 assert_field_value 'governance.budgets[0].max_limit' '.governance.budgets.[0].max_limit' '100'
 assert_field_value 'governance.budgets[0].reset_duration' '.governance.budgets.[0].reset_duration' '"1M"'
+assert_field_value 'governance.budgets[1].id' '.governance.budgets.[1].id' '"budget-vk-1"'
+assert_field_value 'governance.budgets[1].virtual_key_id' '.governance.budgets.[1].virtual_key_id' '"vk-1"'
 
 # Rate limits
 assert_field_value 'governance.rate_limits[0].id' '.governance.rate_limits.[0].id' '"rl-1"'
@@ -508,7 +514,6 @@ assert_field_value 'governance.virtual_keys[0].description' '.governance.virtual
 assert_field_value 'governance.virtual_keys[0].is_active' '.governance.virtual_keys.[0].is_active' 'true'
 assert_field_value 'governance.virtual_keys[0].team_id' '.governance.virtual_keys.[0].team_id' '"team-1"'
 assert_field_value 'governance.virtual_keys[0].customer_id' '.governance.virtual_keys.[0].customer_id' '"cust-1"'
-assert_field_value 'governance.virtual_keys[0].budget_id' '.governance.virtual_keys.[0].budget_id' '"budget-1"'
 assert_field_value 'governance.virtual_keys[0].rate_limit_id' '.governance.virtual_keys.[0].rate_limit_id' '"rl-1"'
 assert_field 'governance.virtual_keys[0].provider_configs' '.governance.virtual_keys.[0].provider_configs'
 assert_field_value 'governance.virtual_keys[0].provider_configs[0].provider' '.governance.virtual_keys.[0].provider_configs.[0].provider' '"openai"'
@@ -823,10 +828,10 @@ assert_field_value 'mcp client[0] tool_pricing.search' '.mcp.client_configs.[0].
 assert_field_value 'mcp tool_manager_config.code_mode_binding_level' '.mcp.tool_manager_config.code_mode_binding_level' '"server"'
 
 ###############################################################################
-# 8. Cluster, SAML, Load Balancer, Guardrails, Audit Logs
+# 8. Cluster, SCIM, Load Balancer, Guardrails, Audit Logs
 ###############################################################################
 echo ""
-echo -e "${CYAN}🌐 8/10 - Cluster, SAML, LB, Guardrails, Audit Logs${NC}"
+echo -e "${CYAN}🌐 8/10 - Cluster, SCIM, LB, Guardrails, Audit Logs${NC}"
 echo "-----------------------------------------------------"
 
 cat > "$TMPDIR/values-cluster.yaml" << 'VALS'
@@ -893,7 +898,8 @@ render_config "$TMPDIR/values-scim-okta.yaml"
 assert_field_value 'scim_config.enabled' '.scim_config.enabled' 'true'
 assert_field_value 'scim_config.provider' '.scim_config.provider' '"okta"'
 assert_field 'scim_config.config' '.scim_config.config'
-
+assert_field 'scim_config.config.apiToken' '.scim_config.config.apiToken'
+assert_field 'scim_config.config.clientSecret' '.scim_config.config.clientSecret'
 # SCIM - Entra
 cat > "$TMPDIR/values-scim-entra.yaml" << 'VALS'
 image:
@@ -916,6 +922,9 @@ VALS
 render_config "$TMPDIR/values-scim-entra.yaml"
 assert_field_value 'scim_config (entra) provider' '.scim_config.provider' '"entra"'
 assert_field 'scim_config (entra) config' '.scim_config.config'
+assert_field_value 'scim_config (entra) enabled' '.scim_config.enabled' 'true'
+assert_field 'scim_config (entra) config.tenantId' '.scim_config.config.tenantId'
+assert_field 'scim_config (entra) config.clientId' '.scim_config.config.clientId'
 
 # Load Balancer
 cat > "$TMPDIR/values-lb.yaml" << 'VALS'
@@ -1182,6 +1191,97 @@ assert_field_value 'config_store.config.max_open_conns' '.config_store.config.ma
 assert_field_value 'logs_store.type (postgres)' '.logs_store.type' '"postgres"'
 assert_field_value 'logs_store.config.max_idle_conns' '.logs_store.config.max_idle_conns' '5'
 assert_field_value 'logs_store.config.max_open_conns' '.logs_store.config.max_open_conns' '50'
+
+###############################################################################
+# Object Storage (logsStore.objectStorage)
+###############################################################################
+
+# S3 with inline credentials — exercises camelCase → snake_case mapping in _helpers.tpl
+cat > "$TMPDIR/values-objstore-s3.yaml" << 'VALS'
+image:
+  tag: v1.0.0
+storage:
+  mode: sqlite
+  configStore:
+    enabled: true
+  logsStore:
+    enabled: true
+    objectStorage:
+      enabled: true
+      type: s3
+      bucket: "bifrost-logs"
+      prefix: "prod"
+      compress: true
+      region: "us-east-1"
+      endpoint: "https://minio.internal:9000"
+      accessKeyId: "AKIA..."
+      secretAccessKey: "secret"
+      roleArn: "arn:aws:iam::123:role/bifrost"
+      forcePathStyle: true
+VALS
+
+render_config "$TMPDIR/values-objstore-s3.yaml"
+assert_field_value 'logs_store.object_storage.type (s3)' '.logs_store.object_storage.type' '"s3"'
+assert_field_value 'logs_store.object_storage.bucket' '.logs_store.object_storage.bucket' '"bifrost-logs"'
+assert_field_value 'logs_store.object_storage.prefix' '.logs_store.object_storage.prefix' '"prod"'
+assert_field_value 'logs_store.object_storage.compress' '.logs_store.object_storage.compress' 'true'
+assert_field_value 'logs_store.object_storage.region' '.logs_store.object_storage.region' '"us-east-1"'
+assert_field_value 'logs_store.object_storage.endpoint' '.logs_store.object_storage.endpoint' '"https://minio.internal:9000"'
+assert_field_value 'logs_store.object_storage.access_key_id' '.logs_store.object_storage.access_key_id' '"AKIA..."'
+assert_field_value 'logs_store.object_storage.secret_access_key' '.logs_store.object_storage.secret_access_key' '"secret"'
+assert_field_value 'logs_store.object_storage.role_arn' '.logs_store.object_storage.role_arn' '"arn:aws:iam::123:role/bifrost"'
+assert_field_value 'logs_store.object_storage.force_path_style' '.logs_store.object_storage.force_path_style' 'true'
+
+# S3 with existingSecret — exercises env.BIFROST_OBJECT_STORAGE_* substitution path
+cat > "$TMPDIR/values-objstore-s3-secret.yaml" << 'VALS'
+image:
+  tag: v1.0.0
+storage:
+  mode: sqlite
+  configStore:
+    enabled: true
+  logsStore:
+    enabled: true
+    objectStorage:
+      enabled: true
+      type: s3
+      bucket: "bifrost-logs"
+      existingSecret: "bifrost-os-creds"
+      accessKeyIdKey: "access-key-id"
+      secretAccessKeyKey: "secret-access-key"
+      sessionTokenKey: "session-token"
+      roleArnKey: "role-arn"
+VALS
+
+render_config "$TMPDIR/values-objstore-s3-secret.yaml"
+assert_field_value 'logs_store.object_storage.access_key_id (env)' '.logs_store.object_storage.access_key_id' '"env.BIFROST_OBJECT_STORAGE_ACCESS_KEY_ID"'
+assert_field_value 'logs_store.object_storage.secret_access_key (env)' '.logs_store.object_storage.secret_access_key' '"env.BIFROST_OBJECT_STORAGE_SECRET_ACCESS_KEY"'
+assert_field_value 'logs_store.object_storage.session_token (env)' '.logs_store.object_storage.session_token' '"env.BIFROST_OBJECT_STORAGE_SESSION_TOKEN"'
+assert_field_value 'logs_store.object_storage.role_arn (env)' '.logs_store.object_storage.role_arn' '"env.BIFROST_OBJECT_STORAGE_ROLE_ARN"'
+
+# GCS — exercises project_id + credentials_json mapping
+cat > "$TMPDIR/values-objstore-gcs.yaml" << 'VALS'
+image:
+  tag: v1.0.0
+storage:
+  mode: sqlite
+  configStore:
+    enabled: true
+  logsStore:
+    enabled: true
+    objectStorage:
+      enabled: true
+      type: gcs
+      bucket: "bifrost-gcs-bucket"
+      projectId: "my-gcp-project"
+      credentialsJson: "/etc/gcs/creds.json"
+VALS
+
+render_config "$TMPDIR/values-objstore-gcs.yaml"
+assert_field_value 'logs_store.object_storage.type (gcs)' '.logs_store.object_storage.type' '"gcs"'
+assert_field_value 'logs_store.object_storage.bucket (gcs)' '.logs_store.object_storage.bucket' '"bifrost-gcs-bucket"'
+assert_field_value 'logs_store.object_storage.project_id' '.logs_store.object_storage.project_id' '"my-gcp-project"'
+assert_field_value 'logs_store.object_storage.credentials_json' '.logs_store.object_storage.credentials_json' '"/etc/gcs/creds.json"'
 
 ###############################################################################
 # Summary

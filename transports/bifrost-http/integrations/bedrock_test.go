@@ -16,9 +16,10 @@ import (
 
 // mockHandlerStore implements lib.HandlerStore for testing
 type mockHandlerStore struct {
-	allowDirectKeys bool
-	headerMatcher   *lib.HeaderMatcher
-	availableProviders []schemas.ModelProvider
+	allowDirectKeys            bool
+	headerMatcher              *lib.HeaderMatcher
+	availableProviders         []schemas.ModelProvider
+	mcpHeaderCombinedAllowlist schemas.WhiteList
 }
 
 func (m *mockHandlerStore) ShouldAllowDirectKeys() bool {
@@ -29,7 +30,7 @@ func (m *mockHandlerStore) GetHeaderMatcher() *lib.HeaderMatcher {
 	return m.headerMatcher
 }
 
-func (m *mockHandlerStore) GetAvailableProviders() []schemas.ModelProvider {
+func (m *mockHandlerStore) GetProvidersForModel(model string) []schemas.ModelProvider {
 	return m.availableProviders
 }
 
@@ -47,6 +48,26 @@ func (m *mockHandlerStore) GetAsyncJobResultTTL() int {
 
 func (m *mockHandlerStore) GetKVStore() *kvstore.Store {
 	return nil
+}
+
+func (m *mockHandlerStore) GetMCPHeaderCombinedAllowlist() schemas.WhiteList {
+	return m.mcpHeaderCombinedAllowlist
+}
+
+func (m *mockHandlerStore) ShouldAllowPerRequestStorageOverride() bool {
+	return false
+}
+
+func (m *mockHandlerStore) ShouldAllowPerRequestRawOverride() bool {
+	return false
+}
+
+func (m *mockHandlerStore) GetMCPExternalServerURL() string {
+	return ""
+}
+
+func (m *mockHandlerStore) GetMCPExternalClientURL() string {
+	return ""
 }
 
 // Ensure mockHandlerStore implements lib.HandlerStore

@@ -376,6 +376,11 @@ Team:
       $ref: '#/Budget'
     virtual_keys:
       type: array
+      nullable: true
+      description: >
+        Virtual keys assigned to this team. This field may be omitted or returned as null in some
+        responses (for example, when a team is embedded inside a virtual-key response) to avoid
+        nested `virtual_keys` recursion.
       items:
         $ref: '#/VirtualKey'
     profile:
@@ -983,7 +988,7 @@ PricingOverrideRequestType:
   type: string
   description: >
     Request type for pricing override filtering. Stream variants are treated
-    identically to their base type — specifying `chat_completion` covers both
+    identically to their base type - specifying `chat_completion` covers both
     streaming and non-streaming chat requests.
   enum:
     - chat_completion
@@ -1247,7 +1252,7 @@ CreatePricingOverrideRequest:
 UpdatePricingOverrideRequest:
   type: object
   description: >
-    Request body for updating a pricing override. All fields are optional —
+    Request body for updating a pricing override. All fields are optional -
     omitted fields are merged from the existing record. The `patch` field is
     always replaced in full when provided.
   properties:

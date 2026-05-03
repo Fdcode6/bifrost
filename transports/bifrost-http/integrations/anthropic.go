@@ -14,12 +14,25 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
 
 // AnthropicRouter handles Anthropic-compatible API endpoints
 type AnthropicRouter struct {
 	*GenericRouter
+}
+
+// anthropicModelGetter extracts the model field from any Anthropic integration request type.
+// It is called after body parsing, so req is fully populated.
+func anthropicModelGetter(_ *fasthttp.RequestCtx, req interface{}) (string, error) {
+	switch r := req.(type) {
+	case *anthropic.AnthropicTextRequest:
+		return r.Model, nil
+	case *anthropic.AnthropicMessageRequest:
+		return r.Model, nil
+	}
+	return "", nil
 }
 
 // createAnthropicCompleteRouteConfig creates a route configuration for the `/v1/complete` endpoint.
@@ -34,6 +47,7 @@ func createAnthropicCompleteRouteConfig(pathPrefix string) RouteConfig {
 		GetRequestTypeInstance: func(ctx context.Context) interface{} {
 			return &anthropic.AnthropicTextRequest{}
 		},
+		GetRequestModel: anthropicModelGetter,
 		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 			if anthropicReq, ok := req.(*anthropic.AnthropicTextRequest); ok {
 				return &schemas.BifrostRequest{
@@ -43,7 +57,7 @@ func createAnthropicCompleteRouteConfig(pathPrefix string) RouteConfig {
 			return nil, errors.New("invalid request type")
 		},
 		TextResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostTextCompletionResponse) (interface{}, error) {
-			if shouldUsePassthrough(ctx, resp.ExtraFields.Provider, resp.ExtraFields.ModelRequested, resp.ExtraFields.ModelDeployment) {
+			if shouldUsePassthrough(ctx, resp.ExtraFields.Provider, resp.ExtraFields.OriginalModelRequested, resp.ExtraFields.ResolvedModelUsed) {
 				if resp.ExtraFields.RawResponse != nil {
 					return resp.ExtraFields.RawResponse, nil
 				}
@@ -74,6 +88,7 @@ func createAnthropicMessagesRouteConfig(pathPrefix string, logger schemas.Logger
 			GetRequestTypeInstance: func(ctx context.Context) interface{} {
 				return &anthropic.AnthropicMessageRequest{}
 			},
+			GetRequestModel: anthropicModelGetter,
 			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 				if anthropicReq, ok := req.(*anthropic.AnthropicMessageRequest); ok {
 					bifrostReq := anthropicReq.ToBifrostResponsesRequest(ctx)
@@ -85,7 +100,7 @@ func createAnthropicMessagesRouteConfig(pathPrefix string, logger schemas.Logger
 				return nil, errors.New("invalid request type")
 			},
 			ResponsesResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesResponse) (interface{}, error) {
-				if isClaudeModel(resp.ExtraFields.ModelRequested, resp.ExtraFields.ModelDeployment, string(resp.ExtraFields.Provider)) {
+				if isClaudeModel(resp.ExtraFields.OriginalModelRequested, resp.ExtraFields.ResolvedModelUsed, string(resp.ExtraFields.Provider)) {
 					if resp.ExtraFields.RawResponse != nil {
 						return resp.ExtraFields.RawResponse, nil
 					}
@@ -113,15 +128,18 @@ func createAnthropicMessagesRouteConfig(pathPrefix string, logger schemas.Logger
 			},
 			StreamConfig: &StreamConfig{
 				ResponsesStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesStreamResponse) (string, interface{}, error) {
-					if shouldUsePassthrough(ctx, resp.ExtraFields.Provider, resp.ExtraFields.ModelRequested, resp.ExtraFields.ModelDeployment) {
-						if resp.ExtraFields.RawResponse != nil {
+					if shouldUsePassthrough(ctx, resp.ExtraFields.Provider, resp.ExtraFields.OriginalModelRequested, resp.ExtraFields.ResolvedModelUsed) {
+						// Skip passthrough for ContentPartAdded: it's a synthetic bifrost event whose
+						// RawResponse carries the parent content_block_start already emitted by OutputItemAdded.
+						// Passing through here would produce a duplicate content_block_start that causes
+						// the Anthropic SDK to error and drop all subsequent content_block_delta events.
+						if resp.ExtraFields.RawResponse != nil && resp.Type != schemas.ResponsesStreamResponseTypeContentPartAdded {
 							raw, ok := resp.ExtraFields.RawResponse.(string)
 							if !ok {
 								return "", nil, fmt.Errorf("expected RawResponse string, got %T", resp.ExtraFields.RawResponse)
 							}
-							var rawResponseJSON anthropic.AnthropicStreamEvent
-							if err := sonic.Unmarshal([]byte(raw), &rawResponseJSON); err == nil {
-								return string(rawResponseJSON.Type), raw, nil
+							if t := gjson.Get(raw, "type"); t.Exists() {
+								return t.String(), raw, nil
 							}
 						}
 						// Fallback: if RawResponse is not available, use bifrost-to-anthropic conversion
@@ -199,58 +217,11 @@ func hasFastModeBetaHeader(headers map[string][]string) bool {
 	return false
 }
 
-// filterVertexUnsupportedBetaHeaders removes beta headers that Vertex AI doesn't support.
-// Vertex AI doesn't support: structured-outputs, advanced-tool-use, prompt-caching-scope, mcp-client.
-func filterVertexUnsupportedBetaHeaders(headers map[string][]string) map[string][]string {
-	var betaHeaderKey string
-	var betaHeaders []string
-	var found bool
-	for k, v := range headers {
-		if strings.ToLower(k) == anthropic.AnthropicBetaHeader {
-			betaHeaderKey = k
-			betaHeaders = v
-			found = true
-			break
-		}
-	}
-
-	if found {
-		var filteredBetas []string
-		for _, headerValue := range betaHeaders {
-			// Split comma-separated beta headers
-			for beta := range strings.SplitSeq(headerValue, ",") {
-				beta = strings.TrimSpace(beta)
-				if beta == "" {
-					continue
-				}
-				// Skip unsupported headers for Vertex.
-				// Use prefix matching so that future date bumps
-				// (e.g. structured-outputs-2025-12-15) are still caught.
-				if strings.HasPrefix(beta, anthropic.AnthropicAdvancedToolUseBetaHeaderPrefix) ||
-					strings.HasPrefix(beta, anthropic.AnthropicStructuredOutputsBetaHeaderPrefix) ||
-					strings.HasPrefix(beta, anthropic.AnthropicPromptCachingScopeBetaHeaderPrefix) ||
-					strings.HasPrefix(beta, anthropic.AnthropicMCPClientBetaHeaderPrefix) ||
-					strings.HasPrefix(beta, anthropic.AnthropicSkillsBetaHeaderPrefix) ||
-					strings.HasPrefix(beta, anthropic.AnthropicFastModeBetaHeaderPrefix) ||
-					strings.HasPrefix(beta, anthropic.AnthropicRedactThinkingBetaHeaderPrefix) {
-					continue
-				}
-				filteredBetas = append(filteredBetas, beta)
-			}
-		}
-		if len(filteredBetas) > 0 {
-			headers[betaHeaderKey] = []string{strings.Join(filteredBetas, ",")}
-		} else {
-			delete(headers, betaHeaderKey)
-		}
-	}
-
-	return headers
-}
-
 // extractPassthroughHeaders filters headers to only include those in the safe whitelist.
-// Header matching is case-insensitive.
-func extractPassthroughHeaders(allHeaders map[string][]string, provider schemas.ModelProvider) map[string][]string {
+// Header matching is case-insensitive. Provider-aware beta-header filtering happens
+// downstream at each provider's wire layer (e.g. anthropic.go, vertex.go), where
+// networkConfig.BetaHeaderOverrides is in scope.
+func extractPassthroughHeaders(allHeaders map[string][]string) map[string][]string {
 	filtered := make(map[string][]string)
 	for k, v := range allHeaders {
 		if passthroughSafeHeaders[strings.ToLower(k)] {
@@ -337,6 +308,7 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 		provider, model = schemas.ParseModelString(r.Model, "")
 		// Check if model parameter explicitly has `anthropic/` prefix
 		if provider == schemas.Anthropic {
+			bifrostCtx.SetValue(schemas.BifrostContextKeySkipModelCatalogProviderSelection, true)
 			r.Model = model
 		}
 
@@ -344,27 +316,13 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 		provider, model = schemas.ParseModelString(r.Model, "")
 		// Check if model parameter explicitly has `anthropic/` prefix
 		if provider == schemas.Anthropic {
+			bifrostCtx.SetValue(schemas.BifrostContextKeySkipModelCatalogProviderSelection, true)
 			r.Model = model
 		}
 	}
 
 	headers := extractHeadersFromRequest(ctx)
-	if len(headers) > 0 {
-		// Check for User-Agent header (case-insensitive)
-		var userAgent []string
-		for key, value := range headers {
-			if strings.EqualFold(key, "user-agent") {
-				userAgent = value
-				break
-			}
-		}
-		if len(userAgent) > 0 {
-			// Check if it's claude code
-			if strings.Contains(userAgent[0], "claude-cli") {
-				bifrostCtx.SetValue(schemas.BifrostContextKeyUserAgent, "claude-cli")
-			}
-		}
-	}
+	schemas.ExtractAndSetUserAgentFromHeaders(headers, bifrostCtx)
 
 	// Check if anthropic oauth headers are present
 	if shouldUsePassthrough(bifrostCtx, provider, model, "") {
@@ -382,7 +340,7 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 			bifrostCtx.SetValue(schemas.BifrostContextKeySkipKeySelection, true)
 		} else {
 			// API key flow: pass only whitelisted safe headers (like anthropic-beta for feature detection)
-			passthroughHeaders := extractPassthroughHeaders(headers, provider)
+			passthroughHeaders := extractPassthroughHeaders(headers)
 			if len(passthroughHeaders) > 0 {
 				bifrostCtx.SetValue(schemas.BifrostContextKeyExtraHeaders, passthroughHeaders)
 			}
@@ -396,15 +354,15 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 }
 
 // shouldUsePassthrough checks if the request should be sent to the passthrough endpoint.
-func shouldUsePassthrough(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, deployment string) bool {
-	return anthropic.IsClaudeCodeRequest(ctx) && isClaudeModel(model, deployment, string(provider))
+func shouldUsePassthrough(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, alias string) bool {
+	return anthropic.IsClaudeCodeRequest(ctx) && isClaudeModel(model, alias, string(provider))
 }
 
-func isClaudeModel(model, deployment, provider string) bool {
+func isClaudeModel(model, alias, provider string) bool {
 	return (provider == string(schemas.Anthropic) ||
-		(provider == "" && schemas.IsAnthropicModel(model))) ||
-		(provider == string(schemas.Vertex) && (schemas.IsAnthropicModel(model) || schemas.IsAnthropicModel(deployment))) ||
-		(provider == string(schemas.Azure) && (schemas.IsAnthropicModel(model) || schemas.IsAnthropicModel(deployment)))
+		(provider == "" && (schemas.IsAnthropicModel(model) || schemas.IsAnthropicModel(alias)))) ||
+		(provider == string(schemas.Vertex) && (schemas.IsAnthropicModel(model) || schemas.IsAnthropicModel(alias))) ||
+		(provider == string(schemas.Azure) && (schemas.IsAnthropicModel(model) || schemas.IsAnthropicModel(alias)))
 }
 
 // extractAnthropicListModelsParams extracts query parameters for list models request
@@ -452,6 +410,7 @@ func CreateAnthropicCountTokensRouteConfigs(pathPrefix string, handlerStore lib.
 			GetRequestTypeInstance: func(ctx context.Context) interface{} {
 				return &anthropic.AnthropicMessageRequest{}
 			},
+			GetRequestModel: anthropicModelGetter,
 			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 				if anthropicReq, ok := req.(*anthropic.AnthropicMessageRequest); ok {
 					bifrostReq := anthropicReq.ToBifrostResponsesRequest(ctx)

@@ -1,5 +1,3 @@
-"use client";
-
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
@@ -433,13 +431,13 @@ export function OtelFormFragment({
 								<TooltipTrigger asChild>
 									<Button
 										type="submit"
-										disabled={!hasOtelAccess || !form.formState.isDirty || !form.formState.isValid}
+										disabled={!hasOtelAccess || !form.formState.isDirty}
 										isLoading={isSaving}
 									>
 										Save OTEL Configuration
 									</Button>
 								</TooltipTrigger>
-								{(!form.formState.isDirty || !form.formState.isValid) && (
+								{(!form.formState.isDirty) && (
 									<TooltipContent>
 										<p>
 											{!form.formState.isDirty && !form.formState.isValid
