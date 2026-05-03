@@ -1,4 +1,4 @@
-import { CreateMCPClientRequest, GetMCPClientsParams, GetMCPClientsResponse, MCPClient, OAuthFlowResponse, OAuthStatusResponse, UpdateMCPClientRequest } from "@/lib/types/mcp";
+import { CreateMCPClientRequest, GetMCPClientsParams, GetMCPClientsResponse, OAuthFlowResponse, OAuthStatusResponse, UpdateMCPClientRequest } from "@/lib/types/mcp";
 import { baseApi } from "./baseApi";
 
 type CreateMCPClientResponse = { status: "success"; message: string } | OAuthFlowResponse;

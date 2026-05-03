@@ -1,6 +1,5 @@
-import { Textarea } from "@/components/ui/textarea";
 import { Message, SerializedMessage, type MessageContent } from "@/lib/message";
-import { FileIcon, Mic, Paperclip, PencilIcon, XIcon } from "lucide-react";
+import { Paperclip, PencilIcon, XIcon } from "lucide-react";
 import { Markdown } from "@/components/ui/markdown";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import MessageRoleSwitcher from "./messageRoleSwitcher";

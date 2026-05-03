@@ -1,7 +1,7 @@
 import { Textarea } from "@/components/ui/textarea";
 import { Message, type MessageContent } from "@/lib/message";
 import { Loader2, Paperclip, Play, Plus } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { usePromptContext } from "../context";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";

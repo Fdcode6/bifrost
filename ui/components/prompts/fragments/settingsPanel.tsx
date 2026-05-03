@@ -10,7 +10,6 @@ import { useGetVirtualKeysQuery } from "@/lib/store";
 import { useCallback, useEffect, useMemo } from "react";
 import { ModelProviderName } from "@/lib/types/config";
 import { usePromptContext } from "../context";
-import { VariablesTableView } from "../components/variablesTableView";
 import { ApiKeySelectorView } from "../components/apiKeySelectorView";
 
 export function SettingsPanel() {

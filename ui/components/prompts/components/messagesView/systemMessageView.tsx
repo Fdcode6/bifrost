@@ -1,4 +1,3 @@
-import { Textarea } from "@/components/ui/textarea";
 import { Message, SerializedMessage } from "@/lib/message";
 import { PencilIcon, XIcon } from "lucide-react";
 import { Markdown } from "@/components/ui/markdown";
