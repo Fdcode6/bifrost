@@ -13,7 +13,10 @@ interface RoutingRulesEmptyStateProps {
 
 export function RoutingRulesEmptyState({ onAddClick, canCreate = true }: RoutingRulesEmptyStateProps) {
 	return (
-		<div className="flex min-h-[80vh] w-full flex-col items-center justify-center gap-4 py-16 text-center" data-testid="routing-rules-empty-state">
+		<div
+			className="flex min-h-[80vh] w-full flex-col items-center justify-center gap-4 py-16 text-center"
+			data-testid="routing-rules-empty-state"
+		>
 			<div className="text-muted-foreground">
 				<Route className="h-[5.5rem] w-[5.5rem]" strokeWidth={1} />
 			</div>
@@ -33,12 +36,7 @@ export function RoutingRulesEmptyState({ onAddClick, canCreate = true }: Routing
 					>
 						查看文档 <ArrowUpRight className="text-muted-foreground h-3 w-3" />
 					</Button>
-					<Button
-						aria-label="创建第一条路由规则"
-						data-testid="create-routing-rule-btn"
-						onClick={onAddClick}
-						disabled={!canCreate}
-					>
+					<Button aria-label="创建第一条路由规则" data-testid="create-routing-rule-btn" onClick={onAddClick} disabled={!canCreate}>
 						新建规则
 					</Button>
 				</div>

@@ -96,12 +96,7 @@ export function RoutingRulesView() {
 					<p className="text-muted-foreground text-sm">按 CEL 条件将请求分流到不同 Provider / Model</p>
 				</div>
 				{canCreate && (
-					<Button
-						data-testid="create-routing-rule-btn"
-						onClick={handleCreateNew}
-						disabled={isLoading}
-						className="gap-2"
-					>
+					<Button data-testid="create-routing-rule-btn" onClick={handleCreateNew} disabled={isLoading} className="gap-2">
 						<Plus className="h-4 w-4" />
 						<span className="hidden sm:inline">新建规则</span>
 					</Button>

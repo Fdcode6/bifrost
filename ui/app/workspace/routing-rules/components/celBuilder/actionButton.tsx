@@ -25,9 +25,7 @@ export function ActionButton({ handleOnClick, label, className, title }: ActionP
 	const iconOnly = isRemoveButton;
 	const localizedTitle =
 		title === "Remove rule" ? "删除条件" : title === "Remove group" ? "删除条件组" : typeof title === "string" ? title.trim() : "";
-	const ariaLabel = iconOnly
-		? (labelStr?.trim() || localizedTitle || "删除")
-		: undefined;
+	const ariaLabel = iconOnly ? labelStr?.trim() || localizedTitle || "删除" : undefined;
 
 	return (
 		<Button

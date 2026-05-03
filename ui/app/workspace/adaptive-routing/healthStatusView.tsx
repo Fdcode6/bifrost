@@ -67,12 +67,8 @@ export default function HealthStatusView() {
 			<div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
 				<div>
 					<h2 className="text-2xl font-bold tracking-tight">Adaptive Routing</h2>
-					<p className="text-muted-foreground mt-1 text-sm">
-						管理分组路由目标的存活探测，并查看真正决定路由的规则级健康状态。
-					</p>
-					<p className="text-muted-foreground mt-2 text-xs">
-						每次请求的详细路由决策仍可在 Logs 的 Routing Decision Logs 中查看。
-					</p>
+					<p className="text-muted-foreground mt-1 text-sm">管理分组路由目标的存活探测，并查看真正决定路由的规则级健康状态。</p>
+					<p className="text-muted-foreground mt-2 text-xs">每次请求的详细路由决策仍可在 Logs 的 Routing Decision Logs 中查看。</p>
 				</div>
 				<Button variant="outline" size="sm" onClick={handleRefresh} disabled={isRefreshing} className="gap-2">
 					<RefreshCw className={`h-4 w-4 ${isRefreshing ? "animate-spin" : ""}`} />
@@ -118,15 +114,11 @@ export default function HealthStatusView() {
 			<div className="grid gap-3 lg:grid-cols-2">
 				<div className="bg-muted/20 rounded-md border p-4">
 					<p className="text-sm font-medium">Probe 状态只是存活活动，不是规则健康。</p>
-					<p className="text-muted-foreground mt-1 text-xs">
-						下方目标表用于管理目标是否做存活探测；真正的路由依据在规则健康表中。
-					</p>
+					<p className="text-muted-foreground mt-1 text-xs">下方目标表用于管理目标是否做存活探测；真正的路由依据在规则健康表中。</p>
 				</div>
 				<div className="bg-muted/20 rounded-md border p-4">
 					<p className="text-sm font-medium">运行时活动只代表当前 gateway 节点。</p>
-					<p className="text-muted-foreground mt-1 text-xs">
-						最近探测和最近真实请求都是本节点的运行时信号，不代表整个集群。
-					</p>
+					<p className="text-muted-foreground mt-1 text-xs">最近探测和最近真实请求都是本节点的运行时信号，不代表整个集群。</p>
 				</div>
 				{configData?.mode === "passive" ? (
 					<div className="rounded-md border border-amber-200 bg-amber-50 p-4 lg:col-span-2 dark:border-amber-900/60 dark:bg-amber-950/20">
@@ -150,9 +142,7 @@ export default function HealthStatusView() {
 				<div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
 					<div>
 						<h3 className="text-lg font-semibold">按路由规则查看健康状态</h3>
-						<p className="text-muted-foreground text-sm">
-							每条规则自己的 Cooldown、失败计数和最后失败信息，是最终的路由健康视图。
-						</p>
+						<p className="text-muted-foreground text-sm">每条规则自己的 Cooldown、失败计数和最后失败信息，是最终的路由健康视图。</p>
 					</div>
 					<Badge variant="outline" className="w-fit text-xs">
 						探测模式: {detectionModeLabel}

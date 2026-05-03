@@ -81,9 +81,7 @@ export default function HealthDetectionTargetsTable({
 				<div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
 					<div className="space-y-1">
 						<CardTitle>存活探测目标</CardTitle>
-						<CardDescription>
-							每个分组路由目标只显示一次。这里的开关只控制后台存活探测，规则健康仍然来自真实请求。
-						</CardDescription>
+						<CardDescription>每个分组路由目标只显示一次。这里的开关只控制后台存活探测，规则健康仍然来自真实请求。</CardDescription>
 					</div>
 					<div className="flex items-center gap-2">
 						<Badge variant="outline" className="text-xs">
@@ -184,9 +182,8 @@ export default function HealthDetectionTargetsTable({
 														{getHealthLevelLabel(worstHealthLevel)}
 													</Badge>
 													<span className="text-muted-foreground block text-xs">
-														{target.rule_health_summary.degraded_rule_count ?? 0} 降级,{" "}
-														{target.rule_health_summary.cooldown_rule_count} 冷却中 /{" "}
-														{target.rule_health_summary.total_rule_count}
+														{target.rule_health_summary.degraded_rule_count ?? 0} 降级, {target.rule_health_summary.cooldown_rule_count}{" "}
+														冷却中 / {target.rule_health_summary.total_rule_count}
 													</span>
 												</div>
 											</TableCell>
@@ -236,9 +233,7 @@ export default function HealthDetectionTargetsTable({
 														{getHealthDetectionProbeStateDescription(target.probe_state)}
 													</p>
 													{mode === "passive" && target.probe_state !== "unsupported" ? (
-														<p className="text-muted-foreground text-xs">
-															后台探测当前全局关闭。该目标设置会保留，开启后生效。
-														</p>
+														<p className="text-muted-foreground text-xs">后台探测当前全局关闭。该目标设置会保留，开启后生效。</p>
 													) : null}
 												</div>
 											</TableCell>

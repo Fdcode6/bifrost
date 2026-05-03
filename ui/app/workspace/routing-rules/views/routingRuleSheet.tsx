@@ -384,9 +384,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 			<SheetContent className="flex w-full min-w-1/2 flex-col gap-4 overflow-x-hidden p-8">
 				<SheetHeader className="flex flex-col items-start">
 					<SheetTitle>{isEditing ? "编辑路由规则" : "新建路由规则"}</SheetTitle>
-					<SheetDescription>
-						{isEditing ? "更新这条路由规则的配置。" : "创建一条基于 CEL 条件的请求分流规则。"}
-					</SheetDescription>
+					<SheetDescription>{isEditing ? "更新这条路由规则的配置。" : "创建一条基于 CEL 条件的请求分流规则。"}</SheetDescription>
 				</SheetHeader>
 
 				<form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
@@ -395,11 +393,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 						<Label htmlFor="name">
 							规则名称 <span className="text-red-500">*</span>
 						</Label>
-						<Input
-							id="name"
-							placeholder="例如：把 GPT-4 发到 Azure"
-							{...register("name", { required: "规则名称必填", maxLength: 255 })}
-						/>
+						<Input id="name" placeholder="例如：把 GPT-4 发到 Azure" {...register("name", { required: "规则名称必填", maxLength: 255 })} />
 						{errors.name && <p className="text-destructive text-sm">{errors.name.message}</p>}
 					</div>
 
@@ -527,9 +521,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 					{/* CEL Rule Builder */}
 					<div className="space-y-3">
 						<Label>规则条件</Label>
-						<p className="text-muted-foreground text-sm">
-							构建这条规则生效的条件；留空则匹配所有请求。
-						</p>
+						<p className="text-muted-foreground text-sm">构建这条规则生效的条件；留空则匹配所有请求。</p>
 						<CELRuleBuilder
 							key={builderKey}
 							initialQuery={query}
@@ -916,9 +908,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 								<div className="flex items-center justify-between">
 									<div>
 										<Label>路由目标</Label>
-										<p className="text-muted-foreground mt-0.5 text-xs">
-											权重总和必须为 1。Provider 或 Model 留空时使用请求传入的值。
-										</p>
+										<p className="text-muted-foreground mt-0.5 text-xs">权重总和必须为 1。Provider 或 Model 留空时使用请求传入的值。</p>
 									</div>
 									<Button
 										type="button"
@@ -1313,9 +1303,7 @@ function RouteGroupEditor({
 				>
 					{collapsed ? <ChevronDown className="h-4 w-4" /> : <ChevronUp className="h-4 w-4" />}
 					<span>{group.name || `分组 ${groupIndex + 1}`}</span>
-					<span className="text-muted-foreground font-normal">
-						（{group.targets.length} 个目标）
-					</span>
+					<span className="text-muted-foreground font-normal">（{group.targets.length} 个目标）</span>
 				</button>
 				<div className="flex items-center gap-1">
 					{onMoveUp && (

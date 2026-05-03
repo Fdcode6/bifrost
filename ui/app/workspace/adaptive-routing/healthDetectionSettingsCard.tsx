@@ -133,9 +133,7 @@ export default function HealthDetectionSettingsCard({ config, error, isLoading, 
 								</Badge>
 							) : null}
 						</div>
-						<CardDescription>
-							后台探测只确认目标是否还能响应；路由健康、降级和 Cooldown 仍然只由真实请求决定。
-						</CardDescription>
+						<CardDescription>后台探测只确认目标是否还能响应；路由健康、降级和 Cooldown 仍然只由真实请求决定。</CardDescription>
 					</div>
 					<div className="flex flex-wrap items-center gap-2">
 						<Button asChild variant="outline" size="sm">
@@ -176,9 +174,7 @@ export default function HealthDetectionSettingsCard({ config, error, isLoading, 
 							<div className="space-y-3">
 								<div className="space-y-1">
 									<label className="text-sm font-medium">后台存活探测</label>
-									<p className="text-muted-foreground text-xs">
-										开启后只用于观察目标是否存活，不会冻结、恢复或调整路由优先级。
-									</p>
+									<p className="text-muted-foreground text-xs">开启后只用于观察目标是否存活，不会冻结、恢复或调整路由优先级。</p>
 								</div>
 								<Select
 									value={form.mode}
