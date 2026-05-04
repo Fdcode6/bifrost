@@ -56,6 +56,7 @@ type TargetHealthState struct {
 	lastSlowAt          time.Time
 	lastSlowLatency     time.Duration
 	cooldownStreak      int
+	cooldownReason      OutcomeKind
 	halfOpenInFlight    bool
 	halfOpenStartedAt   time.Time
 	lastOutcomeKind     OutcomeKind
@@ -250,7 +251,11 @@ func (ht *HealthTracker) recordOutcomeForStateKey(stateKey string, kind OutcomeK
 
 	switch kind {
 	case OutcomeSuccess:
+		expiredReason := s.cooldownReason
 		resetCooldownLocked(s)
+		if expiredReason == OutcomeSlow {
+			resetSlowSamplesLocked(s)
+		}
 		s.cooldownStreak = 0
 	case OutcomeSlow:
 		s.consecutiveFailures = 0
@@ -462,7 +467,11 @@ func (ht *HealthTracker) getTargetRoutingHealth(stateKey string, policy *configs
 		if s.halfOpenInFlight {
 			return HealthCooldown, false
 		}
+		expiredReason := s.cooldownReason
 		resetCooldownLocked(s)
+		if expiredReason == OutcomeSlow {
+			resetSlowSamplesLocked(s)
+		}
 		if isDegradedLocked(s, policy, now) {
 			return HealthDegraded, false
 		}
@@ -709,7 +718,11 @@ func evaluateCooldownLocked(s *TargetHealthState, policy *configstoreTables.Heal
 	policy = ApplyHealthPolicyDefaults(policy)
 	if !s.cooldownUntil.IsZero() {
 		if !now.Before(s.cooldownUntil) {
+			expiredReason := s.cooldownReason
 			resetCooldownLocked(s)
+			if expiredReason == OutcomeSlow {
+				resetSlowSamplesLocked(s)
+			}
 			return false
 		}
 		return true
@@ -730,19 +743,40 @@ func evaluateCooldownLocked(s *TargetHealthState, policy *configstoreTables.Heal
 		consecThreshold = policy.FailureThreshold
 	}
 	consecutiveTriggered := s.consecutiveFailures >= consecThreshold
-	if !windowTriggered && !consecutiveTriggered {
-		return false
+	if windowTriggered || consecutiveTriggered {
+		cooldownStart := s.lastFailureTime
+		if cooldownStart.IsZero() {
+			cooldownStart = now
+		}
+		if !startCooldownLocked(s, policy, cooldownStart, s.lastOutcomeKind) || !now.Before(s.cooldownUntil) {
+			resetCooldownLocked(s)
+			return false
+		}
+		return true
 	}
 
-	cooldownStart := s.lastFailureTime
-	if cooldownStart.IsZero() {
-		cooldownStart = now
+	if isDegradedLocked(s, policy, now) {
+		cooldownStart := s.lastSlowAt
+		if cooldownStart.IsZero() {
+			cooldownStart = latestSlowSampleAtLocked(s)
+		}
+		if cooldownStart.IsZero() {
+			return false
+		}
+		cooldownUntil := cooldownStart.Add(cooldownDuration(policy, OutcomeSlow, s.cooldownStreak+1))
+		if !now.Before(cooldownUntil) {
+			resetSlowSamplesLocked(s)
+			return false
+		}
+		if !startCooldownLocked(s, policy, cooldownStart, OutcomeSlow) || !now.Before(s.cooldownUntil) {
+			resetCooldownLocked(s)
+			resetSlowSamplesLocked(s)
+			return false
+		}
+		return true
 	}
-	if !startCooldownLocked(s, policy, cooldownStart, s.lastOutcomeKind) || !now.Before(s.cooldownUntil) {
-		resetCooldownLocked(s)
-		return false
-	}
-	return true
+
+	return false
 }
 
 func shouldHalfOpenProbeLocked(s *TargetHealthState, policy *configstoreTables.HealthPolicy, now time.Time) bool {
@@ -765,6 +799,19 @@ func startCooldownLocked(s *TargetHealthState, policy *configstoreTables.HealthP
 		return false
 	}
 	nextStreak := s.cooldownStreak + 1
+	duration := cooldownDuration(policy, kind, nextStreak)
+	if duration <= 0 {
+		return false
+	}
+	s.cooldownStreak = nextStreak
+	s.cooldownUntil = cooldownStart.Add(duration)
+	s.cooldownReason = kind
+	s.halfOpenInFlight = false
+	s.halfOpenStartedAt = time.Time{}
+	return true
+}
+
+func cooldownDuration(policy *configstoreTables.HealthPolicy, kind OutcomeKind, nextStreak int) time.Duration {
 	multiplier := 1.0
 	if kind == OutcomeSoftFail {
 		multiplier = policy.SoftCooldownMultiplier
@@ -780,21 +827,41 @@ func startCooldownLocked(s *TargetHealthState, policy *configstoreTables.HealthP
 	if maxSeconds := float64(policy.CooldownMaxSeconds); maxSeconds > 0 && durationSeconds > maxSeconds {
 		durationSeconds = maxSeconds
 	}
-	s.cooldownStreak = nextStreak
-	s.cooldownUntil = cooldownStart.Add(time.Duration(durationSeconds * float64(time.Second)))
-	s.halfOpenInFlight = false
-	s.halfOpenStartedAt = time.Time{}
-	return true
+	return time.Duration(durationSeconds * float64(time.Second))
 }
 
 func resetCooldownLocked(s *TargetHealthState) {
 	s.cooldownUntil = time.Time{}
+	s.cooldownReason = ""
 	s.failures = s.failures[:0]
 	s.consecutiveFailures = 0
 	s.lastFailureTime = time.Time{}
 	s.lastFailureMsg = ""
 	s.halfOpenInFlight = false
 	s.halfOpenStartedAt = time.Time{}
+}
+
+func latestSlowSampleAtLocked(s *TargetHealthState) time.Time {
+	for i := len(s.recentSamples) - 1; i >= 0; i-- {
+		if s.recentSamples[i].kind == OutcomeSlow {
+			return s.recentSamples[i].at
+		}
+	}
+	return time.Time{}
+}
+
+func resetSlowSamplesLocked(s *TargetHealthState) {
+	filtered := s.recentSamples[:0]
+	for _, sample := range s.recentSamples {
+		if sample.kind == OutcomeSlow {
+			continue
+		}
+		filtered = append(filtered, sample)
+	}
+	s.recentSamples = filtered
+	s.slowCount = 0
+	s.lastSlowAt = time.Time{}
+	s.lastSlowLatency = 0
 }
 
 // GetAllStatuses returns snapshots for all tracked targets

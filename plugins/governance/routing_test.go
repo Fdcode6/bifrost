@@ -1223,7 +1223,7 @@ func TestPostLLMHook_GroupedRoutingSlowSuccessRecordsSlowOutcome(t *testing.T) {
 	snap := plugin.GetHealthTracker().GetTargetStatusForRule("rule-slow-post", targetKey, policy, time.Now())
 	assert.Equal(t, "slow", snap.LastOutcomeKind)
 	assert.Equal(t, 1, snap.SlowCount)
-	assert.Equal(t, "degraded", snap.HealthLevel)
+	assert.Equal(t, "cooldown", snap.HealthLevel)
 }
 
 func TestPostLLMHook_GroupedRoutingFallbackAttemptUsesCurrentLayer(t *testing.T) {
@@ -1258,7 +1258,7 @@ func TestPostLLMHook_GroupedRoutingFallbackAttemptUsesCurrentLayer(t *testing.T)
 	assert.Equal(t, "healthy", primarySnap.HealthLevel)
 }
 
-func TestBuildGroupedRoutingDecision_HealthOverCost_DegradedYieldsToNextGroup(t *testing.T) {
+func TestBuildGroupedRoutingDecision_HealthOverCost_SlowCooldownYieldsToNextGroup(t *testing.T) {
 	healthTracker := NewHealthTracker()
 	recovery := 0
 	policy := ApplyHealthPolicyDefaults(&configstoreTables.HealthPolicy{
@@ -1307,7 +1307,7 @@ func TestBuildGroupedRoutingDecision_HealthOverCost_DegradedYieldsToNextGroup(t 
 	assert.Equal(t, "4sapi", decision.Provider)
 	assert.Equal(t, "gemini-pro-medium", decision.Model)
 	assert.Equal(t, "fast-key", decision.KeyID)
-	assert.Equal(t, []string{"poloapi/gemini-pro"}, decision.Fallbacks)
+	assert.Empty(t, decision.Fallbacks)
 }
 
 func TestBuildGroupedRoutingDecision_CostOrdersHealthyTargetsWithinGroup(t *testing.T) {
@@ -1421,7 +1421,7 @@ func TestBuildGroupedRoutingDecision_FallbackOnlyUsedAsLastResort(t *testing.T) 
 	assert.Equal(t, "fallback-key", decision.KeyID)
 }
 
-func TestBuildGroupedRoutingDecision_FallbackOnlyAppendedAfterRegularDegradedExists(t *testing.T) {
+func TestBuildGroupedRoutingDecision_FallbackOnlyUsedWhenRegularSlowCooldown(t *testing.T) {
 	healthTracker := NewHealthTracker()
 	recovery := 0
 	policy := ApplyHealthPolicyDefaults(&configstoreTables.HealthPolicy{
@@ -1464,10 +1464,9 @@ func TestBuildGroupedRoutingDecision_FallbackOnlyAppendedAfterRegularDegradedExi
 	}, healthTracker, NewMockLogger())
 
 	require.NotNil(t, decision)
-	assert.Equal(t, "poloapi", decision.Provider)
-	assert.Equal(t, []string{"openrouter/gemma"}, decision.Fallbacks)
-	require.Len(t, decision.FallbackLayerPlan, 1)
-	assert.Equal(t, "fallback", decision.FallbackLayerPlan[0].LayerName)
+	assert.Equal(t, "openrouter", decision.Provider)
+	assert.Empty(t, decision.Fallbacks)
+	assert.Empty(t, decision.FallbackLayerPlan)
 }
 
 func TestBuildGroupedRoutingDecision_FallbackOnlyRetryLimitRepeatsSingleTarget(t *testing.T) {

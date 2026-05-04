@@ -391,7 +391,7 @@ func TestApplyHealthPolicyDefaults_PreservesExplicitSlowRecoveryZero(t *testing.
 	assert.Equal(t, 0, *policy.SlowRecoverySeconds)
 }
 
-func TestGetTargetHealth_DegradedBySlowRatio(t *testing.T) {
+func TestGetTargetHealth_CooldownBySlowRatio(t *testing.T) {
 	ht := NewHealthTracker()
 	recovery := 0
 	policy := ApplyHealthPolicyDefaults(&configstoreTables.HealthPolicy{
@@ -412,15 +412,82 @@ func TestGetTargetHealth_DegradedBySlowRatio(t *testing.T) {
 		ht.RecordOutcome("rule-a", key, OutcomeSuccess, 2*time.Second, "", policy, now.Add(time.Duration(i)*time.Second))
 	}
 
-	assert.Equal(t, HealthDegraded, ht.GetTargetHealthForRule("rule-a", key, policy, now.Add(10*time.Second)))
 	snap := ht.GetTargetStatusForRule("rule-a", key, policy, now.Add(10*time.Second))
-	assert.Equal(t, "available", snap.Status)
-	assert.Equal(t, "degraded", snap.HealthLevel)
+	assert.Equal(t, HealthCooldown, ht.GetTargetHealthForRule("rule-a", key, policy, now.Add(10*time.Second)))
+	assert.Equal(t, "cooldown", snap.Status)
+	assert.Equal(t, "cooldown", snap.HealthLevel)
 	assert.Equal(t, 6, snap.SlowCount)
 	assert.Equal(t, 10, snap.SampleCount)
 	assert.InDelta(t, 0.6, snap.SlowRatio, 0.001)
 	require.NotNil(t, snap.P95LatencyMs)
 	assert.GreaterOrEqual(t, *snap.P95LatencyMs, int64(60000))
+	require.NotNil(t, snap.CooldownUntil)
+	cooldownUntil, err := time.Parse(time.RFC3339, *snap.CooldownUntil)
+	require.NoError(t, err)
+	assert.Equal(t, now.Add(35*time.Second).UTC().Format(time.RFC3339), cooldownUntil.UTC().Format(time.RFC3339))
+}
+
+func TestGetTargetHealth_SlowRatioCooldownExpiresWithoutImmediateRetrigger(t *testing.T) {
+	ht := NewHealthTracker()
+	recovery := 0
+	policy := ApplyHealthPolicyDefaults(&configstoreTables.HealthPolicy{
+		SlowWindowSize:       10,
+		SlowRatioThreshold:   0.5,
+		SlowRecoverySeconds:  &recovery,
+		FailureThreshold:     2,
+		FailureWindowSeconds: 30,
+		CooldownSeconds:      30,
+	})
+	now := time.Now()
+	key := "openai:gpt-4.1"
+
+	for i := 0; i < 6; i++ {
+		ht.RecordOutcome("rule-a", key, OutcomeSlow, 60*time.Second, "", policy, now.Add(time.Duration(i)*time.Second))
+	}
+	for i := 6; i < 10; i++ {
+		ht.RecordOutcome("rule-a", key, OutcomeSuccess, 2*time.Second, "", policy, now.Add(time.Duration(i)*time.Second))
+	}
+
+	assert.Equal(t, HealthCooldown, ht.GetTargetHealthForRule("rule-a", key, policy, now.Add(10*time.Second)))
+	snap := ht.GetTargetStatusForRule("rule-a", key, policy, now.Add(41*time.Second))
+	assert.Equal(t, "available", snap.Status)
+	assert.Equal(t, "healthy", snap.HealthLevel)
+	assert.Equal(t, 0, snap.SlowCount)
+	assert.Equal(t, 4, snap.SampleCount)
+}
+
+func TestGetTargetHealth_SlowCooldownHalfOpenSuccessClearsSlowSamples(t *testing.T) {
+	ht := NewHealthTracker()
+	recovery := 0
+	policy := ApplyHealthPolicyDefaults(&configstoreTables.HealthPolicy{
+		SlowWindowSize:       10,
+		SlowRatioThreshold:   0.5,
+		SlowRecoverySeconds:  &recovery,
+		FailureThreshold:     2,
+		FailureWindowSeconds: 30,
+		CooldownSeconds:      30,
+	})
+	now := time.Now()
+	key := "openai:gpt-4.1"
+
+	for i := 0; i < 6; i++ {
+		ht.RecordOutcome("rule-a", key, OutcomeSlow, 60*time.Second, "", policy, now.Add(time.Duration(i)*time.Second))
+	}
+	for i := 6; i < 10; i++ {
+		ht.RecordOutcome("rule-a", key, OutcomeSuccess, 2*time.Second, "", policy, now.Add(time.Duration(i)*time.Second))
+	}
+
+	assert.Equal(t, HealthCooldown, ht.GetTargetHealthForRule("rule-a", key, policy, now.Add(10*time.Second)))
+	level, halfOpen := ht.GetTargetRoutingHealthForRule("rule-a", key, policy, now.Add(36*time.Second))
+	assert.Equal(t, HealthCooldown, level)
+	assert.True(t, halfOpen)
+
+	ht.RecordOutcome("rule-a", key, OutcomeSuccess, time.Second, "", policy, now.Add(37*time.Second))
+	snap := ht.GetTargetStatusForRule("rule-a", key, policy, now.Add(37*time.Second))
+	assert.Equal(t, "available", snap.Status)
+	assert.Equal(t, "healthy", snap.HealthLevel)
+	assert.Equal(t, 0, snap.SlowCount)
+	assert.Equal(t, 5, snap.SampleCount)
 }
 
 func TestGetTargetHealth_SlowRatioThresholdAboveOneDisablesDegraded(t *testing.T) {

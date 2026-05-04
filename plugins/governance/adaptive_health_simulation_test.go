@@ -151,13 +151,13 @@ func TestAdaptiveHealthRoutingSimulation_LocalRelayEndpoints(t *testing.T) {
 
 	cheapKey := TargetKey("cheap-relay", "gemini-auto", "cheap-key")
 	cheapStatus := tracker.GetTargetStatusForRule(rule.ID, cheapKey, policy, time.Now())
-	assert.Equal(t, string(HealthDegraded), cheapStatus.HealthLevel)
+	assert.Equal(t, string(HealthCooldown), cheapStatus.HealthLevel)
 	assert.GreaterOrEqual(t, cheapStatus.P95LatencyMsValue(), int64(40))
 
 	third := runSimulatedGroupedRoutingRequest(t, rule, routingCtx, tracker, relays)
 	require.True(t, third.success)
 	assert.Equal(t, "fast-relay", third.decision.Provider)
-	assert.Equal(t, []string{"cheap-relay/gemini-auto", "quality-relay/gemini-auto", "quality-relay/gemini-auto", "quality-relay/gemini-auto"}, third.decision.Fallbacks)
+	assert.Equal(t, []string{"quality-relay/gemini-auto", "quality-relay/gemini-auto", "quality-relay/gemini-auto"}, third.decision.Fallbacks)
 	assert.Equal(t, 0, relays["quality-relay"].hitCount(), "fallback_only relay should not be used while any regular target is routable")
 
 	relays["cheap-relay"].set(1*time.Millisecond, http.StatusServiceUnavailable)
@@ -166,7 +166,7 @@ func TestAdaptiveHealthRoutingSimulation_LocalRelayEndpoints(t *testing.T) {
 
 	fourth := runSimulatedGroupedRoutingRequest(t, rule, routingCtx, tracker, relays)
 	require.True(t, fourth.success)
-	assert.Equal(t, []string{"fast-relay", "cheap-relay", "quality-relay", "quality-relay", "quality-relay"}, fourth.providersHit)
+	assert.Equal(t, []string{"fast-relay", "quality-relay", "quality-relay", "quality-relay"}, fourth.providersHit)
 	assert.Equal(t, http.StatusServiceUnavailable, fourth.lastErrorCode)
 
 	fifth := runSimulatedGroupedRoutingRequest(t, rule, routingCtx, tracker, relays)
