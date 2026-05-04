@@ -121,6 +121,17 @@ type ProfitBackfillResult struct {
 	Skipped   int `json:"skipped"`
 }
 
+// ProfitReconciliationStatus reports profit ledger completeness and background repair state.
+type ProfitReconciliationStatus struct {
+	MissingEventCount int64                 `json:"missing_event_count"`
+	LastRunAt         *time.Time            `json:"last_run_at,omitempty"`
+	NextRunAt         *time.Time            `json:"next_run_at,omitempty"`
+	IntervalSeconds   int64                 `json:"interval_seconds"`
+	BatchLimit        int                   `json:"batch_limit"`
+	LastResult        *ProfitBackfillResult `json:"last_result,omitempty"`
+	LastError         string                `json:"last_error,omitempty"`
+}
+
 func normalizeProfitSettings(settings *ProfitSettings) (*ProfitSettings, error) {
 	if settings == nil {
 		settings = &ProfitSettings{}
@@ -407,8 +418,10 @@ func (s *RDBLogStore) BackfillProfitEvents(ctx context.Context, limit int) (*Pro
 	}
 	var logs []Log
 	if err := s.db.WithContext(ctx).Model(&Log{}).
-		Where("status <> ?", "processing").
-		Order("timestamp ASC").
+		Select("logs.*").
+		Joins("LEFT JOIN profit_events ON profit_events.log_id = logs.id").
+		Where("logs.status <> ? AND profit_events.log_id IS NULL", "processing").
+		Order("logs.timestamp ASC").
 		Limit(limit).
 		Find(&logs).Error; err != nil {
 		return nil, err
@@ -438,4 +451,15 @@ func (s *RDBLogStore) BackfillProfitEvents(ctx context.Context, limit int) (*Pro
 		}
 	}
 	return result, nil
+}
+
+func (s *RDBLogStore) CountMissingProfitEvents(ctx context.Context) (int64, error) {
+	var count int64
+	if err := s.db.WithContext(ctx).Model(&Log{}).
+		Joins("LEFT JOIN profit_events ON profit_events.log_id = logs.id").
+		Where("logs.status <> ? AND profit_events.log_id IS NULL", "processing").
+		Count(&count).Error; err != nil {
+		return 0, err
+	}
+	return count, nil
 }

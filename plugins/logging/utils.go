@@ -99,6 +99,7 @@ type LogManager interface {
 	GetProfitDaily(ctx context.Context, query logstore.ProfitQuery) ([]logstore.ProfitDailyBucket, error)
 	GetProfitBreakdown(ctx context.Context, query logstore.ProfitQuery) ([]logstore.ProfitBreakdownRow, error)
 	BackfillProfitEvents(ctx context.Context, limit int) (*logstore.ProfitBackfillResult, error)
+	GetProfitReconciliationStatus(ctx context.Context) (*logstore.ProfitReconciliationStatus, error)
 
 	// MCP Tool Log methods
 	// SearchMCPToolLogs searches for MCP tool log entries based on filters and pagination
@@ -328,6 +329,13 @@ func (p *PluginLogManager) BackfillProfitEvents(ctx context.Context, limit int) 
 		return nil, fmt.Errorf("log store not initialized")
 	}
 	return p.plugin.store.BackfillProfitEvents(ctx, limit)
+}
+
+func (p *PluginLogManager) GetProfitReconciliationStatus(ctx context.Context) (*logstore.ProfitReconciliationStatus, error) {
+	if p.plugin == nil {
+		return nil, fmt.Errorf("logging plugin not initialized")
+	}
+	return p.plugin.GetProfitReconciliationStatus(ctx)
 }
 
 // SearchMCPToolLogs searches for MCP tool log entries based on filters and pagination

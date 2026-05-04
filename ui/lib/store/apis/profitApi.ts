@@ -3,6 +3,7 @@ import type {
 	ProfitBreakdownResponse,
 	ProfitDailyResponse,
 	ProfitPreset,
+	ProfitReconciliationStatus,
 	ProfitSettings,
 	ProfitSummaryResponse,
 } from "@/lib/types/profit";
@@ -44,6 +45,10 @@ export const profitApi = baseApi.injectEndpoints({
 			}),
 			providesTags: ["Profit"],
 		}),
+		getProfitReconciliationStatus: builder.query<ProfitReconciliationStatus, void>({
+			query: () => "/profit/reconciliation-status",
+			providesTags: ["Profit"],
+		}),
 		backfillProfitEvents: builder.mutation<ProfitBackfillResult, { limit?: number }>({
 			query: (body) => ({
 				url: "/profit/backfill",
@@ -59,6 +64,7 @@ export const {
 	useBackfillProfitEventsMutation,
 	useGetProfitBreakdownQuery,
 	useGetProfitDailyQuery,
+	useGetProfitReconciliationStatusQuery,
 	useGetProfitSettingsQuery,
 	useGetProfitSummaryQuery,
 	useUpdateProfitSettingsMutation,

@@ -246,27 +246,32 @@ type Config struct {
 
 // LoggerPlugin implements the schemas.LLMPlugin and schemas.MCPPlugin interfaces
 type LoggerPlugin struct {
-	ctx                   context.Context
-	store                 logstore.LogStore
-	disableContentLogging *bool
-	loggingHeaders        *[]string // Pointer to live config slice for headers to capture in metadata
-	pricingManager        *modelcatalog.ModelCatalog
-	mcpCatalog            *mcpcatalog.MCPCatalog // MCP catalog for tool cost calculation
-	mu                    sync.Mutex
-	done                  chan struct{}
-	cleanupOnce           sync.Once // Ensures cleanup only runs once
-	wg                    sync.WaitGroup
-	logger                schemas.Logger
-	logCallback           LogCallback
-	mcpToolLogCallback    MCPToolLogCallback // Callback for MCP tool log entries
-	droppedRequests       atomic.Int64
-	cleanupTicker         *time.Ticker          // Ticker for cleaning up old processing logs
-	logMsgPool            sync.Pool             // Pool for reusing LogMessage structs
-	updateDataPool        sync.Pool             // Pool for reusing UpdateLogData structs
-	pendingLogs           sync.Map              // Maps requestID -> *PendingLogData (PreLLMHook input data awaiting PostLLMHook)
-	writeQueue            chan *writeQueueEntry // Buffered channel for batch write queue
-	closed                atomic.Bool           // Set during cleanup to prevent sends on closed writeQueue
-	deferredUsageSem      chan struct{}         // Limits concurrent deferred usage DB updates
+	ctx                            context.Context
+	store                          logstore.LogStore
+	disableContentLogging          *bool
+	loggingHeaders                 *[]string // Pointer to live config slice for headers to capture in metadata
+	pricingManager                 *modelcatalog.ModelCatalog
+	mcpCatalog                     *mcpcatalog.MCPCatalog // MCP catalog for tool cost calculation
+	mu                             sync.Mutex
+	done                           chan struct{}
+	cleanupOnce                    sync.Once // Ensures cleanup only runs once
+	wg                             sync.WaitGroup
+	logger                         schemas.Logger
+	logCallback                    LogCallback
+	mcpToolLogCallback             MCPToolLogCallback // Callback for MCP tool log entries
+	droppedRequests                atomic.Int64
+	cleanupTicker                  *time.Ticker          // Ticker for cleaning up old processing logs
+	logMsgPool                     sync.Pool             // Pool for reusing LogMessage structs
+	updateDataPool                 sync.Pool             // Pool for reusing UpdateLogData structs
+	pendingLogs                    sync.Map              // Maps requestID -> *PendingLogData (PreLLMHook input data awaiting PostLLMHook)
+	writeQueue                     chan *writeQueueEntry // Buffered channel for batch write queue
+	closed                         atomic.Bool           // Set during cleanup to prevent sends on closed writeQueue
+	deferredUsageSem               chan struct{}         // Limits concurrent deferred usage DB updates
+	profitReconciliationMu         sync.RWMutex
+	profitReconciliationLastRunAt  *time.Time
+	profitReconciliationNextRunAt  *time.Time
+	profitReconciliationLastResult *logstore.ProfitBackfillResult
+	profitReconciliationLastError  string
 }
 
 // Init creates new logger plugin with given log store
@@ -318,9 +323,15 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, logsStore 
 	plugin.wg.Add(1)
 	go plugin.cleanupWorker()
 
+	plugin.setNextProfitReconciliationRun(time.Now().UTC().Add(profitReconciliationInitialDelay))
+
 	// Start the batch writer goroutine (single writer for all DB writes)
 	plugin.wg.Add(1)
 	go plugin.batchWriter()
+
+	// Periodically repair profit ledger gaps caused by transient post-write failures.
+	plugin.wg.Add(1)
+	go plugin.profitReconciliationWorker()
 
 	return plugin, nil
 }

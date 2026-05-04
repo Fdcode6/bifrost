@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/plugins/logging"
@@ -19,6 +20,7 @@ type mockProfitLogManager struct {
 	daily          []logstore.ProfitDailyBucket
 	breakdown      []logstore.ProfitBreakdownRow
 	backfillResult *logstore.ProfitBackfillResult
+	status         *logstore.ProfitReconciliationStatus
 	backfillLimit  int
 	recalcCalled   bool
 	recalcLimit    int
@@ -51,6 +53,10 @@ func (m *mockProfitLogManager) GetProfitBreakdown(_ context.Context, query logst
 func (m *mockProfitLogManager) BackfillProfitEvents(_ context.Context, limit int) (*logstore.ProfitBackfillResult, error) {
 	m.backfillLimit = limit
 	return m.backfillResult, nil
+}
+
+func (m *mockProfitLogManager) GetProfitReconciliationStatus(_ context.Context) (*logstore.ProfitReconciliationStatus, error) {
+	return m.status, nil
 }
 
 func (m *mockProfitLogManager) RecalculateCosts(_ context.Context, _ *logstore.SearchFilters, limit int) (*logging.RecalculateCostResult, error) {
@@ -166,6 +172,32 @@ func TestProfitSummaryDailyAndBackfillHandlers(t *testing.T) {
 	require.Equal(t, 10, manager.recalcLimit)
 	require.Equal(t, 10, manager.backfillLimit)
 	require.Contains(t, string(backfillCtx.Response.Body()), `"created":8`)
+}
+
+func TestProfitReconciliationStatusHandler(t *testing.T) {
+	now := time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC)
+	next := now.Add(10 * time.Minute)
+	manager := &mockProfitLogManager{
+		status: &logstore.ProfitReconciliationStatus{
+			MissingEventCount: 42,
+			LastRunAt:         &now,
+			NextRunAt:         &next,
+			IntervalSeconds:   600,
+			BatchLimit:        1000,
+			LastResult:        &logstore.ProfitBackfillResult{Processed: 42, Created: 42},
+		},
+	}
+	handler := NewLoggingHandler(manager, nil, nil)
+
+	statusCtx := &fasthttp.RequestCtx{}
+	statusCtx.Request.Header.SetMethod("GET")
+	statusCtx.Request.SetRequestURI("/api/profit/reconciliation-status")
+	handler.getProfitReconciliationStatus(statusCtx)
+
+	require.Equal(t, fasthttp.StatusOK, statusCtx.Response.StatusCode(), string(statusCtx.Response.Body()))
+	require.Contains(t, string(statusCtx.Response.Body()), `"missing_event_count":42`)
+	require.Contains(t, string(statusCtx.Response.Body()), `"interval_seconds":600`)
+	require.Contains(t, string(statusCtx.Response.Body()), `"created":42`)
 }
 
 func TestProfitBackfillStopsCostRecalculationWhenRemainingDoesNotShrink(t *testing.T) {

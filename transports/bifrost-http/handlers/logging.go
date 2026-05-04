@@ -77,6 +77,7 @@ func (h *LoggingHandler) RegisterRoutes(r *router.Router, middlewares ...schemas
 	r.GET("/api/profit/summary", lib.ChainMiddlewares(h.getProfitSummary, middlewares...))
 	r.GET("/api/profit/daily", lib.ChainMiddlewares(h.getProfitDaily, middlewares...))
 	r.GET("/api/profit/breakdown", lib.ChainMiddlewares(h.getProfitBreakdown, middlewares...))
+	r.GET("/api/profit/reconciliation-status", lib.ChainMiddlewares(h.getProfitReconciliationStatus, middlewares...))
 	r.POST("/api/profit/backfill", lib.ChainMiddlewares(h.backfillProfitEvents, middlewares...))
 
 	// MCP Tool Log retrieval with filtering, search, and pagination
@@ -852,6 +853,15 @@ func (h *LoggingHandler) getProfitBreakdown(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	SendJSON(ctx, profitBreakdownResponse{Preset: normalizeProfitPreset(preset), Query: query, Rows: rows})
+}
+
+func (h *LoggingHandler) getProfitReconciliationStatus(ctx *fasthttp.RequestCtx) {
+	status, err := h.logManager.GetProfitReconciliationStatus(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get profit reconciliation status: %v", err))
+		return
+	}
+	SendJSON(ctx, status)
 }
 
 func (h *LoggingHandler) backfillProfitEvents(ctx *fasthttp.RequestCtx) {

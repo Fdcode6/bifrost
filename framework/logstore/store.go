@@ -50,6 +50,7 @@ type LogStore interface {
 	GetProfitDaily(ctx context.Context, query ProfitQuery) ([]ProfitDailyBucket, error)
 	GetProfitBreakdown(ctx context.Context, query ProfitQuery) ([]ProfitBreakdownRow, error)
 	BackfillProfitEvents(ctx context.Context, limit int) (*ProfitBackfillResult, error)
+	CountMissingProfitEvents(ctx context.Context) (int64, error)
 	Flush(ctx context.Context, since time.Time) error
 	Close(ctx context.Context) error
 	DeleteLog(ctx context.Context, id string) error

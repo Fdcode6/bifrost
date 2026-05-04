@@ -200,6 +200,146 @@ func TestClearAllLogsDoesNotClearProfitData(t *testing.T) {
 	}
 }
 
+func TestBackfillProfitEventsPrioritizesMissingProfitEvents(t *testing.T) {
+	store := newTestSQLiteStore(t)
+	ctx := context.Background()
+
+	cost := 0.1
+	entries := []*Log{
+		{
+			ID:               "profit-existing",
+			Timestamp:        time.Date(2026, 5, 4, 1, 0, 0, 0, time.UTC),
+			Object:           "chat_completion",
+			Provider:         "yunwu",
+			Model:            "gemini-pro",
+			Status:           "success",
+			PromptTokens:     1000,
+			CompletionTokens: 1000,
+			TotalTokens:      2000,
+			Cost:             &cost,
+		},
+		{
+			ID:               "profit-missing-a",
+			Timestamp:        time.Date(2026, 5, 4, 2, 0, 0, 0, time.UTC),
+			Object:           "chat_completion",
+			Provider:         "yunwu",
+			Model:            "gemini-pro",
+			Status:           "success",
+			PromptTokens:     2000,
+			CompletionTokens: 2000,
+			TotalTokens:      4000,
+			Cost:             &cost,
+		},
+		{
+			ID:               "profit-missing-b",
+			Timestamp:        time.Date(2026, 5, 4, 3, 0, 0, 0, time.UTC),
+			Object:           "chat_completion",
+			Provider:         "yunwu",
+			Model:            "gemini-pro",
+			Status:           "success",
+			PromptTokens:     3000,
+			CompletionTokens: 3000,
+			TotalTokens:      6000,
+			Cost:             &cost,
+		},
+	}
+	for _, entry := range entries {
+		if err := store.Create(ctx, entry); err != nil {
+			t.Fatalf("Create(%s) error = %v", entry.ID, err)
+		}
+	}
+	if _, err := store.UpsertProfitEventFromLog(ctx, entries[0]); err != nil {
+		t.Fatalf("UpsertProfitEventFromLog(existing) error = %v", err)
+	}
+
+	first, err := store.BackfillProfitEvents(ctx, 1)
+	if err != nil {
+		t.Fatalf("BackfillProfitEvents(first) error = %v", err)
+	}
+	if first.Processed != 1 || first.Created != 1 || first.Updated != 0 {
+		t.Fatalf("first backfill should create the first missing event, got %#v", first)
+	}
+	if _, err := store.FindProfitEvent(ctx, "profit-missing-a"); err != nil {
+		t.Fatalf("expected first missing profit event to be created: %v", err)
+	}
+
+	second, err := store.BackfillProfitEvents(ctx, 1)
+	if err != nil {
+		t.Fatalf("BackfillProfitEvents(second) error = %v", err)
+	}
+	if second.Processed != 1 || second.Created != 1 || second.Updated != 0 {
+		t.Fatalf("second backfill should advance to the next missing event, got %#v", second)
+	}
+	if _, err := store.FindProfitEvent(ctx, "profit-missing-b"); err != nil {
+		t.Fatalf("expected second missing profit event to be created: %v", err)
+	}
+
+	third, err := store.BackfillProfitEvents(ctx, 1)
+	if err != nil {
+		t.Fatalf("BackfillProfitEvents(third) error = %v", err)
+	}
+	if third.Processed != 0 || third.Created != 0 || third.Updated != 0 {
+		t.Fatalf("third backfill should be a no-op when no profit events are missing, got %#v", third)
+	}
+}
+
+func TestCountMissingProfitEvents(t *testing.T) {
+	store := newTestSQLiteStore(t)
+	ctx := context.Background()
+
+	cost := 0.1
+	entries := []*Log{
+		{
+			ID:               "profit-count-existing",
+			Timestamp:        time.Date(2026, 5, 4, 1, 0, 0, 0, time.UTC),
+			Object:           "chat_completion",
+			Provider:         "yunwu",
+			Model:            "gemini-pro",
+			Status:           "success",
+			PromptTokens:     1000,
+			CompletionTokens: 1000,
+			TotalTokens:      2000,
+			Cost:             &cost,
+		},
+		{
+			ID:               "profit-count-missing",
+			Timestamp:        time.Date(2026, 5, 4, 2, 0, 0, 0, time.UTC),
+			Object:           "chat_completion",
+			Provider:         "yunwu",
+			Model:            "gemini-pro",
+			Status:           "success",
+			PromptTokens:     2000,
+			CompletionTokens: 2000,
+			TotalTokens:      4000,
+			Cost:             &cost,
+		},
+		{
+			ID:        "profit-count-processing",
+			Timestamp: time.Date(2026, 5, 4, 3, 0, 0, 0, time.UTC),
+			Object:    "chat_completion",
+			Provider:  "yunwu",
+			Model:     "gemini-pro",
+			Status:    "processing",
+		},
+	}
+	for _, entry := range entries {
+		if err := store.Create(ctx, entry); err != nil {
+			t.Fatalf("Create(%s) error = %v", entry.ID, err)
+		}
+	}
+	if _, err := store.UpsertProfitEventFromLog(ctx, entries[0]); err != nil {
+		t.Fatalf("UpsertProfitEventFromLog(existing) error = %v", err)
+	}
+
+	missing, err := store.CountMissingProfitEvents(ctx)
+	if err != nil {
+		t.Fatalf("CountMissingProfitEvents() error = %v", err)
+	}
+	if missing != 1 {
+		t.Fatalf("missing count mismatch: got %d want 1", missing)
+	}
+}
+
 func TestGetProfitSummaryAndDaily(t *testing.T) {
 	store := newTestSQLiteStore(t)
 	ctx := context.Background()

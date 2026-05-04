@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { AlertCircle, Database, DollarSign, Loader2, Percent, RefreshCw, RotateCw, Save, TrendingUp } from "lucide-react";
+import { AlertCircle, CheckCircle2, Clock3, Database, DollarSign, Loader2, Percent, RefreshCw, RotateCw, Save, TrendingUp } from "lucide-react";
 import { toast } from "sonner";
 
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -17,6 +17,7 @@ import {
 	useBackfillProfitEventsMutation,
 	useGetProfitBreakdownQuery,
 	useGetProfitDailyQuery,
+	useGetProfitReconciliationStatusQuery,
 	useGetProfitSettingsQuery,
 	useGetProfitSummaryQuery,
 	useUpdateProfitSettingsMutation,
@@ -127,6 +128,47 @@ function dailyChartData(days: ProfitDailyBucket[]) {
 		.slice(-30);
 }
 
+function formatStatusDateTime(value?: string | null) {
+	if (!value) {
+		return "尚未运行";
+	}
+	const date = new Date(value);
+	if (Number.isNaN(date.getTime())) {
+		return "时间未知";
+	}
+	return date.toLocaleString("zh-CN", {
+		month: "2-digit",
+		day: "2-digit",
+		hour: "2-digit",
+		minute: "2-digit",
+	});
+}
+
+function formatDuration(seconds: number) {
+	if (!Number.isFinite(seconds) || seconds <= 0) {
+		return "即将";
+	}
+	if (seconds < 60) {
+		return `${Math.ceil(seconds)} 秒`;
+	}
+	if (seconds < 3600) {
+		return `${Math.ceil(seconds / 60)} 分钟`;
+	}
+	return `${Math.ceil(seconds / 3600)} 小时`;
+}
+
+function formatNextRun(value?: string | null) {
+	if (!value) {
+		return "等待首次安排";
+	}
+	const next = new Date(value).getTime();
+	if (Number.isNaN(next)) {
+		return "时间未知";
+	}
+	const seconds = Math.ceil((next - Date.now()) / 1000);
+	return seconds <= 0 ? "即将运行" : `约 ${formatDuration(seconds)}后`;
+}
+
 export default function ProfitPage() {
 	const [preset, setPreset] = useState<ProfitPreset>("today");
 	const [displayCurrency, setDisplayCurrency] = useState<DisplayCurrency>("CNY");
@@ -161,6 +203,12 @@ export default function ProfitPage() {
 		isFetching: isBreakdownFetching,
 		refetch: refetchBreakdown,
 	} = useGetProfitBreakdownQuery(preset);
+	const {
+		data: reconciliationStatus,
+		error: reconciliationStatusError,
+		isFetching: isReconciliationStatusFetching,
+		refetch: refetchReconciliationStatus,
+	} = useGetProfitReconciliationStatusQuery();
 	const [updateProfitSettings, { isLoading: isSaving }] = useUpdateProfitSettingsMutation();
 	const [backfillProfitEvents, { isLoading: isBackfilling }] = useBackfillProfitEventsMutation();
 
@@ -175,12 +223,14 @@ export default function ProfitPage() {
 	const summary = summaryResponse?.data ?? emptySummary;
 	const chartData = useMemo(() => dailyChartData(dailyResponse?.days ?? []), [dailyResponse?.days]);
 	const breakdownRows = breakdownResponse?.rows ?? [];
-	const isRefreshing = isSettingsFetching || isSummaryFetching || isDailyFetching || isBreakdownFetching;
-	const pageError = settingsError || summaryError || dailyError || breakdownError;
+	const isRefreshing = isSettingsFetching || isSummaryFetching || isDailyFetching || isBreakdownFetching || isReconciliationStatusFetching;
+	const pageError = settingsError || summaryError || dailyError || breakdownError || reconciliationStatusError;
 	const money = (value: number | null | undefined) => formatMoney(value, displayCurrency);
+	const missingProfitEvents = reconciliationStatus?.missing_event_count ?? 0;
+	const isProfitLedgerComplete = missingProfitEvents === 0;
 
 	const handleRefresh = () => {
-		void Promise.all([refetchSettings(), refetchSummary(), refetchDaily(), refetchBreakdown()]);
+		void Promise.all([refetchSettings(), refetchSummary(), refetchDaily(), refetchBreakdown(), refetchReconciliationStatus()]);
 	};
 
 	const handleSave = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -206,7 +256,8 @@ export default function ProfitPage() {
 	const handleBackfill = async () => {
 		try {
 			const result = await backfillProfitEvents({ limit: 5000 }).unwrap();
-			toast.success(`回填完成：新增 ${result.created} 条，更新 ${result.updated} 条。`);
+			toast.success(`回填完成：新增 ${result.created} 条，处理 ${result.processed} 条。`);
+			void refetchReconciliationStatus();
 		} catch (error) {
 			toast.error(getErrorMessage(error));
 		}
@@ -259,6 +310,65 @@ export default function ProfitPage() {
 					</Button>
 				))}
 			</div>
+
+			<Card className="rounded-lg">
+				<CardContent className="grid gap-4 p-5 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,2fr)_auto] lg:items-center">
+					<div className="flex items-center gap-3">
+						<span
+							className={cn(
+								"rounded-md border p-2",
+								isProfitLedgerComplete ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-amber-200 bg-amber-50 text-amber-700",
+							)}
+						>
+							{isProfitLedgerComplete ? <CheckCircle2 className="h-4 w-4" /> : <AlertCircle className="h-4 w-4" />}
+						</span>
+						<div>
+							<CardTitle className="text-base">利润账本完整性</CardTitle>
+							<CardDescription>
+								{isProfitLedgerComplete ? "当前 logs 与利润事件已对齐。" : `当前还有 ${formatCompactNumber(missingProfitEvents)} 条日志未入账。`}
+							</CardDescription>
+						</div>
+					</div>
+					<div className="grid gap-3 text-sm sm:grid-cols-3">
+						<div>
+							<p className="text-muted-foreground text-xs font-medium">上次自动校对</p>
+							<p className="mt-1 tabular-nums">{formatStatusDateTime(reconciliationStatus?.last_run_at)}</p>
+						</div>
+						<div>
+							<p className="text-muted-foreground text-xs font-medium">下次自动校对</p>
+							<p className="mt-1 flex items-center gap-1 tabular-nums">
+								<Clock3 className="text-muted-foreground h-3.5 w-3.5" />
+								{formatNextRun(reconciliationStatus?.next_run_at)}
+							</p>
+						</div>
+						<div>
+							<p className="text-muted-foreground text-xs font-medium">上次结果</p>
+							<p className="mt-1 tabular-nums">
+								{reconciliationStatus?.last_error
+									? "上次失败"
+									: reconciliationStatus?.last_result
+										? `新增 ${formatCompactNumber(reconciliationStatus.last_result.created)} / 处理 ${formatCompactNumber(reconciliationStatus.last_result.processed)}`
+										: `每 ${formatDuration(reconciliationStatus?.interval_seconds ?? 600)}校对，单批 ${formatCompactNumber(reconciliationStatus?.batch_limit ?? 1000)}`}
+							</p>
+						</div>
+					</div>
+					<div className="flex gap-2 lg:justify-end">
+						<Button variant="outline" size="sm" onClick={() => void refetchReconciliationStatus()} disabled={isReconciliationStatusFetching} className="gap-2">
+							<RefreshCw className={cn("h-4 w-4", isReconciliationStatusFetching ? "animate-spin" : "")} />
+							刷新状态
+						</Button>
+						<Button size="sm" onClick={handleBackfill} disabled={isBackfilling || isProfitLedgerComplete} className="gap-2">
+							{isBackfilling ? <Loader2 className="h-4 w-4 animate-spin" /> : <RotateCw className="h-4 w-4" />}
+							补齐缺口
+						</Button>
+					</div>
+					{reconciliationStatus?.last_error ? (
+						<div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive lg:col-span-3">
+							上次校对失败：{reconciliationStatus.last_error}
+						</div>
+					) : null}
+				</CardContent>
+			</Card>
 
 			<div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
 				<MetricCard

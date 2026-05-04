@@ -61,3 +61,13 @@ export interface ProfitBackfillResult {
 	updated: number;
 	skipped: number;
 }
+
+export interface ProfitReconciliationStatus {
+	missing_event_count: number;
+	last_run_at?: string | null;
+	next_run_at?: string | null;
+	interval_seconds: number;
+	batch_limit: number;
+	last_result?: ProfitBackfillResult | null;
+	last_error?: string;
+}
