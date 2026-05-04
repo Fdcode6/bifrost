@@ -42,6 +42,14 @@ type LogStore interface {
 	GetModelRankings(ctx context.Context, filters SearchFilters) (*ModelRankingResult, error)
 	Update(ctx context.Context, id string, entry any) error
 	BulkUpdateCost(ctx context.Context, updates map[string]float64) error
+	GetProfitSettings(ctx context.Context) (*ProfitSettings, error)
+	SaveProfitSettings(ctx context.Context, settings *ProfitSettings) (*ProfitSettings, error)
+	FindProfitEvent(ctx context.Context, logID string) (*ProfitEvent, error)
+	UpsertProfitEventFromLog(ctx context.Context, entry *Log) (*ProfitEvent, error)
+	GetProfitSummary(ctx context.Context, query ProfitQuery) (*ProfitSummary, error)
+	GetProfitDaily(ctx context.Context, query ProfitQuery) ([]ProfitDailyBucket, error)
+	GetProfitBreakdown(ctx context.Context, query ProfitQuery) ([]ProfitBreakdownRow, error)
+	BackfillProfitEvents(ctx context.Context, limit int) (*ProfitBackfillResult, error)
 	Flush(ctx context.Context, since time.Time) error
 	Close(ctx context.Context) error
 	DeleteLog(ctx context.Context, id string) error

@@ -24,16 +24,16 @@ func (p *LoggerPlugin) insertInitialLogEntry(
 	data *InitialLogData,
 ) error {
 	entry := &logstore.Log{
-		ID:            requestID,
-		Timestamp:     timestamp,
-		Object:        data.Object,
-		Provider:      data.Provider,
-		Model:         data.Model,
-		FallbackIndex: fallbackIndex,
+		ID:              requestID,
+		Timestamp:       timestamp,
+		Object:          data.Object,
+		Provider:        data.Provider,
+		Model:           data.Model,
+		FallbackIndex:   fallbackIndex,
 		RouteLayerIndex: routeLayerIndex,
-		Status:        "processing",
-		Stream:        false,
-		CreatedAt:     timestamp,
+		Status:          "processing",
+		Stream:          false,
+		CreatedAt:       timestamp,
 		// Set parsed fields for serialization
 		InputHistoryParsed:          data.InputHistory,
 		ResponsesInputHistoryParsed: data.ResponsesInputHistory,
@@ -525,17 +525,19 @@ func (p *LoggerPlugin) updateStreamingLogEntry(
 // It receives the already-inserted entry directly (no DB re-read needed).
 func (p *LoggerPlugin) makePostWriteCallback(enrichFn func(*logstore.Log)) func(entry *logstore.Log) {
 	return func(entry *logstore.Log) {
-		p.mu.Lock()
-		callback := p.logCallback
-		p.mu.Unlock()
-		if callback == nil {
-			return
-		}
 		if entry == nil {
 			return
 		}
 		if enrichFn != nil {
 			enrichFn(entry)
+		}
+		p.syncProfitEventFromLog(entry)
+
+		p.mu.Lock()
+		callback := p.logCallback
+		p.mu.Unlock()
+		if callback == nil {
+			return
 		}
 		callback(p.ctx, entry)
 	}
@@ -961,6 +963,11 @@ func (p *LoggerPlugin) RecalculateCosts(ctx context.Context, filters logstore.Se
 			return nil, fmt.Errorf("failed to bulk update costs: %w", err)
 		}
 		result.Updated = len(costUpdates)
+		ids := make([]string, 0, len(costUpdates))
+		for id := range costUpdates {
+			ids = append(ids, id)
+		}
+		p.syncProfitEventsForLogIDs(ctx, ids)
 	}
 
 	// Re-count how many logs still match the missing-cost filter after updates
@@ -1111,18 +1118,18 @@ func buildResponseForRequestType(requestType schemas.RequestType, usage *schemas
 					CachedWriteTokens: usage.PromptTokensDetails.CachedWriteTokens,
 				}
 			}
-		if usage.CompletionTokensDetails != nil {
-			respUsage.OutputTokensDetails = &schemas.ResponsesResponseOutputTokens{
-				TextTokens:               usage.CompletionTokensDetails.TextTokens,
-				AcceptedPredictionTokens: usage.CompletionTokensDetails.AcceptedPredictionTokens,
-				AudioTokens:              usage.CompletionTokensDetails.AudioTokens,
-				ImageTokens:              usage.CompletionTokensDetails.ImageTokens,
-				ReasoningTokens:          usage.CompletionTokensDetails.ReasoningTokens,
-				RejectedPredictionTokens: usage.CompletionTokensDetails.RejectedPredictionTokens,
-				CitationTokens:           usage.CompletionTokensDetails.CitationTokens,
-				NumSearchQueries:         usage.CompletionTokensDetails.NumSearchQueries,
+			if usage.CompletionTokensDetails != nil {
+				respUsage.OutputTokensDetails = &schemas.ResponsesResponseOutputTokens{
+					TextTokens:               usage.CompletionTokensDetails.TextTokens,
+					AcceptedPredictionTokens: usage.CompletionTokensDetails.AcceptedPredictionTokens,
+					AudioTokens:              usage.CompletionTokensDetails.AudioTokens,
+					ImageTokens:              usage.CompletionTokensDetails.ImageTokens,
+					ReasoningTokens:          usage.CompletionTokensDetails.ReasoningTokens,
+					RejectedPredictionTokens: usage.CompletionTokensDetails.RejectedPredictionTokens,
+					CitationTokens:           usage.CompletionTokensDetails.CitationTokens,
+					NumSearchQueries:         usage.CompletionTokensDetails.NumSearchQueries,
+				}
 			}
-		}
 		}
 		return &schemas.BifrostResponse{
 			ResponsesResponse: &schemas.BifrostResponsesResponse{

@@ -212,6 +212,50 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddRouteLayerIndexAndParentRequestIndex(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationCreateProfitTables(ctx, db); err != nil {
+		return err
+	}
+	return nil
+}
+
+// migrationCreateProfitTables creates the persistent profit ledger tables.
+func migrationCreateProfitTables(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "logs_create_profit_tables",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasTable(&ProfitSettings{}) {
+				if err := migrator.CreateTable(&ProfitSettings{}); err != nil {
+					return err
+				}
+			}
+			if !migrator.HasTable(&ProfitEvent{}) {
+				if err := migrator.CreateTable(&ProfitEvent{}); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasTable(&ProfitEvent{}) {
+				if err := migrator.DropTable(&ProfitEvent{}); err != nil {
+					return err
+				}
+			}
+			if migrator.HasTable(&ProfitSettings{}) {
+				if err := migrator.DropTable(&ProfitSettings{}); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while creating profit tables: %s", err.Error())
+	}
 	return nil
 }
 

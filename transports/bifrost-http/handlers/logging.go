@@ -72,6 +72,12 @@ func (h *LoggingHandler) RegisterRoutes(r *router.Router, middlewares ...schemas
 	r.DELETE("/api/logs", lib.ChainMiddlewares(h.deleteLogs, middlewares...))
 	r.POST("/api/logs/clear-all", lib.ChainMiddlewares(h.clearAllLogs, middlewares...))
 	r.POST("/api/logs/recalculate-cost", lib.ChainMiddlewares(h.recalculateLogCosts, middlewares...))
+	r.GET("/api/profit/settings", lib.ChainMiddlewares(h.getProfitSettings, middlewares...))
+	r.PUT("/api/profit/settings", lib.ChainMiddlewares(h.updateProfitSettings, middlewares...))
+	r.GET("/api/profit/summary", lib.ChainMiddlewares(h.getProfitSummary, middlewares...))
+	r.GET("/api/profit/daily", lib.ChainMiddlewares(h.getProfitDaily, middlewares...))
+	r.GET("/api/profit/breakdown", lib.ChainMiddlewares(h.getProfitBreakdown, middlewares...))
+	r.POST("/api/profit/backfill", lib.ChainMiddlewares(h.backfillProfitEvents, middlewares...))
 
 	// MCP Tool Log retrieval with filtering, search, and pagination
 	r.GET("/api/mcp-logs", lib.ChainMiddlewares(h.getMCPLogs, middlewares...))
@@ -732,6 +738,217 @@ func (h *LoggingHandler) recalculateLogCosts(ctx *fasthttp.RequestCtx) {
 	}
 
 	SendJSON(ctx, result)
+}
+
+type updateProfitSettingsRequest struct {
+	SellInputPer1MUSD  float64 `json:"sell_input_per_1m_usd"`
+	SellOutputPer1MUSD float64 `json:"sell_output_per_1m_usd"`
+	Timezone           string  `json:"timezone,omitempty"`
+}
+
+type profitSummaryResponse struct {
+	Preset string                  `json:"preset"`
+	Query  logstore.ProfitQuery    `json:"query"`
+	Data   *logstore.ProfitSummary `json:"data"`
+}
+
+type profitDailyResponse struct {
+	Query logstore.ProfitQuery         `json:"query"`
+	Days  []logstore.ProfitDailyBucket `json:"days"`
+}
+
+type profitBreakdownResponse struct {
+	Preset string                        `json:"preset"`
+	Query  logstore.ProfitQuery          `json:"query"`
+	Rows   []logstore.ProfitBreakdownRow `json:"rows"`
+}
+
+type profitBackfillRequest struct {
+	Limit int `json:"limit"`
+}
+
+func (h *LoggingHandler) getProfitSettings(ctx *fasthttp.RequestCtx) {
+	settings, err := h.logManager.GetProfitSettings(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get profit settings: %v", err))
+		return
+	}
+	SendJSON(ctx, settings)
+}
+
+func (h *LoggingHandler) updateProfitSettings(ctx *fasthttp.RequestCtx) {
+	var payload updateProfitSettingsRequest
+	if err := sonic.Unmarshal(ctx.PostBody(), &payload); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request body: %v", err))
+		return
+	}
+	if payload.Timezone == "" {
+		payload.Timezone = "Asia/Shanghai"
+	}
+	if payload.SellInputPer1MUSD < 0 || payload.SellOutputPer1MUSD < 0 || (payload.SellInputPer1MUSD == 0 && payload.SellOutputPer1MUSD == 0) {
+		SendError(ctx, fasthttp.StatusBadRequest, "Profit sell prices must be non-negative and at least one price must be greater than zero")
+		return
+	}
+	settings, err := h.logManager.SaveProfitSettings(ctx, &logstore.ProfitSettings{
+		SellInputPer1MUSD:  payload.SellInputPer1MUSD,
+		SellOutputPer1MUSD: payload.SellOutputPer1MUSD,
+		Timezone:           payload.Timezone,
+	})
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Failed to update profit settings: %v", err))
+		return
+	}
+	SendJSON(ctx, settings)
+}
+
+func (h *LoggingHandler) getProfitSummary(ctx *fasthttp.RequestCtx) {
+	preset := string(ctx.QueryArgs().Peek("preset"))
+	query, err := profitQueryFromPreset(preset, time.Now())
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+	summary, err := h.logManager.GetProfitSummary(ctx, query)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get profit summary: %v", err))
+		return
+	}
+	SendJSON(ctx, profitSummaryResponse{Preset: normalizeProfitPreset(preset), Query: query, Data: summary})
+}
+
+func (h *LoggingHandler) getProfitDaily(ctx *fasthttp.RequestCtx) {
+	days := 30
+	if raw := string(ctx.QueryArgs().Peek("days")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed <= 0 || parsed > 366 {
+			SendError(ctx, fasthttp.StatusBadRequest, "days must be between 1 and 366")
+			return
+		}
+		days = parsed
+	}
+	query, err := profitDailyQuery(days, time.Now())
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+	buckets, err := h.logManager.GetProfitDaily(ctx, query)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get daily profit: %v", err))
+		return
+	}
+	SendJSON(ctx, profitDailyResponse{Query: query, Days: buckets})
+}
+
+func (h *LoggingHandler) getProfitBreakdown(ctx *fasthttp.RequestCtx) {
+	preset := string(ctx.QueryArgs().Peek("preset"))
+	query, err := profitQueryFromPreset(preset, time.Now())
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+	rows, err := h.logManager.GetProfitBreakdown(ctx, query)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get profit breakdown: %v", err))
+		return
+	}
+	SendJSON(ctx, profitBreakdownResponse{Preset: normalizeProfitPreset(preset), Query: query, Rows: rows})
+}
+
+func (h *LoggingHandler) backfillProfitEvents(ctx *fasthttp.RequestCtx) {
+	var payload profitBackfillRequest
+	if len(ctx.PostBody()) > 0 {
+		if err := sonic.Unmarshal(ctx.PostBody(), &payload); err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request body: %v", err))
+			return
+		}
+	}
+	limit := payload.Limit
+	if limit <= 0 {
+		limit = 500
+	}
+	if err := h.recalculateProfitSourceCosts(ctx, limit); err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to recalculate log costs before profit backfill: %v", err))
+		return
+	}
+	result, err := h.logManager.BackfillProfitEvents(ctx, limit)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to backfill profit events: %v", err))
+		return
+	}
+	SendJSON(ctx, result)
+}
+
+func (h *LoggingHandler) recalculateProfitSourceCosts(ctx context.Context, limit int) error {
+	if limit <= 0 {
+		limit = 500
+	}
+	remainingBudget := limit
+	var previousRemaining int64 = -1
+	for remainingBudget > 0 {
+		batchLimit := remainingBudget
+		if batchLimit > 1000 {
+			batchLimit = 1000
+		}
+		result, err := h.logManager.RecalculateCosts(ctx, &logstore.SearchFilters{}, batchLimit)
+		if err != nil {
+			return err
+		}
+		if result == nil || result.Updated == 0 {
+			return nil
+		}
+		if result.Remaining > 0 && result.Remaining == previousRemaining {
+			return nil
+		}
+		previousRemaining = result.Remaining
+		remainingBudget -= result.Updated
+		if result.Remaining == 0 {
+			return nil
+		}
+	}
+	return nil
+}
+
+func normalizeProfitPreset(preset string) string {
+	switch preset {
+	case "yesterday", "7d", "all":
+		return preset
+	default:
+		return "today"
+	}
+}
+
+func profitQueryFromPreset(preset string, now time.Time) (logstore.ProfitQuery, error) {
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		return logstore.ProfitQuery{}, err
+	}
+	today := now.In(loc)
+	day := time.Date(today.Year(), today.Month(), today.Day(), 0, 0, 0, 0, loc)
+	switch normalizeProfitPreset(preset) {
+	case "yesterday":
+		yesterday := day.AddDate(0, 0, -1).Format("2006-01-02")
+		return logstore.ProfitQuery{StartDay: yesterday, EndDay: yesterday}, nil
+	case "7d":
+		return logstore.ProfitQuery{StartDay: day.AddDate(0, 0, -6).Format("2006-01-02"), EndDay: day.Format("2006-01-02")}, nil
+	case "all":
+		return logstore.ProfitQuery{}, nil
+	default:
+		todayStr := day.Format("2006-01-02")
+		return logstore.ProfitQuery{StartDay: todayStr, EndDay: todayStr}, nil
+	}
+}
+
+func profitDailyQuery(days int, now time.Time) (logstore.ProfitQuery, error) {
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		return logstore.ProfitQuery{}, err
+	}
+	today := now.In(loc)
+	day := time.Date(today.Year(), today.Month(), today.Day(), 0, 0, 0, 0, loc)
+	return logstore.ProfitQuery{
+		StartDay: day.AddDate(0, 0, -(days - 1)).Format("2006-01-02"),
+		EndDay:   day.Format("2006-01-02"),
+	}, nil
 }
 
 // Helper functions

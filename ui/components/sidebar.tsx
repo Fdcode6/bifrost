@@ -415,6 +415,13 @@ export const buildSidebarItems = ({
 				hasAccess: hasLogsAccess,
 			},
 			{
+				title: "Profit",
+				url: "/workspace/profit",
+				icon: CircleDollarSign,
+				description: "Revenue, cost, and profit analytics",
+				hasAccess: hasObservabilityAccess,
+			},
+			{
 				title: "MCP Logs",
 				url: "/workspace/mcp-logs",
 				icon: MCPIcon,

@@ -1079,6 +1079,31 @@ func TestCalculateCost_ChatCompletion_GPT4o(t *testing.T) {
 	assert.InDelta(t, 0.08, cost, 1e-12)
 }
 
+func TestCalculateCost_ProviderOverridePricesUnknownChatModel(t *testing.T) {
+	mc := testCatalogWithPricing(nil)
+	provider := schemas.ModelProvider("yunwu")
+	input := 0.00000044
+	output := 0.00000265
+	require.NoError(t, mc.SetProviderPricingOverrides(provider, []schemas.ProviderPricingOverride{
+		{
+			ModelPattern:       "gemini",
+			MatchType:          schemas.PricingOverrideMatchContains,
+			RequestTypes:       []schemas.RequestType{schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest},
+			InputCostPerToken:  &input,
+			OutputCostPerToken: &output,
+		},
+	}))
+
+	resp := makeChatResponse(provider, "gemini-3.1-pro-preview", &schemas.BifrostLLMUsage{
+		PromptTokens:     687,
+		CompletionTokens: 1658,
+		TotalTokens:      2345,
+	})
+
+	cost := mc.CalculateCost(resp)
+	assert.InDelta(t, 687*input+1658*output, cost, 1e-12)
+}
+
 func TestCalculateCost_ChatCompletion_Claude35Sonnet_WithCache(t *testing.T) {
 	// Claude 3.5 Sonnet (Bedrock): $3/M input, $15/M output, cache_read=$0.3/M, cache_creation=$3.75/M
 	mc := testCatalogWithPricing(map[string]configstoreTables.TableModelPricing{

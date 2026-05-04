@@ -160,6 +160,7 @@ export const baseApi = createApi({
 		"Prompts",
 		"Versions",
 		"Sessions",
+		"Profit",
 	],
 	endpoints: () => ({}),
 });

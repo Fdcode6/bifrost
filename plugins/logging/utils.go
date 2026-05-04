@@ -93,6 +93,13 @@ type LogManager interface {
 	// RecalculateCosts recomputes missing costs for logs matching the filters
 	RecalculateCosts(ctx context.Context, filters *logstore.SearchFilters, limit int) (*RecalculateCostResult, error)
 
+	GetProfitSettings(ctx context.Context) (*logstore.ProfitSettings, error)
+	SaveProfitSettings(ctx context.Context, settings *logstore.ProfitSettings) (*logstore.ProfitSettings, error)
+	GetProfitSummary(ctx context.Context, query logstore.ProfitQuery) (*logstore.ProfitSummary, error)
+	GetProfitDaily(ctx context.Context, query logstore.ProfitQuery) ([]logstore.ProfitDailyBucket, error)
+	GetProfitBreakdown(ctx context.Context, query logstore.ProfitQuery) ([]logstore.ProfitBreakdownRow, error)
+	BackfillProfitEvents(ctx context.Context, limit int) (*logstore.ProfitBackfillResult, error)
+
 	// MCP Tool Log methods
 	// SearchMCPToolLogs searches for MCP tool log entries based on filters and pagination
 	SearchMCPToolLogs(ctx context.Context, filters *logstore.MCPToolLogSearchFilters, pagination *logstore.PaginationOptions) (*logstore.MCPToolLogSearchResult, error)
@@ -279,6 +286,48 @@ func (p *PluginLogManager) RecalculateCosts(ctx context.Context, filters *logsto
 		return nil, fmt.Errorf("filters cannot be nil")
 	}
 	return p.plugin.RecalculateCosts(ctx, *filters, limit)
+}
+
+func (p *PluginLogManager) GetProfitSettings(ctx context.Context) (*logstore.ProfitSettings, error) {
+	if p.plugin == nil || p.plugin.store == nil {
+		return nil, fmt.Errorf("log store not initialized")
+	}
+	return p.plugin.store.GetProfitSettings(ctx)
+}
+
+func (p *PluginLogManager) SaveProfitSettings(ctx context.Context, settings *logstore.ProfitSettings) (*logstore.ProfitSettings, error) {
+	if p.plugin == nil || p.plugin.store == nil {
+		return nil, fmt.Errorf("log store not initialized")
+	}
+	return p.plugin.store.SaveProfitSettings(ctx, settings)
+}
+
+func (p *PluginLogManager) GetProfitSummary(ctx context.Context, query logstore.ProfitQuery) (*logstore.ProfitSummary, error) {
+	if p.plugin == nil || p.plugin.store == nil {
+		return nil, fmt.Errorf("log store not initialized")
+	}
+	return p.plugin.store.GetProfitSummary(ctx, query)
+}
+
+func (p *PluginLogManager) GetProfitDaily(ctx context.Context, query logstore.ProfitQuery) ([]logstore.ProfitDailyBucket, error) {
+	if p.plugin == nil || p.plugin.store == nil {
+		return nil, fmt.Errorf("log store not initialized")
+	}
+	return p.plugin.store.GetProfitDaily(ctx, query)
+}
+
+func (p *PluginLogManager) GetProfitBreakdown(ctx context.Context, query logstore.ProfitQuery) ([]logstore.ProfitBreakdownRow, error) {
+	if p.plugin == nil || p.plugin.store == nil {
+		return nil, fmt.Errorf("log store not initialized")
+	}
+	return p.plugin.store.GetProfitBreakdown(ctx, query)
+}
+
+func (p *PluginLogManager) BackfillProfitEvents(ctx context.Context, limit int) (*logstore.ProfitBackfillResult, error) {
+	if p.plugin == nil || p.plugin.store == nil {
+		return nil, fmt.Errorf("log store not initialized")
+	}
+	return p.plugin.store.BackfillProfitEvents(ctx, limit)
 }
 
 // SearchMCPToolLogs searches for MCP tool log entries based on filters and pagination

@@ -11,4 +11,5 @@ export * from "./mcpLogsApi";
 export * from "./pluginsApi";
 export * from "./providersApi";
 export * from "./promptsApi";
+export * from "./profitApi";
 export * from "./sessionApi";

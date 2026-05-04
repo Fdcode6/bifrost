@@ -847,8 +847,30 @@ func (mc *ModelCatalog) resolvePricing(provider, model, deployment string, reque
 		}
 	}
 
+	if pricing := mc.resolvePricingOverride(provider, model, requestType); pricing != nil {
+		return pricing
+	}
+	if deployment != "" {
+		if pricing := mc.resolvePricingOverride(provider, deployment, requestType); pricing != nil {
+			return pricing
+		}
+	}
+
 	mc.logger.Debug("pricing not found for model %s and provider %s, skipping cost calculation", model, provider)
 	return nil
+}
+
+func (mc *ModelCatalog) resolvePricingOverride(provider, model string, requestType schemas.RequestType) *configstoreTables.TableModelPricing {
+	overridePricing := configstoreTables.TableModelPricing{
+		Model:    model,
+		Provider: provider,
+		Mode:     normalizeRequestType(requestType),
+	}
+	effective, matched := mc.applyPricingOverridesIfMatched(schemas.ModelProvider(provider), model, requestType, overridePricing)
+	if !matched {
+		return nil
+	}
+	return &effective
 }
 
 // getPricing returns pricing information for a model (thread-safe)

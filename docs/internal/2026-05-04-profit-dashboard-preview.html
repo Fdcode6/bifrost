@@ -1,0 +1,975 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>利润统计 | Bifrost Preview</title>
+  <style>
+    :root {
+      --bg: #f6f7f3;
+      --panel: #fbfcf8;
+      --panel-strong: #ffffff;
+      --ink: #1d211c;
+      --muted: #6d746c;
+      --soft: #8a9189;
+      --line: #dde2d9;
+      --line-strong: #cbd3c8;
+      --green: #087b5b;
+      --green-soft: #dff3ea;
+      --amber: #a56208;
+      --amber-soft: #f7ead5;
+      --red: #b63232;
+      --red-soft: #f7dddd;
+      --blue: #2f5f8f;
+      --blue-soft: #dfe9f5;
+      --shadow: 0 12px 30px rgba(42, 50, 38, 0.08);
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      --sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: var(--sans);
+      font-size: 15px;
+      line-height: 1.45;
+    }
+
+    button,
+    input {
+      font: inherit;
+    }
+
+    .app {
+      display: grid;
+      grid-template-columns: 248px minmax(0, 1fr);
+      min-height: 100vh;
+    }
+
+    .sidebar {
+      border-right: 1px solid var(--line);
+      background: #f1f3ee;
+      padding: 22px 14px;
+      position: sticky;
+      top: 0;
+      height: 100vh;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0 8px 20px;
+      font-weight: 700;
+      font-size: 20px;
+    }
+
+    .brand-mark {
+      width: 30px;
+      height: 30px;
+      border: 1px solid var(--line-strong);
+      border-radius: 8px;
+      display: grid;
+      place-items: center;
+      background: var(--panel-strong);
+      color: var(--green);
+      font-weight: 800;
+    }
+
+    .nav-group {
+      margin-top: 12px;
+    }
+
+    .nav-title {
+      color: var(--soft);
+      font-size: 12px;
+      font-weight: 700;
+      padding: 12px 10px 8px;
+    }
+
+    .nav-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-height: 38px;
+      padding: 8px 10px;
+      border-radius: 8px;
+      color: #3b423a;
+      text-decoration: none;
+      font-weight: 600;
+    }
+
+    .nav-item.active {
+      background: var(--panel-strong);
+      color: var(--green);
+      box-shadow: inset 0 0 0 1px var(--line);
+    }
+
+    .nav-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 99px;
+      background: currentColor;
+      opacity: .8;
+      flex: 0 0 auto;
+    }
+
+    .content {
+      padding: 30px;
+      max-width: 1500px;
+      width: 100%;
+      margin: 0 auto;
+    }
+
+    .page-head {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 18px;
+      align-items: start;
+      margin-bottom: 24px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 30px;
+      line-height: 1.18;
+      letter-spacing: 0;
+    }
+
+    .lead {
+      color: var(--muted);
+      margin: 8px 0 0;
+      font-size: 16px;
+    }
+
+    .status-strip {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 28px;
+      gap: 7px;
+      padding: 4px 10px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: var(--panel-strong);
+      color: var(--muted);
+      white-space: nowrap;
+      font-size: 13px;
+      font-weight: 650;
+    }
+
+    .pill.good {
+      color: var(--green);
+      border-color: #b6dfce;
+      background: var(--green-soft);
+    }
+
+    .toolbar {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      align-items: center;
+      margin-bottom: 18px;
+    }
+
+    .segments {
+      display: inline-grid;
+      grid-template-columns: repeat(4, auto);
+      border: 1px solid var(--line);
+      background: var(--panel-strong);
+      border-radius: 8px;
+      padding: 4px;
+      gap: 4px;
+    }
+
+    .seg {
+      border: 0;
+      min-height: 34px;
+      border-radius: 6px;
+      padding: 0 14px;
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+      font-weight: 700;
+    }
+
+    .seg.active {
+      background: var(--green);
+      color: white;
+    }
+
+    .ghost-button,
+    .primary-button {
+      min-height: 38px;
+      border-radius: 8px;
+      border: 1px solid var(--line-strong);
+      padding: 0 14px;
+      font-weight: 750;
+      cursor: pointer;
+      background: var(--panel-strong);
+      color: var(--ink);
+    }
+
+    .primary-button {
+      background: var(--green);
+      border-color: var(--green);
+      color: white;
+    }
+
+    .ghost-button:hover,
+    .primary-button:hover {
+      filter: brightness(.98);
+    }
+
+    .grid {
+      display: grid;
+      gap: 16px;
+    }
+
+    .metrics {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      margin-bottom: 18px;
+    }
+
+    .metric {
+      background: var(--panel-strong);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 18px;
+      min-height: 132px;
+      box-shadow: var(--shadow);
+      display: grid;
+      align-content: space-between;
+      gap: 14px;
+    }
+
+    .metric-label {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      color: var(--muted);
+      font-weight: 750;
+      font-size: 14px;
+    }
+
+    .metric-value {
+      font-size: 30px;
+      line-height: 1.1;
+      font-weight: 800;
+      letter-spacing: 0;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .metric-note {
+      color: var(--soft);
+      font-size: 13px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .delta {
+      color: var(--green);
+      background: var(--green-soft);
+      padding: 3px 7px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 750;
+      white-space: nowrap;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1.45fr) minmax(340px, .75fr);
+      gap: 18px;
+      align-items: start;
+    }
+
+    .panel {
+      background: var(--panel-strong);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+
+    .panel-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 14px;
+      align-items: start;
+      padding: 18px 20px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .panel-title {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 800;
+      letter-spacing: 0;
+    }
+
+    .panel-sub {
+      margin: 4px 0 0;
+      color: var(--muted);
+    }
+
+    .form {
+      padding: 18px 20px 20px;
+      display: grid;
+      gap: 15px;
+    }
+
+    .field {
+      display: grid;
+      gap: 7px;
+    }
+
+    label {
+      font-weight: 750;
+    }
+
+    .hint {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .input-wrap {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      border: 1px solid var(--line-strong);
+      border-radius: 8px;
+      background: var(--panel);
+      overflow: hidden;
+      min-height: 46px;
+    }
+
+    input {
+      border: 0;
+      background: transparent;
+      min-width: 0;
+      padding: 10px 12px;
+      color: var(--ink);
+      font-variant-numeric: tabular-nums;
+      outline: none;
+      font-size: 17px;
+    }
+
+    .suffix {
+      color: var(--muted);
+      display: flex;
+      align-items: center;
+      padding: 0 12px;
+      border-left: 1px solid var(--line);
+      background: #f2f5ee;
+      white-space: nowrap;
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .form-actions {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: center;
+      padding-top: 4px;
+    }
+
+    .save-state {
+      color: var(--green);
+      font-size: 13px;
+      font-weight: 750;
+      min-height: 20px;
+    }
+
+    .chart {
+      padding: 18px 20px 22px;
+    }
+
+    .chart-bars {
+      height: 245px;
+      display: grid;
+      grid-template-columns: repeat(14, minmax(16px, 1fr));
+      align-items: end;
+      gap: 12px;
+      padding: 18px 8px 10px;
+      border-bottom: 1px solid var(--line);
+      background:
+        linear-gradient(to top, rgba(203, 211, 200, .35) 1px, transparent 1px) 0 0 / 100% 25%;
+    }
+
+    .bar-group {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      align-items: end;
+      gap: 3px;
+      height: 100%;
+      min-width: 0;
+    }
+
+    .bar {
+      border-radius: 4px 4px 0 0;
+      min-height: 4px;
+    }
+
+    .bar.revenue {
+      background: var(--blue);
+    }
+
+    .bar.cost {
+      background: var(--amber);
+    }
+
+    .bar.profit {
+      background: var(--green);
+    }
+
+    .legend {
+      display: flex;
+      gap: 14px;
+      flex-wrap: wrap;
+      margin-top: 14px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .legend span {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .legend i {
+      width: 10px;
+      height: 10px;
+      border-radius: 3px;
+      display: inline-block;
+    }
+
+    .diag {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      border-top: 1px solid var(--line);
+    }
+
+    .diag-item {
+      padding: 15px 20px;
+      border-right: 1px solid var(--line);
+    }
+
+    .diag-item:last-child {
+      border-right: 0;
+    }
+
+    .diag-k {
+      color: var(--muted);
+      font-weight: 750;
+      font-size: 13px;
+    }
+
+    .diag-v {
+      margin-top: 5px;
+      font-size: 22px;
+      font-weight: 800;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .table-wrap {
+      overflow-x: auto;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 860px;
+    }
+
+    th,
+    td {
+      text-align: left;
+      padding: 13px 16px;
+      border-bottom: 1px solid var(--line);
+      vertical-align: middle;
+      white-space: nowrap;
+    }
+
+    th {
+      background: #f4f6f1;
+      color: #424940;
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    td {
+      font-variant-numeric: tabular-nums;
+    }
+
+    .money {
+      font-family: var(--mono);
+      font-size: 14px;
+    }
+
+    .profit {
+      color: var(--green);
+      font-weight: 800;
+    }
+
+    .loss {
+      color: var(--red);
+      font-weight: 800;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 24px;
+      border-radius: 6px;
+      padding: 3px 8px;
+      font-size: 12px;
+      font-weight: 800;
+      border: 1px solid var(--line);
+      background: var(--panel);
+      color: var(--muted);
+    }
+
+    .badge.green {
+      color: var(--green);
+      background: var(--green-soft);
+      border-color: #b6dfce;
+    }
+
+    .badge.amber {
+      color: var(--amber);
+      background: var(--amber-soft);
+      border-color: #ecd0a4;
+    }
+
+    .notice {
+      margin-top: 16px;
+      border: 1px solid #e8d4aa;
+      background: #fbf2df;
+      color: #72500f;
+      border-radius: 8px;
+      padding: 12px 14px;
+      font-weight: 650;
+      font-size: 13px;
+    }
+
+    .toast {
+      position: fixed;
+      right: 24px;
+      bottom: 24px;
+      border: 1px solid #b6dfce;
+      background: var(--green);
+      color: white;
+      border-radius: 8px;
+      padding: 12px 14px;
+      box-shadow: var(--shadow);
+      transform: translateY(16px);
+      opacity: 0;
+      pointer-events: none;
+      transition: transform .2s ease, opacity .2s ease;
+      font-weight: 750;
+    }
+
+    .toast.show {
+      transform: translateY(0);
+      opacity: 1;
+    }
+
+    @media (max-width: 1120px) {
+      .app {
+        grid-template-columns: 1fr;
+      }
+
+      .sidebar {
+        position: static;
+        height: auto;
+        display: none;
+      }
+
+      .content {
+        padding: 18px;
+      }
+
+      .layout,
+      .metrics {
+        grid-template-columns: 1fr;
+      }
+
+      .page-head,
+      .toolbar {
+        grid-template-columns: 1fr;
+        display: grid;
+      }
+
+      .status-strip {
+        justify-content: flex-start;
+      }
+    }
+
+    @media (max-width: 680px) {
+      .segments {
+        width: 100%;
+        grid-template-columns: 1fr 1fr;
+      }
+
+      .seg {
+        padding: 0 10px;
+      }
+
+      .form-actions,
+      .panel-head {
+        display: grid;
+      }
+
+      .diag {
+        grid-template-columns: 1fr;
+      }
+
+      .diag-item {
+        border-right: 0;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand"><span class="brand-mark">B</span><span>Bifrost</span></div>
+      <div class="nav-group">
+        <div class="nav-title">Observability</div>
+        <a class="nav-item" href="#"><span class="nav-dot"></span>Dashboard</a>
+        <a class="nav-item" href="#"><span class="nav-dot"></span>LLM Logs</a>
+        <a class="nav-item active" href="#"><span class="nav-dot"></span>利润统计</a>
+      </div>
+      <div class="nav-group">
+        <div class="nav-title">Routing</div>
+        <a class="nav-item" href="#"><span class="nav-dot"></span>Adaptive Routing</a>
+        <a class="nav-item" href="#"><span class="nav-dot"></span>Routing Rules</a>
+      </div>
+    </aside>
+
+    <main class="content">
+      <header class="page-head">
+        <div>
+          <h1>利润统计</h1>
+          <p class="lead">按真实请求、成本和出售价格计算收入与利润。</p>
+        </div>
+        <div class="status-strip">
+          <span class="pill good">售价已生效：$2 / $12</span>
+          <span class="pill">时区：Asia/Shanghai</span>
+          <span class="pill">最近回填：13:42</span>
+        </div>
+      </header>
+
+      <div class="toolbar">
+        <div class="segments" role="tablist" aria-label="统计范围">
+          <button class="seg active" data-period="today" type="button">今日</button>
+          <button class="seg" data-period="yesterday" type="button">昨日</button>
+          <button class="seg" data-period="7d" type="button">最近 7 日</button>
+          <button class="seg" data-period="all" type="button">全部累计</button>
+        </div>
+        <button class="ghost-button" id="refreshBtn" type="button">刷新数据</button>
+      </div>
+
+      <section class="grid metrics" aria-label="利润概览">
+        <article class="metric">
+          <div class="metric-label">收入 <span class="delta" id="revenueDelta">+8.7%</span></div>
+          <div>
+            <div class="metric-value money" id="revenueValue">$184.26</div>
+            <div class="metric-note" id="revenueNote">成功请求 1,284 次</div>
+          </div>
+        </article>
+        <article class="metric">
+          <div class="metric-label">成本 <span class="delta" id="costDelta">-2.1%</span></div>
+          <div>
+            <div class="metric-value money" id="costValue">$42.18</div>
+            <div class="metric-note" id="costNote">含失败尝试成本 $1.36</div>
+          </div>
+        </article>
+        <article class="metric">
+          <div class="metric-label">利润 <span class="delta" id="profitDelta">+12.4%</span></div>
+          <div>
+            <div class="metric-value money profit" id="profitValue">$142.08</div>
+            <div class="metric-note" id="profitNote">收入 - provider 成本</div>
+          </div>
+        </article>
+        <article class="metric">
+          <div class="metric-label">毛利率 <span class="delta" id="marginDelta">稳定</span></div>
+          <div>
+            <div class="metric-value" id="marginValue">77.1%</div>
+            <div class="metric-note" id="marginNote">利润 / 收入</div>
+          </div>
+        </article>
+      </section>
+
+      <div class="layout">
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <h2 class="panel-title">每日利润趋势</h2>
+              <p class="panel-sub">收入、成本、利润按业务日期聚合。</p>
+            </div>
+            <span class="badge green">自动入账</span>
+          </div>
+          <div class="chart">
+            <div class="chart-bars" aria-label="趋势图">
+              <div class="bar-group"><span class="bar revenue" style="height:48%"></span><span class="bar cost" style="height:18%"></span><span class="bar profit" style="height:34%"></span></div>
+              <div class="bar-group"><span class="bar revenue" style="height:54%"></span><span class="bar cost" style="height:20%"></span><span class="bar profit" style="height:38%"></span></div>
+              <div class="bar-group"><span class="bar revenue" style="height:49%"></span><span class="bar cost" style="height:23%"></span><span class="bar profit" style="height:31%"></span></div>
+              <div class="bar-group"><span class="bar revenue" style="height:62%"></span><span class="bar cost" style="height:21%"></span><span class="bar profit" style="height:47%"></span></div>
+              <div class="bar-group"><span class="bar revenue" style="height:57%"></span><span class="bar cost" style="height:19%"></span><span class="bar profit" style="height:43%"></span></div>
+              <div class="bar-group"><span class="bar revenue" style="height:66%"></span><span class="bar cost" style="height:27%"></span><span class="bar profit" style="height:45%"></span></div>
+              <div class="bar-group"><span class="bar revenue" style="height:72%"></span><span class="bar cost" style="height:25%"></span><span class="bar profit" style="height:54%"></span></div>
+              <div class="bar-group"><span class="bar revenue" style="height:69%"></span><span class="bar cost" style="height:24%"></span><span class="bar profit" style="height:51%"></span></div>
+              <div class="bar-group"><span class="bar revenue" style="height:76%"></span><span class="bar cost" style="height:27%"></span><span class="bar profit" style="height:57%"></span></div>
+              <div class="bar-group"><span class="bar revenue" style="height:84%"></span><span class="bar cost" style="height:31%"></span><span class="bar profit" style="height:63%"></span></div>
+              <div class="bar-group"><span class="bar revenue" style="height:78%"></span><span class="bar cost" style="height:26%"></span><span class="bar profit" style="height:60%"></span></div>
+              <div class="bar-group"><span class="bar revenue" style="height:88%"></span><span class="bar cost" style="height:33%"></span><span class="bar profit" style="height:65%"></span></div>
+              <div class="bar-group"><span class="bar revenue" style="height:81%"></span><span class="bar cost" style="height:29%"></span><span class="bar profit" style="height:61%"></span></div>
+              <div class="bar-group"><span class="bar revenue" style="height:90%"></span><span class="bar cost" style="height:34%"></span><span class="bar profit" style="height:67%"></span></div>
+            </div>
+            <div class="legend">
+              <span><i style="background:var(--blue)"></i>收入</span>
+              <span><i style="background:var(--amber)"></i>成本</span>
+              <span><i style="background:var(--green)"></i>利润</span>
+            </div>
+          </div>
+          <div class="diag">
+            <div class="diag-item">
+              <div class="diag-k">缺失成本</div>
+              <div class="diag-v">0</div>
+            </div>
+            <div class="diag-item">
+              <div class="diag-k">缺失 token</div>
+              <div class="diag-v">2</div>
+            </div>
+          </div>
+        </section>
+
+        <aside class="panel">
+          <div class="panel-head">
+            <div>
+              <h2 class="panel-title">出售价格设置</h2>
+              <p class="panel-sub">保存后只影响之后的新请求。</p>
+            </div>
+          </div>
+          <form class="form" id="priceForm">
+            <div class="field">
+              <label for="inputPrice">输入售价</label>
+              <div class="input-wrap">
+                <input id="inputPrice" value="2" inputmode="decimal" />
+                <span class="suffix">USD / 100 万 input tokens</span>
+              </div>
+              <div class="hint">用于计算 prompt_tokens 的销售收入。</div>
+            </div>
+            <div class="field">
+              <label for="outputPrice">输出售价</label>
+              <div class="input-wrap">
+                <input id="outputPrice" value="12" inputmode="decimal" />
+                <span class="suffix">USD / 100 万 output tokens</span>
+              </div>
+              <div class="hint">用于计算 completion_tokens 的销售收入。</div>
+            </div>
+            <div class="form-actions">
+              <div class="save-state" id="saveState">当前售价：$2 / $12</div>
+              <button class="primary-button" type="submit">保存出售价格</button>
+            </div>
+            <div class="notice">历史利润已经按当时售价固化，保存新售价不会重算旧数据。</div>
+            <button class="ghost-button" id="backfillBtn" type="button">从现有日志回填利润</button>
+          </form>
+        </aside>
+      </div>
+
+      <section class="panel" style="margin-top:18px">
+        <div class="panel-head">
+          <div>
+            <h2 class="panel-title">每日明细</h2>
+            <p class="panel-sub">用于核对收入、成本和利润是否符合预期。</p>
+          </div>
+          <span class="badge amber">示例数据</span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>日期</th>
+                <th>请求数</th>
+                <th>成功</th>
+                <th>输入 tokens</th>
+                <th>输出 tokens</th>
+                <th>收入</th>
+                <th>成本</th>
+                <th>利润</th>
+                <th>毛利率</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>2026-05-04</td>
+                <td>1,284</td>
+                <td><span class="badge green">1,276</span></td>
+                <td>29,420,000</td>
+                <td>10,452,000</td>
+                <td class="money">$184.26</td>
+                <td class="money">$42.18</td>
+                <td class="money profit">$142.08</td>
+                <td>77.1%</td>
+              </tr>
+              <tr>
+                <td>2026-05-03</td>
+                <td>1,106</td>
+                <td><span class="badge green">1,089</span></td>
+                <td>24,880,000</td>
+                <td>8,140,000</td>
+                <td class="money">$147.44</td>
+                <td class="money">$39.02</td>
+                <td class="money profit">$108.42</td>
+                <td>73.5%</td>
+              </tr>
+              <tr>
+                <td>2026-05-02</td>
+                <td>932</td>
+                <td><span class="badge green">921</span></td>
+                <td>20,640,000</td>
+                <td>7,286,000</td>
+                <td class="money">$128.71</td>
+                <td class="money">$31.48</td>
+                <td class="money profit">$97.23</td>
+                <td>75.5%</td>
+              </tr>
+              <tr>
+                <td>2026-05-01</td>
+                <td>704</td>
+                <td><span class="badge green">696</span></td>
+                <td>13,020,000</td>
+                <td>4,906,000</td>
+                <td class="money">$84.91</td>
+                <td class="money">$22.60</td>
+                <td class="money profit">$62.31</td>
+                <td>73.4%</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div class="toast" id="toast">已保存</div>
+
+  <script>
+    const periodData = {
+      today: {
+        revenue: "$184.26",
+        cost: "$42.18",
+        profit: "$142.08",
+        margin: "77.1%",
+        revenueNote: "成功请求 1,284 次",
+        costNote: "含失败尝试成本 $1.36",
+        profitNote: "收入 - provider 成本",
+        marginNote: "利润 / 收入",
+        revenueDelta: "+8.7%",
+        costDelta: "-2.1%",
+        profitDelta: "+12.4%",
+        marginDelta: "稳定"
+      },
+      yesterday: {
+        revenue: "$147.44",
+        cost: "$39.02",
+        profit: "$108.42",
+        margin: "73.5%",
+        revenueNote: "成功请求 1,089 次",
+        costNote: "失败尝试成本 $2.04",
+        profitNote: "昨日已固化售价",
+        marginNote: "利润 / 收入",
+        revenueDelta: "+4.1%",
+        costDelta: "+1.9%",
+        profitDelta: "+5.0%",
+        marginDelta: "-0.6%"
+      },
+      "7d": {
+        revenue: "$842.70",
+        cost: "$206.15",
+        profit: "$636.55",
+        margin: "75.5%",
+        revenueNote: "成功请求 6,932 次",
+        costNote: "含重试与兜底成本",
+        profitNote: "最近 7 日累计",
+        marginNote: "区间综合毛利率",
+        revenueDelta: "+16.8%",
+        costDelta: "+9.4%",
+        profitDelta: "+19.6%",
+        marginDelta: "+1.7%"
+      },
+      all: {
+        revenue: "$3,846.92",
+        cost: "$928.63",
+        profit: "$2,918.29",
+        margin: "75.9%",
+        revenueNote: "利润账本累计",
+        costNote: "不随日志清空而清空",
+        profitNote: "按入账时售价计算",
+        marginNote: "全部累计口径",
+        revenueDelta: "累计",
+        costDelta: "累计",
+        profitDelta: "累计",
+        marginDelta: "累计"
+      }
+    };
+
+    const ids = ["revenue", "cost", "profit", "margin"];
+    const setText = (id, value) => { document.getElementById(id).textContent = value; };
+    const toast = document.getElementById("toast");
+    let toastTimer = null;
+
+    function showToast(text) {
+      toast.textContent = text;
+      toast.classList.add("show");
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => toast.classList.remove("show"), 1800);
+    }
+
+    document.querySelectorAll(".seg").forEach((button) => {
+      button.addEventListener("click", () => {
+        document.querySelectorAll(".seg").forEach((item) => item.classList.remove("active"));
+        button.classList.add("active");
+        const data = periodData[button.dataset.period];
+        ids.forEach((key) => {
+          setText(`${key}Value`, data[key]);
+          setText(`${key}Note`, data[`${key}Note`]);
+          setText(`${key}Delta`, data[`${key}Delta`]);
+        });
+      });
+    });
+
+    document.getElementById("priceForm").addEventListener("submit", (event) => {
+      event.preventDefault();
+      const input = document.getElementById("inputPrice").value || "0";
+      const output = document.getElementById("outputPrice").value || "0";
+      setText("saveState", `当前售价：$${input} / $${output}`);
+      document.querySelector(".pill.good").textContent = `售价已生效：$${input} / $${output}`;
+      showToast("出售价格已保存，只影响之后的新请求");
+    });
+
+    document.getElementById("refreshBtn").addEventListener("click", () => {
+      showToast("利润数据已刷新");
+    });
+
+    document.getElementById("backfillBtn").addEventListener("click", () => {
+      showToast("已开始从现有日志回填利润");
+    });
+  </script>
+</body>
+</html>

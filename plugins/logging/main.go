@@ -175,6 +175,10 @@ func (p *LoggerPlugin) scheduleDeferredUsageUpdate(ctx *schemas.BifrostContext, 
 		}
 		if updErr := p.store.Update(p.ctx, requestID, usageUpdates); updErr != nil {
 			p.logger.Warn("failed to update deferred usage for request %s: %v", requestID, updErr)
+			return
+		}
+		if syncErr := p.syncProfitEventForLogID(p.ctx, requestID); syncErr != nil {
+			p.logger.Warn("failed to update profit event for deferred usage request %s: %v", requestID, syncErr)
 		}
 	}()
 }
