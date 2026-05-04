@@ -61,6 +61,7 @@ import (
 	"time"
 
 	_ "go.uber.org/automaxprocs" // Automatically set GOMAXPROCS based on container cgroup limits
+	_ "time/tzdata"              // Embed timezone data for minimal container images without /usr/share/zoneinfo.
 
 	bifrost "github.com/maximhq/bifrost/core"
 	schemas "github.com/maximhq/bifrost/core/schemas"
