@@ -3,13 +3,14 @@ package logstore
 import (
 	"context"
 	"math"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-func TestSearchLogs_AssignsRequestGroupingMetadataAndDeserializesFields(t *testing.T) {
+func TestSearchLogs_AssignsRequestGroupingMetadataAndKeepsListPayloadLightweight(t *testing.T) {
 	store := newTestSQLiteStore(t)
 	ctx := context.Background()
 	groupID := "req-group-1"
@@ -79,8 +80,11 @@ func TestSearchLogs_AssignsRequestGroupingMetadataAndDeserializesFields(t *testi
 	if first.GroupID != groupID || first.AttemptSequence != 1 || first.IsFinalAttempt {
 		t.Fatalf("unexpected primary grouping metadata: %+v", first)
 	}
-	if len(first.InputHistoryParsed) != 1 {
-		t.Fatalf("expected input history to be deserialized, got %+v", first.InputHistoryParsed)
+	if len(first.InputHistoryParsed) != 0 {
+		t.Fatalf("expected list query to omit input history, got %+v", first.InputHistoryParsed)
+	}
+	if !strings.Contains(first.ContentSummary, userText) {
+		t.Fatalf("expected list query to include content summary preview, got %q", first.ContentSummary)
 	}
 	if first.RouteLayerIndex == nil || *first.RouteLayerIndex != 0 {
 		t.Fatalf("expected primary route layer 0, got %+v", first.RouteLayerIndex)
@@ -103,6 +107,7 @@ func TestSearchLogs_AssignsRequestGroupingMetadataAndDeserializesFields(t *testi
 func TestFindByID_ReturnsRequestGroupingMetadata(t *testing.T) {
 	store := newTestSQLiteStore(t)
 	ctx := context.Background()
+	userText := "detail keeps full input"
 
 	requireCreateLog(t, store, &Log{
 		ID:            "req-detail",
@@ -112,6 +117,12 @@ func TestFindByID_ReturnsRequestGroupingMetadata(t *testing.T) {
 		Model:         "gpt-4.1",
 		FallbackIndex: 0,
 		Status:        "error",
+		InputHistoryParsed: []schemas.ChatMessage{{
+			Role: schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{
+				ContentStr: &userText,
+			},
+		}},
 	})
 	requireCreateLog(t, store, &Log{
 		ID:              "req-detail-fb1",
@@ -131,6 +142,17 @@ func TestFindByID_ReturnsRequestGroupingMetadata(t *testing.T) {
 
 	if logEntry.GroupID != "req-detail" || logEntry.AttemptSequence != 2 || !logEntry.IsFinalAttempt {
 		t.Fatalf("unexpected detail grouping metadata: %+v", logEntry)
+	}
+	if len(logEntry.InputHistoryParsed) != 0 {
+		t.Fatalf("expected fallback detail without input history, got %+v", logEntry.InputHistoryParsed)
+	}
+
+	primary, err := store.FindByID(ctx, "req-detail")
+	if err != nil {
+		t.Fatalf("FindByID() primary error = %v", err)
+	}
+	if len(primary.InputHistoryParsed) != 1 {
+		t.Fatalf("expected detail query to deserialize input history, got %+v", primary.InputHistoryParsed)
 	}
 }
 

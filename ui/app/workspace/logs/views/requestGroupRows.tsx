@@ -134,7 +134,7 @@ export function RequestGroupRows({
 											<div className="text-muted-foreground line-clamp-1 text-[11px] leading-4">
 												{group.latestAttempt.input_history?.[0]?.content && typeof group.latestAttempt.input_history[0].content === "string"
 													? group.latestAttempt.input_history[0].content
-													: group.latestAttempt.model}
+													: group.latestAttempt.content_summary || group.latestAttempt.model}
 											</div>
 										</div>
 									</div>

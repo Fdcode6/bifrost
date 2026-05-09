@@ -441,10 +441,10 @@ func (s *RDBLogStore) SearchLogs(ctx context.Context, filters SearchFilters, pag
 }
 
 // listSelectColumns returns a SELECT clause for list queries that omits large
-// output/detail TEXT columns and uses SQL JSON functions to extract only the
-// last element from input_history and responses_input_history arrays.
+// request/response payload columns. Full payloads are loaded only by detail
+// lookups; list views use content_summary for the message preview.
 func (s *RDBLogStore) listSelectColumns() string {
-	baseCols := strings.Join([]string{
+	return strings.Join([]string{
 		"id", "parent_request_id", "timestamp", "object_type", "provider", "model",
 		"number_of_retries", "fallback_index", "route_layer_index",
 		"selected_key_id", "selected_key_name",
@@ -458,26 +458,6 @@ func (s *RDBLogStore) listSelectColumns() string {
 		"prompt_tokens", "completion_tokens", "total_tokens",
 		"created_at",
 	}, ", ")
-
-	var inputHistoryExpr, responsesInputExpr string
-	switch s.db.Dialector.Name() {
-	case "postgres":
-		inputHistoryExpr = `CASE WHEN input_history IS NOT NULL AND input_history != '' AND input_history != '[]'
-			THEN jsonb_build_array(input_history::jsonb->-1)::text
-			ELSE input_history END AS input_history`
-		responsesInputExpr = `CASE WHEN responses_input_history IS NOT NULL AND responses_input_history != '' AND responses_input_history != '[]'
-			THEN jsonb_build_array(responses_input_history::jsonb->-1)::text
-			ELSE responses_input_history END AS responses_input_history`
-	default: // sqlite
-		inputHistoryExpr = `CASE WHEN input_history IS NOT NULL AND input_history != '' AND input_history != '[]'
-			THEN json_array(json_extract(input_history, '$[' || (json_array_length(input_history) - 1) || ']'))
-			ELSE input_history END AS input_history`
-		responsesInputExpr = `CASE WHEN responses_input_history IS NOT NULL AND responses_input_history != '' AND responses_input_history != '[]'
-			THEN json_array(json_extract(responses_input_history, '$[' || (json_array_length(responses_input_history) - 1) || ']'))
-			ELSE responses_input_history END AS responses_input_history`
-	}
-
-	return baseCols + ", " + inputHistoryExpr + ", " + responsesInputExpr
 }
 
 // GetStats calculates statistics for logs matching the given filters.

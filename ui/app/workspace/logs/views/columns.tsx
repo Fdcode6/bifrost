@@ -73,6 +73,9 @@ function getMessage(log?: LogEntry) {
 	} else if (log?.image_generation_input?.prompt) {
 		return log.image_generation_input.prompt;
 	}
+	if (log?.content_summary) {
+		return log.content_summary;
+	}
 	const obj = log?.object as string | undefined;
 	if (obj === "image_edit" || obj === "image_edit_stream" || obj === "image_variation") {
 		return "Image file";
@@ -80,170 +83,174 @@ function getMessage(log?: LogEntry) {
 	return "";
 }
 
-export const createColumns = (onDelete: (log: LogEntry) => void, hasDeleteAccess = true, metadataKeys: string[] = []): ColumnDef<LogEntry>[] => {
+export const createColumns = (
+	onDelete: (log: LogEntry) => void,
+	hasDeleteAccess = true,
+	metadataKeys: string[] = [],
+): ColumnDef<LogEntry>[] => {
 	const baseColumns: ColumnDef<LogEntry>[] = [
-	{
-		accessorKey: "status",
-		header: "",
-		size: LOGS_COLUMN_SIZES.status,
-		minSize: LOGS_COLUMN_SIZES.status,
-		maxSize: LOGS_COLUMN_SIZES.status,
-		cell: ({ row }) => {
-			const status = row.original.status as Status;
-			return <div className={`h-full min-h-[24px] w-1 rounded-sm ${StatusBarColors[status]}`} />;
+		{
+			accessorKey: "status",
+			header: "",
+			size: LOGS_COLUMN_SIZES.status,
+			minSize: LOGS_COLUMN_SIZES.status,
+			maxSize: LOGS_COLUMN_SIZES.status,
+			cell: ({ row }) => {
+				const status = row.original.status as Status;
+				return <div className={`h-full min-h-[24px] w-1 rounded-sm ${StatusBarColors[status]}`} />;
+			},
 		},
-	},
-	{
-		accessorKey: "timestamp",
-		header: ({ column }) => (
-			<Button variant="ghost" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
-				Time
-				<ArrowUpDown className="ml-2 h-4 w-4" />
-			</Button>
-		),
-		size: LOGS_COLUMN_SIZES.timestamp,
-		minSize: LOGS_COLUMN_SIZES.timestamp,
-		cell: ({ row }) => {
-			const timestamp = row.original.timestamp;
-			return <div className="text-xs">{moment(timestamp).format("YYYY-MM-DD hh:mm:ss A (Z)")}</div>;
+		{
+			accessorKey: "timestamp",
+			header: ({ column }) => (
+				<Button variant="ghost" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
+					Time
+					<ArrowUpDown className="ml-2 h-4 w-4" />
+				</Button>
+			),
+			size: LOGS_COLUMN_SIZES.timestamp,
+			minSize: LOGS_COLUMN_SIZES.timestamp,
+			cell: ({ row }) => {
+				const timestamp = row.original.timestamp;
+				return <div className="text-xs">{moment(timestamp).format("YYYY-MM-DD hh:mm:ss A (Z)")}</div>;
+			},
 		},
-	},
-	{
-		id: "request_type",
-		header: "Type",
-		size: LOGS_COLUMN_SIZES.requestType,
-		minSize: LOGS_COLUMN_SIZES.requestType,
-		cell: ({ row }) => {
-			return (
-				<Badge variant="outline" className={`${RequestTypeColors[row.original.object as keyof typeof RequestTypeColors]} text-xs`}>
-					{RequestTypeLabels[row.original.object as keyof typeof RequestTypeLabels]}
-				</Badge>
-			);
+		{
+			id: "request_type",
+			header: "Type",
+			size: LOGS_COLUMN_SIZES.requestType,
+			minSize: LOGS_COLUMN_SIZES.requestType,
+			cell: ({ row }) => {
+				return (
+					<Badge variant="outline" className={`${RequestTypeColors[row.original.object as keyof typeof RequestTypeColors]} text-xs`}>
+						{RequestTypeLabels[row.original.object as keyof typeof RequestTypeLabels]}
+					</Badge>
+				);
+			},
 		},
-	},
-	{
-		accessorKey: "provider",
-		header: "Provider",
-		size: LOGS_COLUMN_SIZES.provider,
-		minSize: LOGS_COLUMN_SIZES.provider,
-		cell: ({ row }) => {
-			const provider = row.original.provider as ProviderName;
-			return (
-				<Badge variant="secondary" className={`font-mono text-xs uppercase`}>
-					<RenderProviderIcon provider={provider as ProviderIconType} size="sm" />
-					{provider}
-				</Badge>
-			);
+		{
+			accessorKey: "provider",
+			header: "Provider",
+			size: LOGS_COLUMN_SIZES.provider,
+			minSize: LOGS_COLUMN_SIZES.provider,
+			cell: ({ row }) => {
+				const provider = row.original.provider as ProviderName;
+				return (
+					<Badge variant="secondary" className={`font-mono text-xs uppercase`}>
+						<RenderProviderIcon provider={provider as ProviderIconType} size="sm" />
+						{provider}
+					</Badge>
+				);
+			},
 		},
-	},
-	{
-		accessorKey: "model",
-		header: "Model",
-		size: LOGS_COLUMN_SIZES.model,
-		minSize: LOGS_COLUMN_SIZES.model,
-		cell: ({ row }) => <div className="truncate font-mono text-xs font-normal">{row.original.model || "N/A"}</div>,
-	},
-	{
-		accessorKey: "latency",
-		header: ({ column }) => (
-			<Button variant="ghost" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
-				Latency
-				<ArrowUpDown className="ml-2 h-4 w-4" />
-			</Button>
-		),
-		size: LOGS_COLUMN_SIZES.latency,
-		minSize: LOGS_COLUMN_SIZES.latency,
-		cell: ({ row }) => {
-			const latency = row.original.latency;
-			return (
-				<div className="font-mono text-sm">{latency === undefined || latency === null ? "N/A" : `${latency.toLocaleString()}ms`}</div>
-			);
+		{
+			accessorKey: "model",
+			header: "Model",
+			size: LOGS_COLUMN_SIZES.model,
+			minSize: LOGS_COLUMN_SIZES.model,
+			cell: ({ row }) => <div className="truncate font-mono text-xs font-normal">{row.original.model || "N/A"}</div>,
 		},
-	},
-	{
-		accessorKey: "tokens",
-		header: ({ column }) => (
-			<Button variant="ghost" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
-				Tokens
-				<ArrowUpDown className="ml-2 h-4 w-4" />
-			</Button>
-		),
-		size: LOGS_COLUMN_SIZES.tokens,
-		minSize: LOGS_COLUMN_SIZES.tokens,
-		cell: ({ row }) => {
-			const tokenUsage = row.original.token_usage;
-			if (!tokenUsage) {
-				return <div className="font-mono text-sm">N/A</div>;
-			}
+		{
+			accessorKey: "latency",
+			header: ({ column }) => (
+				<Button variant="ghost" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
+					Latency
+					<ArrowUpDown className="ml-2 h-4 w-4" />
+				</Button>
+			),
+			size: LOGS_COLUMN_SIZES.latency,
+			minSize: LOGS_COLUMN_SIZES.latency,
+			cell: ({ row }) => {
+				const latency = row.original.latency;
+				return (
+					<div className="font-mono text-sm">{latency === undefined || latency === null ? "N/A" : `${latency.toLocaleString()}ms`}</div>
+				);
+			},
+		},
+		{
+			accessorKey: "tokens",
+			header: ({ column }) => (
+				<Button variant="ghost" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
+					Tokens
+					<ArrowUpDown className="ml-2 h-4 w-4" />
+				</Button>
+			),
+			size: LOGS_COLUMN_SIZES.tokens,
+			minSize: LOGS_COLUMN_SIZES.tokens,
+			cell: ({ row }) => {
+				const tokenUsage = row.original.token_usage;
+				if (!tokenUsage) {
+					return <div className="font-mono text-sm">N/A</div>;
+				}
 
-			return (
-				<div className="text-sm">
-					<div className="font-mono">
-						{tokenUsage.total_tokens.toLocaleString()}{" "}
-						{tokenUsage.completion_tokens != null && tokenUsage.prompt_tokens != null
-							? `(${tokenUsage.prompt_tokens.toLocaleString()}+${tokenUsage.completion_tokens.toLocaleString()})`
-							: ""}
+				return (
+					<div className="text-sm">
+						<div className="font-mono">
+							{tokenUsage.total_tokens.toLocaleString()}{" "}
+							{tokenUsage.completion_tokens != null && tokenUsage.prompt_tokens != null
+								? `(${tokenUsage.prompt_tokens.toLocaleString()}+${tokenUsage.completion_tokens.toLocaleString()})`
+								: ""}
+						</div>
 					</div>
-				</div>
-			);
+				);
+			},
 		},
-	},
-	{
-		accessorKey: "cost",
-		header: ({ column }) => (
-			<Button variant="ghost" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
-				Cost
-				<ArrowUpDown className="ml-2 h-4 w-4" />
-			</Button>
-		),
-		size: LOGS_COLUMN_SIZES.cost,
-		minSize: LOGS_COLUMN_SIZES.cost,
-		cell: ({ row }) => {
-			if (!row.original.cost) {
-				return <div className="font-mono text-xs">N/A</div>;
-			}
+		{
+			accessorKey: "cost",
+			header: ({ column }) => (
+				<Button variant="ghost" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
+					Cost
+					<ArrowUpDown className="ml-2 h-4 w-4" />
+				</Button>
+			),
+			size: LOGS_COLUMN_SIZES.cost,
+			minSize: LOGS_COLUMN_SIZES.cost,
+			cell: ({ row }) => {
+				if (!row.original.cost) {
+					return <div className="font-mono text-xs">N/A</div>;
+				}
 
-			return (
-				<div className="text-xs">
-					<div className="font-mono">{row.original.cost?.toFixed(4)}</div>
-				</div>
-			);
-		},
-	},
-	{
-		accessorKey: "input",
-		header: "Message",
-		size: LOGS_COLUMN_SIZES.input,
-		minSize: LOGS_COLUMN_SIZES.input,
-		cell: ({ row }) => {
-			const input = getMessage(row.original);
-			const isLargePayload = row.original.is_large_payload_request || row.original.is_large_payload_response;
-			return (
-				<div className="flex min-w-0 items-center gap-1.5">
-					{isLargePayload && (
-						<span
-							className="shrink-0 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/50 dark:text-amber-400"
-							title="Large payload - streamed directly to provider"
-						>
-							LP
-						</span>
-					)}
-					<div className="min-w-0 truncate font-mono text-sm font-normal" title={input || "-"}>
-						{input ||
-							(isLargePayload
-								? `Large payload ${
-										row.original.is_large_payload_request && row.original.is_large_payload_response
-											? "request & response"
-											: row.original.is_large_payload_request
-												? "request"
-												: "response"
-									}`
-								: "-")}
+				return (
+					<div className="text-xs">
+						<div className="font-mono">{row.original.cost?.toFixed(4)}</div>
 					</div>
-				</div>
-			);
+				);
+			},
 		},
-	},
+		{
+			accessorKey: "input",
+			header: "Message",
+			size: LOGS_COLUMN_SIZES.input,
+			minSize: LOGS_COLUMN_SIZES.input,
+			cell: ({ row }) => {
+				const input = getMessage(row.original);
+				const isLargePayload = row.original.is_large_payload_request || row.original.is_large_payload_response;
+				return (
+					<div className="flex min-w-0 items-center gap-1.5">
+						{isLargePayload && (
+							<span
+								className="shrink-0 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/50 dark:text-amber-400"
+								title="Large payload - streamed directly to provider"
+							>
+								LP
+							</span>
+						)}
+						<div className="min-w-0 truncate font-mono text-sm font-normal" title={input || "-"}>
+							{input ||
+								(isLargePayload
+									? `Large payload ${
+											row.original.is_large_payload_request && row.original.is_large_payload_response
+												? "request & response"
+												: row.original.is_large_payload_request
+													? "request"
+													: "response"
+										}`
+									: "-")}
+						</div>
+					</div>
+				);
+			},
+		},
 	];
 
 	// Generate dynamic metadata columns
@@ -266,7 +273,14 @@ export const createColumns = (onDelete: (log: LogEntry) => void, hasDeleteAccess
 		cell: ({ row }) => {
 			const log = row.original;
 			return (
-				<Button variant="outline" size="icon" aria-label="Delete log" className="text-destructive hover:bg-destructive/10 hover:text-destructive border-destructive/30" onClick={() => onDelete(log)} disabled={!hasDeleteAccess}>
+				<Button
+					variant="outline"
+					size="icon"
+					aria-label="Delete log"
+					className="text-destructive hover:bg-destructive/10 hover:text-destructive border-destructive/30"
+					onClick={() => onDelete(log)}
+					disabled={!hasDeleteAccess}
+				>
 					<Trash2 />
 				</Button>
 			);

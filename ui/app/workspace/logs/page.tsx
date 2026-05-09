@@ -153,7 +153,8 @@ export default function LogsPage() {
 		},
 	);
 
-	// Derive selectedLog: find in current logs array, or fetch by ID from API
+	// Derive selectedLog: use the current page row immediately, then replace it
+	// with the detail API payload so list queries can stay lightweight.
 	const selectedLogId = urlState.selected_log || null;
 	const selectedLogFromData = useMemo(
 		() => (selectedLogId ? (logs.find((l) => l.id === selectedLogId) ?? null) : null),
@@ -162,7 +163,7 @@ export default function LogsPage() {
 
 	const activeLogFetchId = useRef<string | null>(null);
 	useEffect(() => {
-		if (!selectedLogId || selectedLogFromData) {
+		if (!selectedLogId) {
 			setFetchedLog(null);
 			activeLogFetchId.current = null;
 			return;
@@ -170,6 +171,7 @@ export default function LogsPage() {
 		// Track which log ID this fetch is for to prevent stale responses
 		const fetchId = selectedLogId;
 		activeLogFetchId.current = fetchId;
+		setFetchedLog(null);
 		triggerGetLogById(selectedLogId).then((result) => {
 			if (activeLogFetchId.current === fetchId) {
 				if (result.data) {
@@ -179,9 +181,9 @@ export default function LogsPage() {
 				}
 			}
 		});
-	}, [selectedLogId, selectedLogFromData, triggerGetLogById]);
+	}, [selectedLogId, triggerGetLogById]);
 
-	const selectedLog = selectedLogFromData ?? fetchedLog;
+	const selectedLog = fetchedLog?.id === selectedLogId ? fetchedLog : selectedLogFromData;
 
 	useEffect(() => {
 		if (!selectedLog) {
