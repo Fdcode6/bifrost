@@ -44,6 +44,10 @@ type LogStore interface {
 	BulkUpdateCost(ctx context.Context, updates map[string]float64) error
 	GetProfitSettings(ctx context.Context) (*ProfitSettings, error)
 	SaveProfitSettings(ctx context.Context, settings *ProfitSettings) (*ProfitSettings, error)
+	GetRoutingRuleProfitSettings(ctx context.Context, routingRuleID string) (*ProfitSettings, bool, error)
+	ListRoutingRuleProfitSettings(ctx context.Context) ([]RoutingRuleProfitSettings, error)
+	SaveRoutingRuleProfitSettings(ctx context.Context, routingRuleID string, settings *ProfitSettings) (*ProfitSettings, error)
+	DeleteRoutingRuleProfitSettings(ctx context.Context, routingRuleID string) error
 	FindProfitEvent(ctx context.Context, logID string) (*ProfitEvent, error)
 	UpsertProfitEventFromLog(ctx context.Context, entry *Log) (*ProfitEvent, error)
 	GetProfitSummary(ctx context.Context, query ProfitQuery) (*ProfitSummary, error)

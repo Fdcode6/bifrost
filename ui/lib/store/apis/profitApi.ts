@@ -4,6 +4,7 @@ import type {
 	ProfitDailyResponse,
 	ProfitPreset,
 	ProfitReconciliationStatus,
+	RoutingRuleProfitSettingsResponse,
 	ProfitSettings,
 	ProfitSummaryResponse,
 } from "@/lib/types/profit";
@@ -16,11 +17,36 @@ export const profitApi = baseApi.injectEndpoints({
 			query: () => "/profit/settings",
 			providesTags: ["Profit"],
 		}),
-		updateProfitSettings: builder.mutation<ProfitSettings, Pick<ProfitSettings, "sell_input_per_1m_usd" | "sell_output_per_1m_usd" | "timezone">>({
+		updateProfitSettings: builder.mutation<
+			ProfitSettings,
+			Pick<ProfitSettings, "sell_input_per_1m_usd" | "sell_output_per_1m_usd" | "timezone">
+		>({
 			query: (body) => ({
 				url: "/profit/settings",
 				method: "PUT",
 				body,
+			}),
+			invalidatesTags: ["Profit"],
+		}),
+		getRoutingRuleProfitSettings: builder.query<RoutingRuleProfitSettingsResponse, void>({
+			query: () => "/profit/routing-rule-prices",
+			providesTags: ["Profit"],
+		}),
+		updateRoutingRuleProfitSettings: builder.mutation<
+			ProfitSettings,
+			{ routingRuleId: string } & Pick<ProfitSettings, "sell_input_per_1m_usd" | "sell_output_per_1m_usd" | "timezone">
+		>({
+			query: ({ routingRuleId, ...body }) => ({
+				url: `/profit/routing-rule-prices/${encodeURIComponent(routingRuleId)}`,
+				method: "PUT",
+				body,
+			}),
+			invalidatesTags: ["Profit"],
+		}),
+		deleteRoutingRuleProfitSettings: builder.mutation<{ message: string }, string>({
+			query: (routingRuleId) => ({
+				url: `/profit/routing-rule-prices/${encodeURIComponent(routingRuleId)}`,
+				method: "DELETE",
 			}),
 			invalidatesTags: ["Profit"],
 		}),
@@ -62,10 +88,13 @@ export const profitApi = baseApi.injectEndpoints({
 
 export const {
 	useBackfillProfitEventsMutation,
+	useDeleteRoutingRuleProfitSettingsMutation,
 	useGetProfitBreakdownQuery,
 	useGetProfitDailyQuery,
 	useGetProfitReconciliationStatusQuery,
+	useGetRoutingRuleProfitSettingsQuery,
 	useGetProfitSettingsQuery,
 	useGetProfitSummaryQuery,
+	useUpdateRoutingRuleProfitSettingsMutation,
 	useUpdateProfitSettingsMutation,
 } = profitApi;

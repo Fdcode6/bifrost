@@ -9,6 +9,14 @@ export interface ProfitSettings {
 	updated_at?: string;
 }
 
+export interface RoutingRuleProfitSettings extends ProfitSettings {
+	routing_rule_id: string;
+}
+
+export interface RoutingRuleProfitSettingsResponse {
+	prices: RoutingRuleProfitSettings[];
+}
+
 export interface ProfitQuery {
 	start_day?: string;
 	end_day?: string;
@@ -34,6 +42,8 @@ export interface ProfitDailyBucket extends ProfitSummary {
 }
 
 export interface ProfitBreakdownRow extends ProfitSummary {
+	routing_rule_id?: string | null;
+	routing_rule_name?: string | null;
 	provider: string;
 	model: string;
 }

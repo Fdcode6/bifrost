@@ -14,18 +14,22 @@ import (
 
 type mockProfitLogManager struct {
 	logging.LogManager
-	settings       *logstore.ProfitSettings
-	savedSettings  *logstore.ProfitSettings
-	summary        *logstore.ProfitSummary
-	daily          []logstore.ProfitDailyBucket
-	breakdown      []logstore.ProfitBreakdownRow
-	backfillResult *logstore.ProfitBackfillResult
-	status         *logstore.ProfitReconciliationStatus
-	backfillLimit  int
-	recalcCalled   bool
-	recalcLimit    int
-	recalcCalls    int
-	recalcResults  []*logging.RecalculateCostResult
+	settings                 *logstore.ProfitSettings
+	savedSettings            *logstore.ProfitSettings
+	routingRulePrices        []logstore.RoutingRuleProfitSettings
+	savedRoutingRuleID       string
+	savedRoutingRuleSettings *logstore.ProfitSettings
+	deletedRoutingRuleID     string
+	summary                  *logstore.ProfitSummary
+	daily                    []logstore.ProfitDailyBucket
+	breakdown                []logstore.ProfitBreakdownRow
+	backfillResult           *logstore.ProfitBackfillResult
+	status                   *logstore.ProfitReconciliationStatus
+	backfillLimit            int
+	recalcCalled             bool
+	recalcLimit              int
+	recalcCalls              int
+	recalcResults            []*logging.RecalculateCostResult
 }
 
 func (m *mockProfitLogManager) GetProfitSettings(_ context.Context) (*logstore.ProfitSettings, error) {
@@ -36,6 +40,21 @@ func (m *mockProfitLogManager) SaveProfitSettings(_ context.Context, settings *l
 	m.savedSettings = settings
 	m.settings = settings
 	return settings, nil
+}
+
+func (m *mockProfitLogManager) ListRoutingRuleProfitSettings(_ context.Context) ([]logstore.RoutingRuleProfitSettings, error) {
+	return m.routingRulePrices, nil
+}
+
+func (m *mockProfitLogManager) SaveRoutingRuleProfitSettings(_ context.Context, routingRuleID string, settings *logstore.ProfitSettings) (*logstore.ProfitSettings, error) {
+	m.savedRoutingRuleID = routingRuleID
+	m.savedRoutingRuleSettings = settings
+	return settings, nil
+}
+
+func (m *mockProfitLogManager) DeleteRoutingRuleProfitSettings(_ context.Context, routingRuleID string) error {
+	m.deletedRoutingRuleID = routingRuleID
+	return nil
 }
 
 func (m *mockProfitLogManager) GetProfitSummary(_ context.Context, query logstore.ProfitQuery) (*logstore.ProfitSummary, error) {
@@ -103,6 +122,48 @@ func TestProfitSettingsHandlers(t *testing.T) {
 	require.Equal(t, 2.5, manager.savedSettings.SellInputPer1MUSD)
 	require.Equal(t, 15.0, manager.savedSettings.SellOutputPer1MUSD)
 	require.Equal(t, "Asia/Shanghai", manager.savedSettings.Timezone)
+}
+
+func TestProfitRoutingRulePriceHandlers(t *testing.T) {
+	manager := &mockProfitLogManager{
+		routingRulePrices: []logstore.RoutingRuleProfitSettings{{
+			RoutingRuleID:      "rule-review",
+			ID:                 "routing_rule:rule-review",
+			SellInputPer1MUSD:  5,
+			SellOutputPer1MUSD: 30,
+			Timezone:           "Asia/Shanghai",
+		}},
+	}
+	handler := NewLoggingHandler(manager, nil, nil)
+
+	getCtx := &fasthttp.RequestCtx{}
+	getCtx.Request.Header.SetMethod("GET")
+	getCtx.Request.SetRequestURI("/api/profit/routing-rule-prices")
+	handler.getRoutingRuleProfitSettings(getCtx)
+	require.Equal(t, fasthttp.StatusOK, getCtx.Response.StatusCode(), string(getCtx.Response.Body()))
+	require.Contains(t, string(getCtx.Response.Body()), `"routing_rule_id":"rule-review"`)
+	require.Contains(t, string(getCtx.Response.Body()), `"sell_output_per_1m_usd":30`)
+
+	putCtx := &fasthttp.RequestCtx{}
+	putCtx.Request.Header.SetMethod("PUT")
+	putCtx.Request.SetRequestURI("/api/profit/routing-rule-prices/rule-review")
+	putCtx.SetUserValue("rule_id", "rule-review")
+	putCtx.Request.SetBodyString(`{"sell_input_per_1m_usd":6,"sell_output_per_1m_usd":36}`)
+	handler.updateRoutingRuleProfitSettings(putCtx)
+	require.Equal(t, fasthttp.StatusOK, putCtx.Response.StatusCode(), string(putCtx.Response.Body()))
+	require.Equal(t, "rule-review", manager.savedRoutingRuleID)
+	require.NotNil(t, manager.savedRoutingRuleSettings)
+	require.Equal(t, 6.0, manager.savedRoutingRuleSettings.SellInputPer1MUSD)
+	require.Equal(t, 36.0, manager.savedRoutingRuleSettings.SellOutputPer1MUSD)
+	require.Equal(t, "Asia/Shanghai", manager.savedRoutingRuleSettings.Timezone)
+
+	deleteCtx := &fasthttp.RequestCtx{}
+	deleteCtx.Request.Header.SetMethod("DELETE")
+	deleteCtx.Request.SetRequestURI("/api/profit/routing-rule-prices/rule-review")
+	deleteCtx.SetUserValue("rule_id", "rule-review")
+	handler.deleteRoutingRuleProfitSettings(deleteCtx)
+	require.Equal(t, fasthttp.StatusOK, deleteCtx.Response.StatusCode(), string(deleteCtx.Response.Body()))
+	require.Equal(t, "rule-review", manager.deletedRoutingRuleID)
 }
 
 func TestProfitSummaryDailyAndBackfillHandlers(t *testing.T) {

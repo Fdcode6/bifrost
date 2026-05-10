@@ -148,6 +148,188 @@ func TestProfitSettingsChangeDoesNotRewriteExistingEventPrice(t *testing.T) {
 	}
 }
 
+func TestProfitEventFromLog_UsesRoutingRuleSellPrices(t *testing.T) {
+	store := newTestSQLiteStore(t)
+	ctx := context.Background()
+
+	if _, err := store.SaveProfitSettings(ctx, &ProfitSettings{
+		SellInputPer1MUSD:  2,
+		SellOutputPer1MUSD: 12,
+		Timezone:           "Asia/Shanghai",
+	}); err != nil {
+		t.Fatalf("SaveProfitSettings(default) error = %v", err)
+	}
+	if _, err := store.SaveRoutingRuleProfitSettings(ctx, "rule-review", &ProfitSettings{
+		SellInputPer1MUSD:  8,
+		SellOutputPer1MUSD: 40,
+	}); err != nil {
+		t.Fatalf("SaveRoutingRuleProfitSettings() error = %v", err)
+	}
+
+	ruleID := "rule-review"
+	ruleName := "会话审查"
+	cost := 4.5
+	event, err := store.UpsertProfitEventFromLog(ctx, &Log{
+		ID:               "profit-rule-price",
+		Timestamp:        time.Date(2026, 5, 4, 8, 0, 0, 0, time.UTC),
+		Object:           "chat_completion",
+		Provider:         "deepinfra",
+		Model:            "google/gemma-4-26B-A4B-it",
+		RoutingRuleID:    &ruleID,
+		RoutingRuleName:  &ruleName,
+		Status:           "success",
+		PromptTokens:     1_000_000,
+		CompletionTokens: 500_000,
+		TotalTokens:      1_500_000,
+		Cost:             &cost,
+	})
+	if err != nil {
+		t.Fatalf("UpsertProfitEventFromLog() error = %v", err)
+	}
+	if !almostEqualFloat(event.SellInputPer1MUSD, 8) || !almostEqualFloat(event.SellOutputPer1MUSD, 40) {
+		t.Fatalf("expected routing rule prices, got %.2f / %.2f", event.SellInputPer1MUSD, event.SellOutputPer1MUSD)
+	}
+	if !almostEqualFloat(event.RevenueUSD, 28) || !almostEqualFloat(event.ProfitUSD, 23.5) {
+		t.Fatalf("routing rule money mismatch: %#v", event)
+	}
+}
+
+func TestProfitEventFromLog_FallsBackToDefaultSellPricesWhenRoutingRuleHasNoPrice(t *testing.T) {
+	store := newTestSQLiteStore(t)
+	ctx := context.Background()
+
+	if _, err := store.SaveProfitSettings(ctx, &ProfitSettings{
+		SellInputPer1MUSD:  3,
+		SellOutputPer1MUSD: 9,
+		Timezone:           "Asia/Shanghai",
+	}); err != nil {
+		t.Fatalf("SaveProfitSettings(default) error = %v", err)
+	}
+
+	ruleID := "rule-without-price"
+	event, err := store.UpsertProfitEventFromLog(ctx, &Log{
+		ID:               "profit-rule-price-fallback",
+		Timestamp:        time.Date(2026, 5, 4, 8, 30, 0, 0, time.UTC),
+		Object:           "chat_completion",
+		Provider:         "openrouter",
+		Model:            "gemma-4-31b-it",
+		RoutingRuleID:    &ruleID,
+		Status:           "success",
+		PromptTokens:     1_000_000,
+		CompletionTokens: 1_000_000,
+		TotalTokens:      2_000_000,
+	})
+	if err != nil {
+		t.Fatalf("UpsertProfitEventFromLog() error = %v", err)
+	}
+	if !almostEqualFloat(event.SellInputPer1MUSD, 3) || !almostEqualFloat(event.SellOutputPer1MUSD, 9) {
+		t.Fatalf("expected default prices, got %.2f / %.2f", event.SellInputPer1MUSD, event.SellOutputPer1MUSD)
+	}
+	if !almostEqualFloat(event.RevenueUSD, 12) {
+		t.Fatalf("expected default-price revenue 12, got %.6f", event.RevenueUSD)
+	}
+}
+
+func TestRoutingRuleProfitSettingsListAndDelete(t *testing.T) {
+	store := newTestSQLiteStore(t)
+	ctx := context.Background()
+
+	if _, err := store.SaveProfitSettings(ctx, &ProfitSettings{
+		SellInputPer1MUSD:  2,
+		SellOutputPer1MUSD: 12,
+		Timezone:           "Asia/Shanghai",
+	}); err != nil {
+		t.Fatalf("SaveProfitSettings(default) error = %v", err)
+	}
+	if _, err := store.SaveRoutingRuleProfitSettings(ctx, "rule-auto", &ProfitSettings{
+		SellInputPer1MUSD:  4,
+		SellOutputPer1MUSD: 20,
+	}); err != nil {
+		t.Fatalf("SaveRoutingRuleProfitSettings(rule-auto) error = %v", err)
+	}
+	if _, err := store.SaveRoutingRuleProfitSettings(ctx, "rule-review", &ProfitSettings{
+		SellInputPer1MUSD:  6,
+		SellOutputPer1MUSD: 30,
+	}); err != nil {
+		t.Fatalf("SaveRoutingRuleProfitSettings(rule-review) error = %v", err)
+	}
+
+	settings, err := store.ListRoutingRuleProfitSettings(ctx)
+	if err != nil {
+		t.Fatalf("ListRoutingRuleProfitSettings() error = %v", err)
+	}
+	if len(settings) != 2 {
+		t.Fatalf("expected two routing rule settings, got %d: %#v", len(settings), settings)
+	}
+	for _, item := range settings {
+		if item.RoutingRuleID == "" || item.ID == defaultProfitSettingsID {
+			t.Fatalf("unexpected routing rule settings item: %#v", item)
+		}
+	}
+
+	if err := store.DeleteRoutingRuleProfitSettings(ctx, "rule-auto"); err != nil {
+		t.Fatalf("DeleteRoutingRuleProfitSettings() error = %v", err)
+	}
+	if _, found, err := store.GetRoutingRuleProfitSettings(ctx, "rule-auto"); err != nil || found {
+		t.Fatalf("expected deleted routing rule settings to be absent, found=%v err=%v", found, err)
+	}
+}
+
+func TestRoutingRuleProfitSettingsChangeDoesNotRewriteExistingEventPrice(t *testing.T) {
+	store := newTestSQLiteStore(t)
+	ctx := context.Background()
+
+	if _, err := store.SaveProfitSettings(ctx, &ProfitSettings{
+		SellInputPer1MUSD:  2,
+		SellOutputPer1MUSD: 12,
+		Timezone:           "Asia/Shanghai",
+	}); err != nil {
+		t.Fatalf("SaveProfitSettings(default) error = %v", err)
+	}
+	if _, err := store.SaveRoutingRuleProfitSettings(ctx, "rule-review", &ProfitSettings{
+		SellInputPer1MUSD:  1,
+		SellOutputPer1MUSD: 5,
+	}); err != nil {
+		t.Fatalf("SaveRoutingRuleProfitSettings(initial) error = %v", err)
+	}
+
+	ruleID := "rule-review"
+	entry := &Log{
+		ID:               "profit-rule-frozen-price",
+		Timestamp:        time.Date(2026, 5, 4, 9, 0, 0, 0, time.UTC),
+		Object:           "chat_completion",
+		Provider:         "deepinfra",
+		Model:            "google/gemma-4-26B-A4B-it",
+		RoutingRuleID:    &ruleID,
+		Status:           "success",
+		PromptTokens:     1_000_000,
+		CompletionTokens: 1_000_000,
+		TotalTokens:      2_000_000,
+	}
+	if _, err := store.UpsertProfitEventFromLog(ctx, entry); err != nil {
+		t.Fatalf("UpsertProfitEventFromLog(initial) error = %v", err)
+	}
+
+	if _, err := store.SaveRoutingRuleProfitSettings(ctx, "rule-review", &ProfitSettings{
+		SellInputPer1MUSD:  10,
+		SellOutputPer1MUSD: 50,
+	}); err != nil {
+		t.Fatalf("SaveRoutingRuleProfitSettings(updated) error = %v", err)
+	}
+	entry.CompletionTokens = 2_000_000
+	entry.TotalTokens = 3_000_000
+	event, err := store.UpsertProfitEventFromLog(ctx, entry)
+	if err != nil {
+		t.Fatalf("UpsertProfitEventFromLog(updated) error = %v", err)
+	}
+	if !almostEqualFloat(event.SellInputPer1MUSD, 1) || !almostEqualFloat(event.SellOutputPer1MUSD, 5) {
+		t.Fatalf("expected existing rule event prices to stay frozen, got %.2f / %.2f", event.SellInputPer1MUSD, event.SellOutputPer1MUSD)
+	}
+	if !almostEqualFloat(event.RevenueUSD, 11) {
+		t.Fatalf("expected revenue to use frozen rule prices after token update, got %.6f want 11.000000", event.RevenueUSD)
+	}
+}
+
 func TestClearAllLogsDoesNotClearProfitData(t *testing.T) {
 	store := newTestSQLiteStore(t)
 	ctx := context.Background()
@@ -500,5 +682,90 @@ func TestGetProfitBreakdownByProviderModel(t *testing.T) {
 	}
 	if !almostEqualFloat(rows[1].RevenueUSD, 7) || !almostEqualFloat(rows[1].CostUSD, 0.5) || !almostEqualFloat(rows[1].ProfitUSD, 6.5) {
 		t.Fatalf("v-api money mismatch: %#v", rows[1])
+	}
+}
+
+func TestGetProfitBreakdownSeparatesRoutingRulesForSameProviderModel(t *testing.T) {
+	store := newTestSQLiteStore(t)
+	ctx := context.Background()
+	if _, err := store.SaveProfitSettings(ctx, &ProfitSettings{
+		SellInputPer1MUSD:  2,
+		SellOutputPer1MUSD: 12,
+		Timezone:           "Asia/Shanghai",
+	}); err != nil {
+		t.Fatalf("SaveProfitSettings() error = %v", err)
+	}
+	if _, err := store.SaveRoutingRuleProfitSettings(ctx, "rule-auto", &ProfitSettings{
+		SellInputPer1MUSD:  2,
+		SellOutputPer1MUSD: 12,
+	}); err != nil {
+		t.Fatalf("SaveRoutingRuleProfitSettings(rule-auto) error = %v", err)
+	}
+	if _, err := store.SaveRoutingRuleProfitSettings(ctx, "rule-review", &ProfitSettings{
+		SellInputPer1MUSD:  5,
+		SellOutputPer1MUSD: 30,
+	}); err != nil {
+		t.Fatalf("SaveRoutingRuleProfitSettings(rule-review) error = %v", err)
+	}
+
+	autoRuleID := "rule-auto"
+	autoRuleName := "gemini-auto"
+	reviewRuleID := "rule-review"
+	reviewRuleName := "会话审查"
+	entries := []*Log{
+		{
+			ID:               "breakdown-openrouter-auto",
+			Timestamp:        time.Date(2026, 5, 4, 1, 0, 0, 0, time.UTC),
+			Object:           "chat_completion",
+			Provider:         "openrouter",
+			Model:            "gemma-4-31b-it",
+			RoutingRuleID:    &autoRuleID,
+			RoutingRuleName:  &autoRuleName,
+			Status:           "success",
+			PromptTokens:     1_000_000,
+			CompletionTokens: 1_000_000,
+			TotalTokens:      2_000_000,
+		},
+		{
+			ID:               "breakdown-openrouter-review",
+			Timestamp:        time.Date(2026, 5, 4, 2, 0, 0, 0, time.UTC),
+			Object:           "chat_completion",
+			Provider:         "openrouter",
+			Model:            "gemma-4-31b-it",
+			RoutingRuleID:    &reviewRuleID,
+			RoutingRuleName:  &reviewRuleName,
+			Status:           "success",
+			PromptTokens:     1_000_000,
+			CompletionTokens: 1_000_000,
+			TotalTokens:      2_000_000,
+		},
+	}
+	for _, entry := range entries {
+		if _, err := store.UpsertProfitEventFromLog(ctx, entry); err != nil {
+			t.Fatalf("UpsertProfitEventFromLog(%s) error = %v", entry.ID, err)
+		}
+	}
+
+	rows, err := store.GetProfitBreakdown(ctx, ProfitQuery{
+		StartDay: "2026-05-04",
+		EndDay:   "2026-05-04",
+	})
+	if err != nil {
+		t.Fatalf("GetProfitBreakdown() error = %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("expected two routing-rule breakdown rows, got %d: %#v", len(rows), rows)
+	}
+	if rows[0].RoutingRuleID == nil || *rows[0].RoutingRuleID != reviewRuleID || rows[0].RoutingRuleName == nil || *rows[0].RoutingRuleName != reviewRuleName {
+		t.Fatalf("expected highest revenue row to be review rule, got %#v", rows[0])
+	}
+	if !almostEqualFloat(rows[0].RevenueUSD, 35) {
+		t.Fatalf("review rule revenue mismatch: got %.6f want 35.000000", rows[0].RevenueUSD)
+	}
+	if rows[1].RoutingRuleID == nil || *rows[1].RoutingRuleID != autoRuleID || rows[1].RoutingRuleName == nil || *rows[1].RoutingRuleName != autoRuleName {
+		t.Fatalf("expected second row to be auto rule, got %#v", rows[1])
+	}
+	if !almostEqualFloat(rows[1].RevenueUSD, 14) {
+		t.Fatalf("auto rule revenue mismatch: got %.6f want 14.000000", rows[1].RevenueUSD)
 	}
 }

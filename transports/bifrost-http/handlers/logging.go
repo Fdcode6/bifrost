@@ -74,6 +74,9 @@ func (h *LoggingHandler) RegisterRoutes(r *router.Router, middlewares ...schemas
 	r.POST("/api/logs/recalculate-cost", lib.ChainMiddlewares(h.recalculateLogCosts, middlewares...))
 	r.GET("/api/profit/settings", lib.ChainMiddlewares(h.getProfitSettings, middlewares...))
 	r.PUT("/api/profit/settings", lib.ChainMiddlewares(h.updateProfitSettings, middlewares...))
+	r.GET("/api/profit/routing-rule-prices", lib.ChainMiddlewares(h.getRoutingRuleProfitSettings, middlewares...))
+	r.PUT("/api/profit/routing-rule-prices/{rule_id}", lib.ChainMiddlewares(h.updateRoutingRuleProfitSettings, middlewares...))
+	r.DELETE("/api/profit/routing-rule-prices/{rule_id}", lib.ChainMiddlewares(h.deleteRoutingRuleProfitSettings, middlewares...))
 	r.GET("/api/profit/summary", lib.ChainMiddlewares(h.getProfitSummary, middlewares...))
 	r.GET("/api/profit/daily", lib.ChainMiddlewares(h.getProfitDaily, middlewares...))
 	r.GET("/api/profit/breakdown", lib.ChainMiddlewares(h.getProfitBreakdown, middlewares...))
@@ -753,6 +756,10 @@ type profitSummaryResponse struct {
 	Data   *logstore.ProfitSummary `json:"data"`
 }
 
+type routingRuleProfitSettingsResponse struct {
+	Prices []logstore.RoutingRuleProfitSettings `json:"prices"`
+}
+
 type profitDailyResponse struct {
 	Query logstore.ProfitQuery         `json:"query"`
 	Days  []logstore.ProfitDailyBucket `json:"days"`
@@ -800,6 +807,67 @@ func (h *LoggingHandler) updateProfitSettings(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	SendJSON(ctx, settings)
+}
+
+func profitRoutingRuleIDFromCtx(ctx *fasthttp.RequestCtx) string {
+	if raw := ctx.UserValue("rule_id"); raw != nil {
+		if value, ok := raw.(string); ok {
+			return value
+		}
+	}
+	return ""
+}
+
+func (h *LoggingHandler) getRoutingRuleProfitSettings(ctx *fasthttp.RequestCtx) {
+	prices, err := h.logManager.ListRoutingRuleProfitSettings(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get routing rule profit settings: %v", err))
+		return
+	}
+	SendJSON(ctx, routingRuleProfitSettingsResponse{Prices: prices})
+}
+
+func (h *LoggingHandler) updateRoutingRuleProfitSettings(ctx *fasthttp.RequestCtx) {
+	ruleID := profitRoutingRuleIDFromCtx(ctx)
+	if ruleID == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "routing rule id is required")
+		return
+	}
+	var payload updateProfitSettingsRequest
+	if err := sonic.Unmarshal(ctx.PostBody(), &payload); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request body: %v", err))
+		return
+	}
+	if payload.Timezone == "" {
+		payload.Timezone = "Asia/Shanghai"
+	}
+	if payload.SellInputPer1MUSD < 0 || payload.SellOutputPer1MUSD < 0 || (payload.SellInputPer1MUSD == 0 && payload.SellOutputPer1MUSD == 0) {
+		SendError(ctx, fasthttp.StatusBadRequest, "Profit sell prices must be non-negative and at least one price must be greater than zero")
+		return
+	}
+	settings, err := h.logManager.SaveRoutingRuleProfitSettings(ctx, ruleID, &logstore.ProfitSettings{
+		SellInputPer1MUSD:  payload.SellInputPer1MUSD,
+		SellOutputPer1MUSD: payload.SellOutputPer1MUSD,
+		Timezone:           payload.Timezone,
+	})
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Failed to update routing rule profit settings: %v", err))
+		return
+	}
+	SendJSON(ctx, settings)
+}
+
+func (h *LoggingHandler) deleteRoutingRuleProfitSettings(ctx *fasthttp.RequestCtx) {
+	ruleID := profitRoutingRuleIDFromCtx(ctx)
+	if ruleID == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "routing rule id is required")
+		return
+	}
+	if err := h.logManager.DeleteRoutingRuleProfitSettings(ctx, ruleID); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Failed to delete routing rule profit settings: %v", err))
+		return
+	}
+	SendJSON(ctx, map[string]string{"message": "Routing rule profit settings deleted successfully"})
 }
 
 func (h *LoggingHandler) getProfitSummary(ctx *fasthttp.RequestCtx) {

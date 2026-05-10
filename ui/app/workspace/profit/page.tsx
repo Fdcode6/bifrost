@@ -3,7 +3,19 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { AlertCircle, CheckCircle2, Clock3, Database, DollarSign, Loader2, Percent, RefreshCw, RotateCw, Save, TrendingUp } from "lucide-react";
+import {
+	AlertCircle,
+	CheckCircle2,
+	Clock3,
+	Database,
+	DollarSign,
+	Loader2,
+	Percent,
+	RefreshCw,
+	RotateCw,
+	Save,
+	TrendingUp,
+} from "lucide-react";
 import { toast } from "sonner";
 
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -15,11 +27,15 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import {
 	getErrorMessage,
 	useBackfillProfitEventsMutation,
+	useDeleteRoutingRuleProfitSettingsMutation,
 	useGetProfitBreakdownQuery,
 	useGetProfitDailyQuery,
 	useGetProfitReconciliationStatusQuery,
+	useGetRoutingRuleProfitSettingsQuery,
+	useGetRoutingRulesQuery,
 	useGetProfitSettingsQuery,
 	useGetProfitSummaryQuery,
+	useUpdateRoutingRuleProfitSettingsMutation,
 	useUpdateProfitSettingsMutation,
 } from "@/lib/store";
 import type { ProfitDailyBucket, ProfitPreset, ProfitSummary } from "@/lib/types/profit";
@@ -174,6 +190,9 @@ export default function ProfitPage() {
 	const [displayCurrency, setDisplayCurrency] = useState<DisplayCurrency>("CNY");
 	const [inputPrice, setInputPrice] = useState("2");
 	const [outputPrice, setOutputPrice] = useState("12");
+	const [rulePriceInputs, setRulePriceInputs] = useState<Record<string, { input: string; output: string }>>({});
+	const [savingRulePriceID, setSavingRulePriceID] = useState<string | null>(null);
+	const [deletingRulePriceID, setDeletingRulePriceID] = useState<string | null>(null);
 
 	const {
 		data: settings,
@@ -204,12 +223,26 @@ export default function ProfitPage() {
 		refetch: refetchBreakdown,
 	} = useGetProfitBreakdownQuery(preset);
 	const {
+		data: routingRulesResponse,
+		error: routingRulesError,
+		isFetching: isRoutingRulesFetching,
+		refetch: refetchRoutingRules,
+	} = useGetRoutingRulesQuery();
+	const {
+		data: routingRulePricesResponse,
+		error: routingRulePricesError,
+		isFetching: isRoutingRulePricesFetching,
+		refetch: refetchRoutingRulePrices,
+	} = useGetRoutingRuleProfitSettingsQuery();
+	const {
 		data: reconciliationStatus,
 		error: reconciliationStatusError,
 		isFetching: isReconciliationStatusFetching,
 		refetch: refetchReconciliationStatus,
 	} = useGetProfitReconciliationStatusQuery();
 	const [updateProfitSettings, { isLoading: isSaving }] = useUpdateProfitSettingsMutation();
+	const [updateRoutingRuleProfitSettings] = useUpdateRoutingRuleProfitSettingsMutation();
+	const [deleteRoutingRuleProfitSettings] = useDeleteRoutingRuleProfitSettingsMutation();
 	const [backfillProfitEvents, { isLoading: isBackfilling }] = useBackfillProfitEventsMutation();
 
 	useEffect(() => {
@@ -220,17 +253,69 @@ export default function ProfitPage() {
 		setOutputPrice(String(settings.sell_output_per_1m_usd));
 	}, [settings]);
 
+	const pricingRules = useMemo(
+		() =>
+			[...(routingRulesResponse?.rules ?? [])]
+				.filter((rule) => rule.enabled)
+				.sort((a, b) => a.priority - b.priority || a.name.localeCompare(b.name)),
+		[routingRulesResponse?.rules],
+	);
+	const routingRulePriceByID = useMemo(() => {
+		const prices = new Map<string, NonNullable<typeof routingRulePricesResponse>["prices"][number]>();
+		for (const price of routingRulePricesResponse?.prices ?? []) {
+			prices.set(price.routing_rule_id, price);
+		}
+		return prices;
+	}, [routingRulePricesResponse?.prices]);
+
+	useEffect(() => {
+		if (!settings) {
+			return;
+		}
+		const next: Record<string, { input: string; output: string }> = {};
+		for (const rule of pricingRules) {
+			const override = routingRulePriceByID.get(rule.id);
+			next[rule.id] = {
+				input: String(override?.sell_input_per_1m_usd ?? settings.sell_input_per_1m_usd),
+				output: String(override?.sell_output_per_1m_usd ?? settings.sell_output_per_1m_usd),
+			};
+		}
+		setRulePriceInputs(next);
+	}, [pricingRules, routingRulePriceByID, settings]);
+
 	const summary = summaryResponse?.data ?? emptySummary;
 	const chartData = useMemo(() => dailyChartData(dailyResponse?.days ?? []), [dailyResponse?.days]);
 	const breakdownRows = breakdownResponse?.rows ?? [];
-	const isRefreshing = isSettingsFetching || isSummaryFetching || isDailyFetching || isBreakdownFetching || isReconciliationStatusFetching;
-	const pageError = settingsError || summaryError || dailyError || breakdownError || reconciliationStatusError;
+	const isRefreshing =
+		isSettingsFetching ||
+		isSummaryFetching ||
+		isDailyFetching ||
+		isBreakdownFetching ||
+		isRoutingRulesFetching ||
+		isRoutingRulePricesFetching ||
+		isReconciliationStatusFetching;
+	const pageError =
+		settingsError ||
+		summaryError ||
+		dailyError ||
+		breakdownError ||
+		routingRulesError ||
+		routingRulePricesError ||
+		reconciliationStatusError;
 	const money = (value: number | null | undefined) => formatMoney(value, displayCurrency);
 	const missingProfitEvents = reconciliationStatus?.missing_event_count ?? 0;
 	const isProfitLedgerComplete = missingProfitEvents === 0;
 
 	const handleRefresh = () => {
-		void Promise.all([refetchSettings(), refetchSummary(), refetchDaily(), refetchBreakdown(), refetchReconciliationStatus()]);
+		void Promise.all([
+			refetchSettings(),
+			refetchSummary(),
+			refetchDaily(),
+			refetchBreakdown(),
+			refetchRoutingRules(),
+			refetchRoutingRulePrices(),
+			refetchReconciliationStatus(),
+		]);
 	};
 
 	const handleSave = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -250,6 +335,53 @@ export default function ProfitPage() {
 			toast.success("出售价格已保存，只影响之后的新请求。");
 		} catch (error) {
 			toast.error(getErrorMessage(error));
+		}
+	};
+
+	const handleRulePriceInputChange = (ruleID: string, field: "input" | "output", value: string) => {
+		setRulePriceInputs((current) => ({
+			...current,
+			[ruleID]: {
+				input: current[ruleID]?.input ?? String(settings?.sell_input_per_1m_usd ?? 0),
+				output: current[ruleID]?.output ?? String(settings?.sell_output_per_1m_usd ?? 0),
+				[field]: value,
+			},
+		}));
+	};
+
+	const handleSaveRulePrice = async (ruleID: string, ruleName: string) => {
+		const values = rulePriceInputs[ruleID];
+		const sellInput = parsePrice(values?.input ?? "");
+		const sellOutput = parsePrice(values?.output ?? "");
+		if (sellInput === null || sellOutput === null || (sellInput === 0 && sellOutput === 0)) {
+			toast.error("规则出售价格必须为非负数，并且至少有一项大于 0。");
+			return;
+		}
+		setSavingRulePriceID(ruleID);
+		try {
+			await updateRoutingRuleProfitSettings({
+				routingRuleId: ruleID,
+				sell_input_per_1m_usd: sellInput,
+				sell_output_per_1m_usd: sellOutput,
+				timezone: settings?.timezone ?? "Asia/Shanghai",
+			}).unwrap();
+			toast.success(`${ruleName} 的出售价格已保存。`);
+		} catch (error) {
+			toast.error(getErrorMessage(error));
+		} finally {
+			setSavingRulePriceID(null);
+		}
+	};
+
+	const handleUseDefaultRulePrice = async (ruleID: string, ruleName: string) => {
+		setDeletingRulePriceID(ruleID);
+		try {
+			await deleteRoutingRuleProfitSettings(ruleID).unwrap();
+			toast.success(`${ruleName} 已恢复默认出售价格。`);
+		} catch (error) {
+			toast.error(getErrorMessage(error));
+		} finally {
+			setDeletingRulePriceID(null);
 		}
 	};
 
@@ -273,9 +405,11 @@ export default function ProfitPage() {
 				</div>
 				<div className="flex flex-wrap items-center gap-2">
 					<Badge variant="outline">时区：{settings?.timezone ?? "Asia/Shanghai"}</Badge>
-					<Badge variant="outline">展示售价：{money(settings?.sell_input_per_1m_usd)} / {money(settings?.sell_output_per_1m_usd)}</Badge>
+					<Badge variant="outline">
+						展示售价：{money(settings?.sell_input_per_1m_usd)} / {money(settings?.sell_output_per_1m_usd)}
+					</Badge>
 					<Badge variant="outline">汇率：1 USD = ¥{USD_TO_CNY_RATE}</Badge>
-					<div className="flex items-center rounded-md border bg-background p-0.5" aria-label="利润展示单位">
+					<div className="bg-background flex items-center rounded-md border p-0.5" aria-label="利润展示单位">
 						{DISPLAY_CURRENCIES.map((currency) => (
 							<Button
 								key={currency}
@@ -317,7 +451,9 @@ export default function ProfitPage() {
 						<span
 							className={cn(
 								"rounded-md border p-2",
-								isProfitLedgerComplete ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-amber-200 bg-amber-50 text-amber-700",
+								isProfitLedgerComplete
+									? "border-emerald-200 bg-emerald-50 text-emerald-700"
+									: "border-amber-200 bg-amber-50 text-amber-700",
 							)}
 						>
 							{isProfitLedgerComplete ? <CheckCircle2 className="h-4 w-4" /> : <AlertCircle className="h-4 w-4" />}
@@ -325,7 +461,9 @@ export default function ProfitPage() {
 						<div>
 							<CardTitle className="text-base">利润账本完整性</CardTitle>
 							<CardDescription>
-								{isProfitLedgerComplete ? "当前 logs 与利润事件已对齐。" : `当前还有 ${formatCompactNumber(missingProfitEvents)} 条日志未入账。`}
+								{isProfitLedgerComplete
+									? "当前 logs 与利润事件已对齐。"
+									: `当前还有 ${formatCompactNumber(missingProfitEvents)} 条日志未入账。`}
 							</CardDescription>
 						</div>
 					</div>
@@ -353,7 +491,13 @@ export default function ProfitPage() {
 						</div>
 					</div>
 					<div className="flex gap-2 lg:justify-end">
-						<Button variant="outline" size="sm" onClick={() => void refetchReconciliationStatus()} disabled={isReconciliationStatusFetching} className="gap-2">
+						<Button
+							variant="outline"
+							size="sm"
+							onClick={() => void refetchReconciliationStatus()}
+							disabled={isReconciliationStatusFetching}
+							className="gap-2"
+						>
 							<RefreshCw className={cn("h-4 w-4", isReconciliationStatusFetching ? "animate-spin" : "")} />
 							刷新状态
 						</Button>
@@ -363,7 +507,7 @@ export default function ProfitPage() {
 						</Button>
 					</div>
 					{reconciliationStatus?.last_error ? (
-						<div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive lg:col-span-3">
+						<div className="border-destructive/30 bg-destructive/10 text-destructive rounded-md border px-3 py-2 text-sm lg:col-span-3">
 							上次校对失败：{reconciliationStatus.last_error}
 						</div>
 					) : null}
@@ -421,7 +565,13 @@ export default function ProfitPage() {
 									<BarChart data={chartData} margin={{ left: 0, right: 8, top: 8, bottom: 0 }}>
 										<CartesianGrid strokeDasharray="3 3" vertical={false} />
 										<XAxis dataKey="day" tickLine={false} axisLine={false} fontSize={12} />
-										<YAxis tickLine={false} axisLine={false} fontSize={12} tickFormatter={(value) => formatMoney(Number(value), displayCurrency)} width={72} />
+										<YAxis
+											tickLine={false}
+											axisLine={false}
+											fontSize={12}
+											tickFormatter={(value) => formatMoney(Number(value), displayCurrency)}
+											width={72}
+										/>
 										<Tooltip content={<TrendTooltip currency={displayCurrency} />} />
 										<Legend />
 										<Bar dataKey="收入" fill="#2f5f8f" radius={[3, 3, 0, 0]} />
@@ -464,7 +614,7 @@ export default function ProfitPage() {
 										disabled={isSettingsLoading || isSaving}
 										data-testid="profit-input-price"
 									/>
-								<p className="text-muted-foreground text-xs">保存单位仍为 USD / 100 万 input tokens；上方统计可切换人民币或美元展示。</p>
+									<p className="text-muted-foreground text-xs">保存单位仍为 USD / 100 万 input tokens；上方统计可切换人民币或美元展示。</p>
 								</div>
 							</div>
 							<div className="grid gap-2">
@@ -504,14 +654,118 @@ export default function ProfitPage() {
 
 			<Card className="rounded-lg">
 				<CardHeader className="border-b">
+					<CardTitle>按路由规则定价</CardTitle>
+					<CardDescription>单独设置后，新请求会优先使用对应规则售价；未设置的规则继续使用默认售价。</CardDescription>
+				</CardHeader>
+				<CardContent className="p-0">
+					{pricingRules.length === 0 ? (
+						<div className="text-muted-foreground flex h-24 items-center justify-center text-sm">暂无启用的路由规则</div>
+					) : (
+						<div className="overflow-x-auto">
+							<Table>
+								<TableHeader>
+									<TableRow>
+										<TableHead className="min-w-[180px]">路由规则</TableHead>
+										<TableHead className="min-w-[260px]">表达式</TableHead>
+										<TableHead className="min-w-[140px]">输入售价</TableHead>
+										<TableHead className="min-w-[140px]">输出售价</TableHead>
+										<TableHead>状态</TableHead>
+										<TableHead className="min-w-[190px] text-right">操作</TableHead>
+									</TableRow>
+								</TableHeader>
+								<TableBody>
+									{pricingRules.map((rule) => {
+										const override = routingRulePriceByID.get(rule.id);
+										const values = rulePriceInputs[rule.id] ?? {
+											input: String(settings?.sell_input_per_1m_usd ?? ""),
+											output: String(settings?.sell_output_per_1m_usd ?? ""),
+										};
+										const isRuleSaving = savingRulePriceID === rule.id;
+										const isRuleDeleting = deletingRulePriceID === rule.id;
+										return (
+											<TableRow key={rule.id}>
+												<TableCell>
+													<div className="font-medium">{rule.name}</div>
+													<div className="text-muted-foreground mt-1 text-xs">优先级 {rule.priority}</div>
+												</TableCell>
+												<TableCell className="font-mono text-xs">{rule.cel_expression || "-"}</TableCell>
+												<TableCell>
+													<Input
+														value={values.input}
+														onChange={(event) => handleRulePriceInputChange(rule.id, "input", event.target.value)}
+														inputMode="decimal"
+														disabled={!settings || isRuleSaving || isRuleDeleting}
+														className="w-28"
+														data-testid={`profit-rule-${rule.id}-input-price`}
+													/>
+												</TableCell>
+												<TableCell>
+													<Input
+														value={values.output}
+														onChange={(event) => handleRulePriceInputChange(rule.id, "output", event.target.value)}
+														inputMode="decimal"
+														disabled={!settings || isRuleSaving || isRuleDeleting}
+														className="w-28"
+														data-testid={`profit-rule-${rule.id}-output-price`}
+													/>
+												</TableCell>
+												<TableCell>
+													{override ? (
+														<Badge variant="outline" className="border-emerald-300 bg-emerald-50 text-emerald-800">
+															已覆盖
+														</Badge>
+													) : (
+														<Badge variant="outline">使用默认</Badge>
+													)}
+												</TableCell>
+												<TableCell>
+													<div className="flex justify-end gap-2">
+														<Button
+															type="button"
+															size="sm"
+															onClick={() => void handleSaveRulePrice(rule.id, rule.name)}
+															disabled={!settings || isRuleSaving || isRuleDeleting}
+															className="gap-2"
+															dataTestId={`profit-rule-${rule.id}-save`}
+														>
+															{isRuleSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+															保存
+														</Button>
+														<Button
+															type="button"
+															variant="outline"
+															size="sm"
+															onClick={() => void handleUseDefaultRulePrice(rule.id, rule.name)}
+															disabled={!override || isRuleSaving || isRuleDeleting}
+															className="gap-2"
+															dataTestId={`profit-rule-${rule.id}-default`}
+														>
+															{isRuleDeleting ? <Loader2 className="h-4 w-4 animate-spin" /> : <RotateCw className="h-4 w-4" />}
+															使用默认
+														</Button>
+													</div>
+												</TableCell>
+											</TableRow>
+										);
+									})}
+								</TableBody>
+							</Table>
+						</div>
+					)}
+				</CardContent>
+			</Card>
+
+			<Card className="rounded-lg">
+				<CardHeader className="border-b">
 					<CardTitle>节点利润明细</CardTitle>
-					<CardDescription>按中转站和模型聚合，快速定位高利润、低利润和缺失成本的节点。</CardDescription>
+					<CardDescription>按路由规则、中转站和模型聚合，快速定位高利润、低利润和缺失成本的节点。</CardDescription>
 				</CardHeader>
 				<CardContent className="p-0">
 					<div className="overflow-x-auto">
 						<Table>
 							<TableHeader>
 								<TableRow>
+									<TableHead className="min-w-[150px]">路由规则</TableHead>
 									<TableHead className="min-w-[150px]">中转站</TableHead>
 									<TableHead className="min-w-[260px]">模型</TableHead>
 									<TableHead>请求数</TableHead>
@@ -528,7 +782,7 @@ export default function ProfitPage() {
 							<TableBody>
 								{isBreakdownLoading ? (
 									<TableRow>
-										<TableCell colSpan={11} className="text-muted-foreground h-24 text-center">
+										<TableCell colSpan={12} className="text-muted-foreground h-24 text-center">
 											<div className="flex items-center justify-center gap-2">
 												<Loader2 className="h-4 w-4 animate-spin" />
 												加载节点明细
@@ -537,13 +791,14 @@ export default function ProfitPage() {
 									</TableRow>
 								) : breakdownRows.length === 0 ? (
 									<TableRow>
-										<TableCell colSpan={11} className="text-muted-foreground h-24 text-center">
+										<TableCell colSpan={12} className="text-muted-foreground h-24 text-center">
 											暂无节点利润数据
 										</TableCell>
 									</TableRow>
 								) : (
 									breakdownRows.map((row) => (
-										<TableRow key={`${row.provider}:${row.model}`}>
+										<TableRow key={`${row.routing_rule_id ?? "none"}:${row.provider}:${row.model}`}>
+											<TableCell className="font-medium">{row.routing_rule_name || "未命中规则"}</TableCell>
 											<TableCell className="font-medium">{row.provider || "未知中转站"}</TableCell>
 											<TableCell className="font-mono text-xs">{row.model || "未知模型"}</TableCell>
 											<TableCell>{formatCompactNumber(row.request_count)}</TableCell>

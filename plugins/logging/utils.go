@@ -95,6 +95,9 @@ type LogManager interface {
 
 	GetProfitSettings(ctx context.Context) (*logstore.ProfitSettings, error)
 	SaveProfitSettings(ctx context.Context, settings *logstore.ProfitSettings) (*logstore.ProfitSettings, error)
+	ListRoutingRuleProfitSettings(ctx context.Context) ([]logstore.RoutingRuleProfitSettings, error)
+	SaveRoutingRuleProfitSettings(ctx context.Context, routingRuleID string, settings *logstore.ProfitSettings) (*logstore.ProfitSettings, error)
+	DeleteRoutingRuleProfitSettings(ctx context.Context, routingRuleID string) error
 	GetProfitSummary(ctx context.Context, query logstore.ProfitQuery) (*logstore.ProfitSummary, error)
 	GetProfitDaily(ctx context.Context, query logstore.ProfitQuery) ([]logstore.ProfitDailyBucket, error)
 	GetProfitBreakdown(ctx context.Context, query logstore.ProfitQuery) ([]logstore.ProfitBreakdownRow, error)
@@ -301,6 +304,27 @@ func (p *PluginLogManager) SaveProfitSettings(ctx context.Context, settings *log
 		return nil, fmt.Errorf("log store not initialized")
 	}
 	return p.plugin.store.SaveProfitSettings(ctx, settings)
+}
+
+func (p *PluginLogManager) ListRoutingRuleProfitSettings(ctx context.Context) ([]logstore.RoutingRuleProfitSettings, error) {
+	if p.plugin == nil || p.plugin.store == nil {
+		return nil, fmt.Errorf("log store not initialized")
+	}
+	return p.plugin.store.ListRoutingRuleProfitSettings(ctx)
+}
+
+func (p *PluginLogManager) SaveRoutingRuleProfitSettings(ctx context.Context, routingRuleID string, settings *logstore.ProfitSettings) (*logstore.ProfitSettings, error) {
+	if p.plugin == nil || p.plugin.store == nil {
+		return nil, fmt.Errorf("log store not initialized")
+	}
+	return p.plugin.store.SaveRoutingRuleProfitSettings(ctx, routingRuleID, settings)
+}
+
+func (p *PluginLogManager) DeleteRoutingRuleProfitSettings(ctx context.Context, routingRuleID string) error {
+	if p.plugin == nil || p.plugin.store == nil {
+		return fmt.Errorf("log store not initialized")
+	}
+	return p.plugin.store.DeleteRoutingRuleProfitSettings(ctx, routingRuleID)
 }
 
 func (p *PluginLogManager) GetProfitSummary(ctx context.Context, query logstore.ProfitQuery) (*logstore.ProfitSummary, error) {

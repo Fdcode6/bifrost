@@ -3,6 +3,7 @@ package logstore
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -10,11 +11,12 @@ import (
 )
 
 const (
-	defaultProfitSettingsID       = "default"
-	defaultProfitTimezone         = "Asia/Shanghai"
-	defaultSellInputPer1MUSD      = 2
-	defaultSellOutputPer1MUSD     = 12
-	defaultProfitBackfillPageSize = 500
+	defaultProfitSettingsID           = "default"
+	routingRuleProfitSettingsIDPrefix = "routing_rule:"
+	defaultProfitTimezone             = "Asia/Shanghai"
+	defaultSellInputPer1MUSD          = 2
+	defaultSellOutputPer1MUSD         = 12
+	defaultProfitBackfillPageSize     = 500
 )
 
 // ProfitSettings stores the current selling price used for future profit events.
@@ -25,6 +27,17 @@ type ProfitSettings struct {
 	Timezone           string    `gorm:"type:varchar(64);not null" json:"timezone"`
 	CreatedAt          time.Time `gorm:"not null" json:"created_at"`
 	UpdatedAt          time.Time `gorm:"not null" json:"updated_at"`
+}
+
+// RoutingRuleProfitSettings stores one routing-rule-specific selling price.
+type RoutingRuleProfitSettings struct {
+	RoutingRuleID      string    `json:"routing_rule_id"`
+	ID                 string    `json:"id"`
+	SellInputPer1MUSD  float64   `json:"sell_input_per_1m_usd"`
+	SellOutputPer1MUSD float64   `json:"sell_output_per_1m_usd"`
+	Timezone           string    `json:"timezone"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
 }
 
 // ProfitEvent stores one immutable-price profit ledger entry for one LLM log.
@@ -95,8 +108,10 @@ type ProfitDailyBucket struct {
 	MissingTokensCount int64    `json:"missing_tokens_count"`
 }
 
-// ProfitBreakdownRow is one provider/model aggregate row for profit analysis.
+// ProfitBreakdownRow is one routing-rule/provider/model aggregate row for profit analysis.
 type ProfitBreakdownRow struct {
+	RoutingRuleID      *string  `json:"routing_rule_id,omitempty"`
+	RoutingRuleName    *string  `json:"routing_rule_name,omitempty"`
 	Provider           string   `json:"provider"`
 	Model              string   `json:"model"`
 	RevenueUSD         float64  `json:"revenue_usd"`
@@ -158,11 +173,50 @@ func normalizeProfitSettings(settings *ProfitSettings) (*ProfitSettings, error) 
 	return settings, nil
 }
 
-func (s *RDBLogStore) GetProfitSettings(ctx context.Context) (*ProfitSettings, error) {
+func profitSettingsIDForRoutingRule(routingRuleID string) (string, error) {
+	routingRuleID = strings.TrimSpace(routingRuleID)
+	if routingRuleID == "" {
+		return "", fmt.Errorf("routing rule id cannot be empty")
+	}
+	return routingRuleProfitSettingsIDPrefix + routingRuleID, nil
+}
+
+func routingRuleIDFromProfitSettingsID(id string) (string, bool) {
+	if !strings.HasPrefix(id, routingRuleProfitSettingsIDPrefix) {
+		return "", false
+	}
+	routingRuleID := strings.TrimPrefix(id, routingRuleProfitSettingsIDPrefix)
+	return routingRuleID, routingRuleID != ""
+}
+
+func routingRuleProfitSettingsFromSettings(settings ProfitSettings) (RoutingRuleProfitSettings, bool) {
+	routingRuleID, ok := routingRuleIDFromProfitSettingsID(settings.ID)
+	if !ok {
+		return RoutingRuleProfitSettings{}, false
+	}
+	return RoutingRuleProfitSettings{
+		RoutingRuleID:      routingRuleID,
+		ID:                 settings.ID,
+		SellInputPer1MUSD:  settings.SellInputPer1MUSD,
+		SellOutputPer1MUSD: settings.SellOutputPer1MUSD,
+		Timezone:           settings.Timezone,
+		CreatedAt:          settings.CreatedAt,
+		UpdatedAt:          settings.UpdatedAt,
+	}, true
+}
+
+func (s *RDBLogStore) getProfitSettingsByID(ctx context.Context, id string) (*ProfitSettings, error) {
 	var settings ProfitSettings
-	err := s.db.WithContext(ctx).Where("id = ?", defaultProfitSettingsID).First(&settings).Error
+	if err := s.db.WithContext(ctx).Where("id = ?", id).First(&settings).Error; err != nil {
+		return nil, err
+	}
+	return &settings, nil
+}
+
+func (s *RDBLogStore) GetProfitSettings(ctx context.Context) (*ProfitSettings, error) {
+	settings, err := s.getProfitSettingsByID(ctx, defaultProfitSettingsID)
 	if err == nil {
-		return &settings, nil
+		return settings, nil
 	}
 	if err != nil && err != gorm.ErrRecordNotFound {
 		return nil, err
@@ -185,6 +239,87 @@ func (s *RDBLogStore) SaveProfitSettings(ctx context.Context, settings *ProfitSe
 	return s.GetProfitSettings(ctx)
 }
 
+func (s *RDBLogStore) GetRoutingRuleProfitSettings(ctx context.Context, routingRuleID string) (*ProfitSettings, bool, error) {
+	id, err := profitSettingsIDForRoutingRule(routingRuleID)
+	if err != nil {
+		return nil, false, err
+	}
+	settings, err := s.getProfitSettingsByID(ctx, id)
+	if err == nil {
+		return settings, true, nil
+	}
+	if err == gorm.ErrRecordNotFound {
+		return nil, false, nil
+	}
+	return nil, false, err
+}
+
+func (s *RDBLogStore) ListRoutingRuleProfitSettings(ctx context.Context) ([]RoutingRuleProfitSettings, error) {
+	var settings []ProfitSettings
+	if err := s.db.WithContext(ctx).
+		Where("id <> ?", defaultProfitSettingsID).
+		Order("id ASC").
+		Find(&settings).Error; err != nil {
+		return nil, err
+	}
+	result := make([]RoutingRuleProfitSettings, 0, len(settings))
+	for _, item := range settings {
+		if routingRuleSettings, ok := routingRuleProfitSettingsFromSettings(item); ok {
+			result = append(result, routingRuleSettings)
+		}
+	}
+	return result, nil
+}
+
+func (s *RDBLogStore) SaveRoutingRuleProfitSettings(ctx context.Context, routingRuleID string, settings *ProfitSettings) (*ProfitSettings, error) {
+	id, err := profitSettingsIDForRoutingRule(routingRuleID)
+	if err != nil {
+		return nil, err
+	}
+	if settings == nil {
+		return nil, fmt.Errorf("profit settings cannot be nil")
+	}
+	if settings.SellInputPer1MUSD < 0 || settings.SellOutputPer1MUSD < 0 {
+		return nil, fmt.Errorf("profit sell prices cannot be negative")
+	}
+	if settings.SellInputPer1MUSD == 0 && settings.SellOutputPer1MUSD == 0 {
+		return nil, fmt.Errorf("at least one profit sell price must be greater than zero")
+	}
+	timezone := settings.Timezone
+	if timezone == "" {
+		defaultSettings, err := s.GetProfitSettings(ctx)
+		if err != nil {
+			return nil, err
+		}
+		timezone = defaultSettings.Timezone
+	}
+	normalized, err := normalizeProfitSettings(&ProfitSettings{
+		ID:                 id,
+		SellInputPer1MUSD:  settings.SellInputPer1MUSD,
+		SellOutputPer1MUSD: settings.SellOutputPer1MUSD,
+		Timezone:           timezone,
+	})
+	if err != nil {
+		return nil, err
+	}
+	normalized.ID = id
+	if err := s.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "id"}},
+		DoUpdates: clause.AssignmentColumns([]string{"sell_input_per_1m_usd", "sell_output_per_1m_usd", "timezone", "updated_at"}),
+	}).Create(normalized).Error; err != nil {
+		return nil, err
+	}
+	return s.getProfitSettingsByID(ctx, id)
+}
+
+func (s *RDBLogStore) DeleteRoutingRuleProfitSettings(ctx context.Context, routingRuleID string) error {
+	id, err := profitSettingsIDForRoutingRule(routingRuleID)
+	if err != nil {
+		return err
+	}
+	return s.db.WithContext(ctx).Where("id = ?", id).Delete(&ProfitSettings{}).Error
+}
+
 func (s *RDBLogStore) FindProfitEvent(ctx context.Context, logID string) (*ProfitEvent, error) {
 	var event ProfitEvent
 	if err := s.db.WithContext(ctx).Where("log_id = ?", logID).First(&event).Error; err != nil {
@@ -201,7 +336,7 @@ func (s *RDBLogStore) UpsertProfitEventFromLog(ctx context.Context, entry *Log) 
 		return nil, nil
 	}
 
-	settings, err := s.GetProfitSettings(ctx)
+	settings, err := s.profitSettingsForLog(ctx, entry)
 	if err != nil {
 		return nil, err
 	}
@@ -237,6 +372,19 @@ func (s *RDBLogStore) UpsertProfitEventFromLog(ctx context.Context, entry *Log) 
 		return nil, err
 	}
 	return s.FindProfitEvent(ctx, entry.ID)
+}
+
+func (s *RDBLogStore) profitSettingsForLog(ctx context.Context, entry *Log) (*ProfitSettings, error) {
+	if entry != nil && entry.RoutingRuleID != nil && strings.TrimSpace(*entry.RoutingRuleID) != "" {
+		settings, found, err := s.GetRoutingRuleProfitSettings(ctx, *entry.RoutingRuleID)
+		if err != nil {
+			return nil, err
+		}
+		if found {
+			return settings, nil
+		}
+	}
+	return s.GetProfitSettings(ctx)
 }
 
 func profitEventFromLog(entry *Log, settings *ProfitSettings) (*ProfitEvent, error) {
@@ -385,6 +533,8 @@ func (s *RDBLogStore) GetProfitBreakdown(ctx context.Context, query ProfitQuery)
 	var rows []ProfitBreakdownRow
 	db := s.db.WithContext(ctx).Model(&ProfitEvent{}).
 		Select(`
+			routing_rule_id,
+			routing_rule_name,
 			provider,
 			model,
 			COALESCE(SUM(revenue_usd), 0) AS revenue_usd,
@@ -398,7 +548,7 @@ func (s *RDBLogStore) GetProfitBreakdown(ctx context.Context, query ProfitQuery)
 			COALESCE(SUM(total_tokens), 0) AS total_tokens,
 			COALESCE(SUM(CASE WHEN missing_cost THEN 1 ELSE 0 END), 0) AS missing_cost_count,
 			COALESCE(SUM(CASE WHEN missing_tokens THEN 1 ELSE 0 END), 0) AS missing_tokens_count`).
-		Group("provider, model").
+		Group("routing_rule_id, routing_rule_name, provider, model").
 		Order("revenue_usd DESC")
 	if err := applyProfitQuery(db, query).Scan(&rows).Error; err != nil {
 		return nil, err
