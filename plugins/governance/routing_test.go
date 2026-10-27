@@ -1469,6 +1469,49 @@ func TestBuildGroupedRoutingDecision_FallbackOnlyUsedWhenRegularSlowCooldown(t *
 	assert.Empty(t, decision.FallbackLayerPlan)
 }
 
+func TestBuildGroupedRoutingDecision_AutoRouteAttemptBudget(t *testing.T) {
+	for _, model := range []string{"gemini-auto", "gemini-auto-bif", "other-model"} {
+		for _, cooldown := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/cooldown=%t", model, cooldown), func(t *testing.T) {
+				tracker := NewHealthTracker()
+				rule := &configstoreTables.TableRoutingRule{ID: "attempt-budget"}
+				for _, name := range []string{"a", "b", "c", "vip"} {
+					rule.ParsedRouteGroups = append(rule.ParsedRouteGroups, configstoreTables.RouteGroup{
+						Name: name, Targets: []configstoreTables.RouteGroupTarget{{
+							Provider: bifrost.Ptr(name), Model: bifrost.Ptr("upstream"), KeyID: bifrost.Ptr(name + "-key"), Weight: 1,
+						}},
+					})
+				}
+				policy := ApplyHealthPolicyDefaults(&configstoreTables.HealthPolicy{FailureThreshold: 1, CooldownSeconds: 120})
+				rule.ParsedHealthPolicy = policy
+				if cooldown {
+					tracker.RecordOutcome(rule.ID, TargetKey("a", "upstream", "a-key"), OutcomeHardFail, 0, "502", policy, time.Now())
+				}
+				decision := buildGroupedRoutingDecision(schemas.NewBifrostContext(context.Background(), time.Now()), rule,
+					&RoutingContext{Provider: schemas.OpenAI, Model: model}, tracker, NewMockLogger())
+				require.NotNil(t, decision)
+				want := []string{"a", "b", "c"}
+				if cooldown {
+					want = []string{"b", "c", "vip"}
+				} else if model == "other-model" {
+					want = append(want, "vip")
+				}
+				assert.Equal(t, want[0], decision.Provider)
+				assert.Equal(t, want[0]+"-key", decision.KeyID)
+				require.Len(t, decision.Fallbacks, len(want)-1)
+				require.Len(t, decision.FallbackKeyIDs, len(want)-1)
+				require.Len(t, decision.FallbackLayerPlan, len(want)-1)
+				for i, name := range want[1:] {
+					assert.Equal(t, name+"/upstream", decision.Fallbacks[i])
+					assert.Equal(t, name+"-key", decision.FallbackKeyIDs[i])
+					assert.Equal(t, name, decision.FallbackLayerPlan[i].LayerName)
+					assert.Equal(t, name+"-key", decision.FallbackLayerPlan[i].KeyID)
+				}
+			})
+		}
+	}
+}
+
 func TestBuildGroupedRoutingDecision_FallbackOnlyRetryLimitRepeatsSingleTarget(t *testing.T) {
 	healthTracker := NewHealthTracker()
 	now := time.Now()

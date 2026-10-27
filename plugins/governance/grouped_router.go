@@ -163,6 +163,11 @@ func buildGroupedRoutingDecision(
 	appendUnique(halfOpen)
 	appendFallbackOnly(fallbackOnly)
 
+	// These virtual models have a 190s caller budget for three 60s channel attempts.
+	if (routingCtx.Model == "gemini-auto" || routingCtx.Model == "gemini-auto-bif") && len(chain) > 3 {
+		chain = chain[:3]
+	}
+
 	if len(chain) == 0 {
 		ctx.AppendRoutingEngineLog(routingGroupEngine, "No available targets across all groups")
 		return nil
