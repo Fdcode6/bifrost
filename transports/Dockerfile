@@ -57,7 +57,7 @@
   # musl: C standard library (required for CGO binaries)
   # libgcc: GCC runtime library
   # ca-certificates: For HTTPS connections
-  RUN apk add --no-cache musl libgcc ca-certificates wget zlib=1.3.2-r0
+  RUN apk add --no-cache musl libgcc ca-certificates wget 'zlib>=1.3.2-r1'
   
   # Create data directory and set up user
   COPY --from=builder /app/main .
