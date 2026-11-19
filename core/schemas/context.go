@@ -22,6 +22,7 @@ var reservedKeys = []any{
 	BifrostContextKeyNumberOfRetries,
 	BifrostContextKeyFallbackIndex,
 	BifrostContextKeyFallbackKeyIDs,
+	BifrostContextKeyFallbackDeadline,
 	BifrostContextKeySkipKeySelection,
 	BifrostContextKeyURLPath,
 	BifrostContextKeyDeferTraceCompletion,

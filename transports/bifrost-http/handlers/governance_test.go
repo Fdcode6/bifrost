@@ -660,3 +660,48 @@ func TestGetHealthStatus_GroupedRulesAreRuleScoped(t *testing.T) {
 	require.Equal(t, "cooldown", statusByRule["rule-a"], fmt.Sprintf("unexpected response: %s", string(ctx.Response.Body())))
 	require.Equal(t, "available", statusByRule["rule-b"], fmt.Sprintf("unexpected response: %s", string(ctx.Response.Body())))
 }
+
+func TestValidateAndBuildHealthPolicy_SmartRoutingFields(t *testing.T) {
+	fatalConsec := 3
+	fatalCooldown := 180
+	errWindow := 20
+	errMin := 6
+	errThreshold := 0.4
+	maxAttempts := 6
+	reqDeadline := 135000
+	diversify := true
+	wakeup := true
+
+	req := &HealthPolicyRequest{
+		FatalConsecutiveFailures: &fatalConsec,
+		FatalCooldownSeconds:     &fatalCooldown,
+		ErrorRateWindowSize:      &errWindow,
+		ErrorRateMinSamples:      &errMin,
+		ErrorRateThreshold:       &errThreshold,
+		MaxFallbackAttempts:      &maxAttempts,
+		RequestDeadlineMs:        &reqDeadline,
+		EnableUpstreamDiversity:  &diversify,
+		ActiveProbeWakeup:        &wakeup,
+	}
+	require.NoError(t, validateHealthPolicy(req))
+
+	built := buildHealthPolicy(req)
+	require.Equal(t, 3, built.FatalConsecutiveFailures)
+	require.Equal(t, 180, built.FatalCooldownSeconds)
+	require.Equal(t, 20, built.ErrorRateWindowSize)
+	require.Equal(t, 6, built.ErrorRateMinSamples)
+	require.InDelta(t, 0.4, built.ErrorRateThreshold, 0.0001)
+	require.Equal(t, 6, built.MaxFallbackAttempts)
+	require.Equal(t, 135000, built.RequestDeadlineMs)
+	require.NotNil(t, built.EnableUpstreamDiversity)
+	require.True(t, *built.EnableUpstreamDiversity)
+	require.NotNil(t, built.ActiveProbeWakeup)
+	require.True(t, *built.ActiveProbeWakeup)
+
+	badRate := 1.5
+	require.Error(t, validateHealthPolicy(&HealthPolicyRequest{ErrorRateThreshold: &badRate}))
+	badFatal := 0
+	require.Error(t, validateHealthPolicy(&HealthPolicyRequest{FatalConsecutiveFailures: &badFatal}))
+	badAttempts := -1
+	require.Error(t, validateHealthPolicy(&HealthPolicyRequest{MaxFallbackAttempts: &badAttempts}))
+}

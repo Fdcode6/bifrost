@@ -806,6 +806,7 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 		QueryParams:              req.Query,
 		BudgetAndRateLimitStatus: p.store.GetBudgetAndRateLimitStatus(ctx, model, provider, virtualKey, nil, nil, nil),
 		TargetCostResolver:       p.resolveRoutingTargetCost,
+		TargetUpstreamResolver:   p.resolveRoutingTargetUpstream,
 	}
 
 	p.logger.Debug("[HTTPTransport] Built routing context: provider=%s, model=%s, requestType=%s, vk=%v, headerCount=%d, paramCount=%d",
@@ -866,14 +867,18 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 		// Store grouped routing context for fallback key_id restoration (PreLLMHook)
 		// and scoped health tracking (PostLLMHook)
 		if decision.IsGroupedRouting {
+			effectivePolicy := ApplyHealthPolicyDefaults(decision.HealthPolicy)
 			ctx.SetValue(groupedRoutingActiveContextKey, true)
 			ctx.SetValue(groupedRoutingRuleIDContextKey, decision.MatchedRuleID)
 			ctx.SetValue(groupedRoutingCurrentLayerContextKey, decision.PrimaryLayer)
 			ctx.SetValue(groupedRoutingFallbackLayerPlanContextKey, decision.FallbackLayerPlan)
 			ctx.SetValue(groupedRoutingPinnedKeyIDContextKey, decision.KeyID)
-			ctx.SetValue(groupedRoutingHealthPolicyContextKey, ApplyHealthPolicyDefaults(decision.HealthPolicy))
+			ctx.SetValue(groupedRoutingHealthPolicyContextKey, effectivePolicy)
 			ctx.SetValue(schemas.BifrostContextKeyRouteLayerIndex, decision.PrimaryLayer.LayerIndex)
 			ctx.SetValue(schemas.BifrostContextKeyDisableProviderRetries, true)
+			if budgetMs := effectiveFallbackBudgetMs(effectivePolicy, routingCtx); budgetMs > 0 {
+				ctx.SetValue(schemas.BifrostContextKeyFallbackDeadline, time.Now().Add(time.Duration(budgetMs)*time.Millisecond))
+			}
 			if len(decision.FallbackKeyIDs) > 0 {
 				ctx.SetValue(schemas.BifrostContextKeyFallbackKeyIDs, decision.FallbackKeyIDs)
 			}
@@ -901,6 +906,31 @@ func (p *GovernancePlugin) resolveRoutingTargetCost(provider schemas.ModelProvid
 		return 0, false
 	}
 	return cost, true
+}
+
+type providerConfigReader interface {
+	GetProvider(name string) (*configstoreTables.TableProvider, bool)
+}
+
+func (p *GovernancePlugin) resolveRoutingTargetUpstream(provider schemas.ModelProvider) string {
+	providerName := strings.TrimSpace(string(provider))
+	if providerName == "" {
+		return ""
+	}
+	if p != nil && p.store != nil {
+		if reader, ok := p.store.(providerConfigReader); ok {
+			if tp, found := reader.GetProvider(providerName); found && tp != nil && tp.NetworkConfig != nil {
+				rawBaseURL := strings.TrimSpace(tp.NetworkConfig.BaseURL)
+				if rawBaseURL != "" {
+					if parsed, err := url.Parse(rawBaseURL); err == nil && parsed.Hostname() != "" {
+						return strings.ToLower(parsed.Hostname())
+					}
+					return strings.ToLower(rawBaseURL)
+				}
+			}
+		}
+	}
+	return strings.ToLower(providerName)
 }
 
 // addMCPIncludeTools adds the x-bf-mcp-include-tools header to the request headers

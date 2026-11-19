@@ -3768,3 +3768,16 @@ func (gs *LocalGovernanceStore) DeleteRoutingRuleInMemory(id string) error {
 
 	return nil
 }
+
+// GetProvider returns the cached TableProvider configuration by provider name.
+func (gs *LocalGovernanceStore) GetProvider(name string) (*configstoreTables.TableProvider, bool) {
+	if gs == nil || name == "" {
+		return nil, false
+	}
+	value, ok := gs.providers.Load(name)
+	if !ok || value == nil {
+		return nil, false
+	}
+	provider, ok := value.(*configstoreTables.TableProvider)
+	return provider, ok && provider != nil
+}

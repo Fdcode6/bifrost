@@ -897,9 +897,17 @@ func TestBuildGroupedRoutingDecision_DoesNotShareCooldownAcrossRules(t *testing.
 		ParsedHealthPolicy: policy,
 		ParsedRouteGroups: []configstoreTables.RouteGroup{
 			{Name: "primary", RetryLimit: 0, Targets: []configstoreTables.RouteGroupTarget{target}},
+			{Name: "backup", RetryLimit: 0, Targets: []configstoreTables.RouteGroupTarget{{
+				Provider: bifrost.Ptr("anthropic"),
+				Model:    bifrost.Ptr("claude-sonnet-4"),
+				KeyID:    bifrost.Ptr("relay-b"),
+				Weight:   1,
+			}}},
 		},
 	}, routingCtx, healthTracker, NewMockLogger())
-	assert.Nil(t, decisionA, "rule-a should see its own target in cooldown")
+	require.NotNil(t, decisionA)
+	assert.Equal(t, "anthropic", decisionA.Provider, "rule-a should skip its own cooled primary and route to backup")
+	assert.True(t, healthTracker.IsInCooldownForRule("rule-a", targetKey, policy, now.Add(2*time.Second)))
 
 	ctxB := schemas.NewBifrostContext(context.Background(), time.Now())
 	decisionB := buildGroupedRoutingDecision(ctxB, &configstoreTables.TableRoutingRule{
@@ -914,6 +922,7 @@ func TestBuildGroupedRoutingDecision_DoesNotShareCooldownAcrossRules(t *testing.
 	assert.Equal(t, "openai", decisionB.Provider)
 	assert.Equal(t, "gpt-4.1", decisionB.Model)
 	assert.Equal(t, "relay-a", decisionB.KeyID)
+	assert.False(t, healthTracker.IsInCooldownForRule("rule-b", targetKey, policy, now.Add(2*time.Second)))
 }
 
 func TestBuildGroupedRoutingDecision_TargetDoesNotRecoverFromActiveProbeSuccess(t *testing.T) {
@@ -931,6 +940,12 @@ func TestBuildGroupedRoutingDecision_TargetDoesNotRecoverFromActiveProbeSuccess(
 		KeyID:    bifrost.Ptr("relay-a"),
 		Weight:   1,
 	}
+	backupTarget := configstoreTables.RouteGroupTarget{
+		Provider: bifrost.Ptr("anthropic"),
+		Model:    bifrost.Ptr("claude-sonnet-4"),
+		KeyID:    bifrost.Ptr("relay-b"),
+		Weight:   1,
+	}
 	policy := &configstoreTables.HealthPolicy{
 		FailureThreshold:     1,
 		FailureWindowSeconds: 30,
@@ -942,11 +957,14 @@ func TestBuildGroupedRoutingDecision_TargetDoesNotRecoverFromActiveProbeSuccess(
 		ParsedHealthPolicy: policy,
 		ParsedRouteGroups: []configstoreTables.RouteGroup{
 			{Name: "primary", RetryLimit: 0, Targets: []configstoreTables.RouteGroupTarget{target}},
+			{Name: "backup", RetryLimit: 0, Targets: []configstoreTables.RouteGroupTarget{backupTarget}},
 		},
 	}
 
 	ctxBlocked := schemas.NewBifrostContext(context.Background(), time.Now())
-	assert.Nil(t, buildGroupedRoutingDecision(ctxBlocked, rule, routingCtx, healthTracker, NewMockLogger()))
+	decisionBlocked := buildGroupedRoutingDecision(ctxBlocked, rule, routingCtx, healthTracker, NewMockLogger())
+	require.NotNil(t, decisionBlocked)
+	assert.Equal(t, "anthropic", decisionBlocked.Provider)
 
 	applyActiveProbeResult(healthTracker, activeProbePlan{
 		TargetKey:   targetKey,
@@ -955,7 +973,9 @@ func TestBuildGroupedRoutingDecision_TargetDoesNotRecoverFromActiveProbeSuccess(
 	}, activeProbeResult{Success: true}, time.Now())
 
 	ctxStillBlocked := schemas.NewBifrostContext(context.Background(), time.Now())
-	assert.Nil(t, buildGroupedRoutingDecision(ctxStillBlocked, rule, routingCtx, healthTracker, NewMockLogger()))
+	decisionStillBlocked := buildGroupedRoutingDecision(ctxStillBlocked, rule, routingCtx, healthTracker, NewMockLogger())
+	require.NotNil(t, decisionStillBlocked)
+	assert.Equal(t, "anthropic", decisionStillBlocked.Provider, "default active probe without ActiveProbeWakeup must not clear cooldown")
 }
 
 func TestBuildGroupedRoutingDecision_AssignsLayerPlan(t *testing.T) {
@@ -1223,7 +1243,7 @@ func TestPostLLMHook_GroupedRoutingSlowSuccessRecordsSlowOutcome(t *testing.T) {
 	snap := plugin.GetHealthTracker().GetTargetStatusForRule("rule-slow-post", targetKey, policy, time.Now())
 	assert.Equal(t, "slow", snap.LastOutcomeKind)
 	assert.Equal(t, 1, snap.SlowCount)
-	assert.Equal(t, "cooldown", snap.HealthLevel)
+	assert.Equal(t, "degraded", snap.HealthLevel)
 }
 
 func TestPostLLMHook_GroupedRoutingFallbackAttemptUsesCurrentLayer(t *testing.T) {
@@ -1307,7 +1327,7 @@ func TestBuildGroupedRoutingDecision_HealthOverCost_SlowCooldownYieldsToNextGrou
 	assert.Equal(t, "4sapi", decision.Provider)
 	assert.Equal(t, "gemini-pro-medium", decision.Model)
 	assert.Equal(t, "fast-key", decision.KeyID)
-	assert.Empty(t, decision.Fallbacks)
+	assert.Equal(t, []string{"poloapi/gemini-pro"}, decision.Fallbacks, "degraded slow target yields primary to healthy group but stays available as fallback")
 }
 
 func TestBuildGroupedRoutingDecision_CostOrdersHealthyTargetsWithinGroup(t *testing.T) {
@@ -1464,9 +1484,10 @@ func TestBuildGroupedRoutingDecision_FallbackOnlyUsedWhenRegularSlowCooldown(t *
 	}, healthTracker, NewMockLogger())
 
 	require.NotNil(t, decision)
-	assert.Equal(t, "openrouter", decision.Provider)
-	assert.Empty(t, decision.Fallbacks)
-	assert.Empty(t, decision.FallbackLayerPlan)
+	assert.Equal(t, "poloapi", decision.Provider, "degraded slow regular group remains ahead of fallback_only group")
+	assert.Equal(t, []string{"openrouter/gemma"}, decision.Fallbacks)
+	require.Len(t, decision.FallbackLayerPlan, 1)
+	assert.Equal(t, "fallback", decision.FallbackLayerPlan[0].LayerName)
 }
 
 func TestBuildGroupedRoutingDecision_AutoRouteAttemptBudget(t *testing.T) {
@@ -1475,7 +1496,7 @@ func TestBuildGroupedRoutingDecision_AutoRouteAttemptBudget(t *testing.T) {
 			t.Run(fmt.Sprintf("%s/cooldown=%t", model, cooldown), func(t *testing.T) {
 				tracker := NewHealthTracker()
 				rule := &configstoreTables.TableRoutingRule{ID: "attempt-budget"}
-				for _, name := range []string{"a", "b", "c", "vip"} {
+				for _, name := range []string{"a", "b", "c", "d", "e", "f", "vip"} {
 					rule.ParsedRouteGroups = append(rule.ParsedRouteGroups, configstoreTables.RouteGroup{
 						Name: name, Targets: []configstoreTables.RouteGroupTarget{{
 							Provider: bifrost.Ptr(name), Model: bifrost.Ptr("upstream"), KeyID: bifrost.Ptr(name + "-key"), Weight: 1,
@@ -1490,9 +1511,9 @@ func TestBuildGroupedRoutingDecision_AutoRouteAttemptBudget(t *testing.T) {
 				decision := buildGroupedRoutingDecision(schemas.NewBifrostContext(context.Background(), time.Now()), rule,
 					&RoutingContext{Provider: schemas.OpenAI, Model: model}, tracker, NewMockLogger())
 				require.NotNil(t, decision)
-				want := []string{"a", "b", "c"}
+				want := []string{"a", "b", "c", "d", "e", "f"}
 				if cooldown {
-					want = []string{"b", "c", "vip"}
+					want = []string{"b", "c", "d", "e", "f", "vip"}
 				} else if model == "other-model" {
 					want = append(want, "vip")
 				}
@@ -1550,7 +1571,7 @@ func TestBuildGroupedRoutingDecision_FallbackOnlyRetryLimitRepeatsSingleTarget(t
 	}
 }
 
-func TestBuildGroupedRoutingDecision_HalfOpenProbeSinksToFallbackTail(t *testing.T) {
+func TestBuildGroupedRoutingDecision_HalfOpenProbeReturnsInPlaceWithHealthyBackups(t *testing.T) {
 	healthTracker := NewHealthTracker()
 	policy := ApplyHealthPolicyDefaults(&configstoreTables.HealthPolicy{
 		FailureThreshold:     1,
@@ -1558,7 +1579,7 @@ func TestBuildGroupedRoutingDecision_HalfOpenProbeSinksToFallbackTail(t *testing
 		CooldownSeconds:      1,
 	})
 	now := time.Now().Add(-2 * time.Second)
-	halfOpenKey := TargetKey("poloapi", "gemini-pro", "cheap-key")
+	halfOpenKey := TargetKey("yunwu", "gemini-pro", "cheap-key")
 	healthTracker.RecordOutcome("rule-half-open", halfOpenKey, OutcomeHardFail, 0, "502", policy, now)
 	require.Equal(t, HealthCooldown, healthTracker.GetTargetHealthForRule("rule-half-open", halfOpenKey, policy, now))
 
@@ -1568,28 +1589,200 @@ func TestBuildGroupedRoutingDecision_HalfOpenProbeSinksToFallbackTail(t *testing
 		ParsedHealthPolicy: policy,
 		ParsedRouteGroups: []configstoreTables.RouteGroup{
 			{Name: "cheap", Targets: []configstoreTables.RouteGroupTarget{{
-				Provider: bifrost.Ptr("poloapi"),
+				Provider: bifrost.Ptr("yunwu"),
 				Model:    bifrost.Ptr("gemini-pro"),
 				KeyID:    bifrost.Ptr("cheap-key"),
 				Weight:   1,
 			}}},
-			{Name: "fast", Targets: []configstoreTables.RouteGroupTarget{{
-				Provider: bifrost.Ptr("4sapi"),
-				Model:    bifrost.Ptr("gemini-pro-medium"),
-				KeyID:    bifrost.Ptr("fast-key"),
+			{Name: "backup1", Targets: []configstoreTables.RouteGroupTarget{{
+				Provider: bifrost.Ptr("bai-6fold"),
+				Model:    bifrost.Ptr("gemini-pro"),
+				KeyID:    bifrost.Ptr("b1-key"),
+				Weight:   1,
+			}}},
+			{Name: "backup2", Targets: []configstoreTables.RouteGroupTarget{{
+				Provider: bifrost.Ptr("bai-7fold"),
+				Model:    bifrost.Ptr("gemini-pro"),
+				KeyID:    bifrost.Ptr("b2-key"),
+				Weight:   1,
+			}}},
+			{Name: "backup3", Targets: []configstoreTables.RouteGroupTarget{{
+				Provider: bifrost.Ptr("polo-vip"),
+				Model:    bifrost.Ptr("gemini-pro"),
+				KeyID:    bifrost.Ptr("b3-key"),
 				Weight:   1,
 			}}},
 		},
 	}
 
-	decision := buildGroupedRoutingDecision(schemas.NewBifrostContext(context.Background(), time.Now()), rule, &RoutingContext{
+	// First request after cooldown expires claims the in-place half-open probe at slot 1,
+	// backed immediately by healthy backups so the user request still succeeds if probe fails.
+	decision1 := buildGroupedRoutingDecision(schemas.NewBifrostContext(context.Background(), time.Now()), rule, &RoutingContext{
 		Provider: schemas.OpenAI,
-		Model:    "gemini-pro",
+		Model:    "gemini-auto",
 	}, healthTracker, NewMockLogger())
 
+	require.NotNil(t, decision1)
+	assert.Equal(t, "yunwu", decision1.Provider)
+	assert.Equal(t, []string{"bai-6fold/gemini-pro", "bai-7fold/gemini-pro", "polo-vip/gemini-pro"}, decision1.Fallbacks)
+
+	// Concurrent second request while probe is in-flight skips yunwu and routes straight to healthy backup1.
+	decision2 := buildGroupedRoutingDecision(schemas.NewBifrostContext(context.Background(), time.Now()), rule, &RoutingContext{
+		Provider: schemas.OpenAI,
+		Model:    "gemini-auto",
+	}, healthTracker, NewMockLogger())
+	require.NotNil(t, decision2)
+	assert.Equal(t, "bai-6fold", decision2.Provider)
+	assert.Equal(t, []string{"bai-7fold/gemini-pro", "polo-vip/gemini-pro"}, decision2.Fallbacks)
+}
+
+func TestBuildGroupedRoutingDecision_AtMostOneHalfOpenProbePerRequest(t *testing.T) {
+	healthTracker := NewHealthTracker()
+	policy := ApplyHealthPolicyDefaults(&configstoreTables.HealthPolicy{
+		FailureThreshold:     1,
+		FailureWindowSeconds: 30,
+		CooldownSeconds:      1,
+	})
+	past := time.Now().Add(-5 * time.Second)
+	healthTracker.RecordOutcome("rule-ho-cap", TargetKey("cheap1", "m", "k1"), OutcomeHardFail, 0, "502", policy, past)
+	healthTracker.RecordOutcome("rule-ho-cap", TargetKey("cheap2", "m", "k2"), OutcomeHardFail, 0, "502", policy, past)
+	require.Equal(t, HealthCooldown, healthTracker.GetTargetHealthForRule("rule-ho-cap", TargetKey("cheap1", "m", "k1"), policy, past))
+	require.Equal(t, HealthCooldown, healthTracker.GetTargetHealthForRule("rule-ho-cap", TargetKey("cheap2", "m", "k2"), policy, past))
+
+	rule := &configstoreTables.TableRoutingRule{
+		ID:                 "rule-ho-cap",
+		Name:               "half open cap",
+		ParsedHealthPolicy: policy,
+		ParsedRouteGroups: []configstoreTables.RouteGroup{
+			{Name: "g1", Targets: []configstoreTables.RouteGroupTarget{{Provider: bifrost.Ptr("cheap1"), Model: bifrost.Ptr("m"), KeyID: bifrost.Ptr("k1"), Weight: 1}}},
+			{Name: "g2", Targets: []configstoreTables.RouteGroupTarget{{Provider: bifrost.Ptr("cheap2"), Model: bifrost.Ptr("m"), KeyID: bifrost.Ptr("k2"), Weight: 1}}},
+			{Name: "g3", Targets: []configstoreTables.RouteGroupTarget{{Provider: bifrost.Ptr("steady"), Model: bifrost.Ptr("m"), KeyID: bifrost.Ptr("k3"), Weight: 1}}},
+		},
+	}
+
+	// Request 1 takes ONLY cheap1 (cheapest thawed) + healthy steady; cheap2 stays eligible for Request 2!
+	d1 := buildGroupedRoutingDecision(schemas.NewBifrostContext(context.Background(), time.Now()), rule, &RoutingContext{Provider: schemas.OpenAI, Model: "gemini-auto"}, healthTracker, NewMockLogger())
+	require.NotNil(t, d1)
+	assert.Equal(t, "cheap1", d1.Provider)
+	assert.Equal(t, []string{"steady/m"}, d1.Fallbacks)
+
+	// Request 2 now probes cheap2 + healthy steady!
+	d2 := buildGroupedRoutingDecision(schemas.NewBifrostContext(context.Background(), time.Now()), rule, &RoutingContext{Provider: schemas.OpenAI, Model: "gemini-auto"}, healthTracker, NewMockLogger())
+	require.NotNil(t, d2)
+	assert.Equal(t, "cheap2", d2.Provider)
+	assert.Equal(t, []string{"steady/m"}, d2.Fallbacks)
+
+	// Request 3 sees both probes in-flight and routes straight to healthy steady.
+	d3 := buildGroupedRoutingDecision(schemas.NewBifrostContext(context.Background(), time.Now()), rule, &RoutingContext{Provider: schemas.OpenAI, Model: "gemini-auto"}, healthTracker, NewMockLogger())
+	require.NotNil(t, d3)
+	assert.Equal(t, "steady", d3.Provider)
+	assert.Empty(t, d3.Fallbacks)
+}
+
+func TestBuildGroupedRoutingDecision_UpstreamDiversityAndSinglePoolAutoCostSort(t *testing.T) {
+	healthTracker := NewHealthTracker()
+	now := time.Now()
+	// All 6 split-tier providers placed into ONE single pool with default RetryLimit: 0!
+	rule := &configstoreTables.TableRoutingRule{
+		ID:   "rule-single-pool-diversity",
+		Name: "single pool diversity",
+		ParsedRouteGroups: []configstoreTables.RouteGroup{
+			{
+				Name:       "price-first-pool",
+				RetryLimit: 0,
+				Targets: []configstoreTables.RouteGroupTarget{
+					{Provider: bifrost.Ptr("poloapi_vip"), Model: bifrost.Ptr("gemini-3.1-pro-preview"), KeyID: bifrost.Ptr("k-pvip"), Weight: 1},
+					{Provider: bifrost.Ptr("B.AI-7fold"), Model: bifrost.Ptr("gemini-3.1-pro"), KeyID: bifrost.Ptr("k-b7"), Weight: 1},
+					{Provider: bifrost.Ptr("B.AI-6fold"), Model: bifrost.Ptr("gemini-3.1-pro"), KeyID: bifrost.Ptr("k-b6"), Weight: 1},
+					{Provider: bifrost.Ptr("B.AI"), Model: bifrost.Ptr("gemini-3.1-pro"), KeyID: bifrost.Ptr("k-b"), Weight: 1},
+					{Provider: bifrost.Ptr("云雾API"), Model: bifrost.Ptr("gemini-3.1-pro-preview"), KeyID: bifrost.Ptr("k-yw"), Weight: 1},
+					{Provider: bifrost.Ptr("NightRouter"), Model: bifrost.Ptr("gemini-3.1-pro-preview"), KeyID: bifrost.Ptr("k-nr"), Weight: 1},
+				},
+			},
+		},
+	}
+
+	costs := map[schemas.ModelProvider]float64{
+		"NightRouter": 0.054 + 0.324,
+		"云雾API":       0.217 + 1.304,
+		"B.AI":        0.800 + 4.800,
+		"B.AI-6fold":  1.200 + 7.200,
+		"B.AI-7fold":  1.400 + 8.400,
+		"poloapi_vip": 1.618 + 9.706,
+	}
+	upstreams := map[schemas.ModelProvider]string{
+		"NightRouter": "api.nightrouter.ai",
+		"云雾API":       "api.openlux.ai",
+		"B.AI":        "bai.zdfan.com",
+		"B.AI-6fold":  "bai.zdfan.com",
+		"B.AI-7fold":  "bai.zdfan.com",
+		"poloapi_vip": "polo.zdfan.com",
+	}
+
+	routingCtx := &RoutingContext{
+		Provider:    schemas.OpenAI,
+		Model:       "gemini-auto",
+		RequestType: string(schemas.ChatCompletionRequest),
+		TargetCostResolver: func(provider schemas.ModelProvider, model string, requestType schemas.RequestType) (float64, bool) {
+			c, ok := costs[provider]
+			return c, ok
+		},
+		TargetUpstreamResolver: func(provider schemas.ModelProvider) string {
+			return upstreams[provider]
+		},
+	}
+
+	decision := buildGroupedRoutingDecision(schemas.NewBifrostContext(context.Background(), now), rule, routingCtx, healthTracker, NewMockLogger())
 	require.NotNil(t, decision)
-	assert.Equal(t, "4sapi", decision.Provider)
-	assert.Equal(t, []string{"poloapi/gemini-pro"}, decision.Fallbacks)
+	// Round 1 (cheapest per unique upstream host): NightRouter -> 云雾API -> B.AI -> poloapi_vip
+	// Round 2 & 3 (remaining B.AI tiers): B.AI-6fold -> B.AI-7fold
+	assert.Equal(t, "NightRouter", decision.Provider)
+	assert.Equal(t, []string{
+		"云雾API/gemini-3.1-pro-preview",
+		"B.AI/gemini-3.1-pro",
+		"poloapi_vip/gemini-3.1-pro-preview",
+		"B.AI-6fold/gemini-3.1-pro",
+		"B.AI-7fold/gemini-3.1-pro",
+	}, decision.Fallbacks)
+}
+
+func TestBuildGroupedRoutingDecision_AllCooldownBuildsGracefulEscapeChain(t *testing.T) {
+	healthTracker := NewHealthTracker()
+	policy := ApplyHealthPolicyDefaults(&configstoreTables.HealthPolicy{
+		FailureThreshold:         1,
+		FailureWindowSeconds:     60,
+		CooldownSeconds:          30,
+		FatalConsecutiveFailures: 1,
+		FatalCooldownSeconds:     300,
+	})
+	now := time.Now()
+	// Group 0 (cheap-fatal): fatal cooldown (300s)
+	healthTracker.RecordOutcome("rule-escape", TargetKey("banned-relay", "m", "k1"), OutcomeFatalChannel, 0, "User has been banned", policy, now)
+	// Group 1 (transient-late): transient cooldown expiring at now+58s (soft=60s from now-2s)
+	healthTracker.RecordOutcome("rule-escape", TargetKey("slow-timeout", "m", "k2"), OutcomeSoftFail, 0, "timeout", policy, now.Add(-2*time.Second))
+	// Group 2 (transient-soon): transient cooldown expiring at now+40s (soft=60s from now-20s)
+	healthTracker.RecordOutcome("rule-escape", TargetKey("soon-recover", "m", "k3"), OutcomeSoftFail, 0, "timeout", policy, now.Add(-20*time.Second))
+
+	rule := &configstoreTables.TableRoutingRule{
+		ID:                 "rule-escape",
+		Name:               "escape",
+		ParsedHealthPolicy: policy,
+		ParsedRouteGroups: []configstoreTables.RouteGroup{
+			{Name: "g1", Targets: []configstoreTables.RouteGroupTarget{{Provider: bifrost.Ptr("banned-relay"), Model: bifrost.Ptr("m"), KeyID: bifrost.Ptr("k1"), Weight: 1}}},
+			{Name: "g2", Targets: []configstoreTables.RouteGroupTarget{{Provider: bifrost.Ptr("slow-timeout"), Model: bifrost.Ptr("m"), KeyID: bifrost.Ptr("k2"), Weight: 1}}},
+			{Name: "g3", Targets: []configstoreTables.RouteGroupTarget{{Provider: bifrost.Ptr("soon-recover"), Model: bifrost.Ptr("m"), KeyID: bifrost.Ptr("k3"), Weight: 1}}},
+		},
+	}
+
+	decision := buildGroupedRoutingDecision(schemas.NewBifrostContext(context.Background(), now), rule, &RoutingContext{
+		Provider: schemas.OpenAI,
+		Model:    "gemini-auto",
+	}, healthTracker, NewMockLogger())
+
+	require.NotNil(t, decision, "all-cooldown must never return nil and leak naked virtual model alias")
+	// Prefers non-fatal & earliest recovery first, leaving fatal-banned last!
+	assert.Equal(t, "soon-recover", decision.Provider)
+	assert.Equal(t, []string{"slow-timeout/m", "banned-relay/m"}, decision.Fallbacks)
 }
 
 func TestBuildGroupedRoutingDecision_DedupAcrossHealthBuckets(t *testing.T) {

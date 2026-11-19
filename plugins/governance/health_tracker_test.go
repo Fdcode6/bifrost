@@ -391,9 +391,9 @@ func TestApplyHealthPolicyDefaults_PreservesExplicitSlowRecoveryZero(t *testing.
 	assert.Equal(t, 0, *policy.SlowRecoverySeconds)
 }
 
-func TestGetTargetHealth_CooldownBySlowRatio(t *testing.T) {
+func TestGetTargetHealth_DegradedBySlowRatio(t *testing.T) {
 	ht := NewHealthTracker()
-	recovery := 0
+	recovery := 60
 	policy := ApplyHealthPolicyDefaults(&configstoreTables.HealthPolicy{
 		SlowWindowSize:       10,
 		SlowRatioThreshold:   0.5,
@@ -413,23 +413,39 @@ func TestGetTargetHealth_CooldownBySlowRatio(t *testing.T) {
 	}
 
 	snap := ht.GetTargetStatusForRule("rule-a", key, policy, now.Add(10*time.Second))
-	assert.Equal(t, HealthCooldown, ht.GetTargetHealthForRule("rule-a", key, policy, now.Add(10*time.Second)))
-	assert.Equal(t, "cooldown", snap.Status)
-	assert.Equal(t, "cooldown", snap.HealthLevel)
+	assert.Equal(t, HealthDegraded, ht.GetTargetHealthForRule("rule-a", key, policy, now.Add(10*time.Second)))
+	assert.Equal(t, "available", snap.Status)
+	assert.Equal(t, "degraded", snap.HealthLevel)
 	assert.Equal(t, 6, snap.SlowCount)
 	assert.Equal(t, 10, snap.SampleCount)
 	assert.InDelta(t, 0.6, snap.SlowRatio, 0.001)
 	require.NotNil(t, snap.P95LatencyMs)
 	assert.GreaterOrEqual(t, *snap.P95LatencyMs, int64(60000))
-	require.NotNil(t, snap.CooldownUntil)
-	cooldownUntil, err := time.Parse(time.RFC3339, *snap.CooldownUntil)
-	require.NoError(t, err)
-	assert.Equal(t, now.Add(35*time.Second).UTC().Format(time.RFC3339), cooldownUntil.UTC().Format(time.RFC3339))
+	assert.Nil(t, snap.CooldownUntil, "slow responses should demote to degraded without locking target into hard cooldown")
 }
 
-func TestGetTargetHealth_SlowRatioCooldownExpiresWithoutImmediateRetrigger(t *testing.T) {
+func TestGetTargetHealth_SingleSlowRequestDoesNotDegradeOrCooldown(t *testing.T) {
 	ht := NewHealthTracker()
-	recovery := 0
+	recovery := 60
+	policy := ApplyHealthPolicyDefaults(&configstoreTables.HealthPolicy{
+		SlowWindowSize:      10,
+		SlowRatioThreshold:  0.5,
+		SlowRecoverySeconds: &recovery,
+	})
+	now := time.Now()
+	key := "openai:gpt-4.1"
+
+	for i := 0; i < 9; i++ {
+		ht.RecordOutcome("rule-a", key, OutcomeSuccess, 2*time.Second, "", policy, now.Add(time.Duration(i)*time.Second))
+	}
+	ht.RecordOutcome("rule-a", key, OutcomeSlow, 65*time.Second, "", policy, now.Add(10*time.Second))
+
+	assert.Equal(t, HealthHealthy, ht.GetTargetHealthForRule("rule-a", key, policy, now.Add(11*time.Second)))
+}
+
+func TestGetTargetHealth_SlowDegradedAutoExpiresAfterSlowRecoverySeconds(t *testing.T) {
+	ht := NewHealthTracker()
+	recovery := 30
 	policy := ApplyHealthPolicyDefaults(&configstoreTables.HealthPolicy{
 		SlowWindowSize:       10,
 		SlowRatioThreshold:   0.5,
@@ -448,46 +464,139 @@ func TestGetTargetHealth_SlowRatioCooldownExpiresWithoutImmediateRetrigger(t *te
 		ht.RecordOutcome("rule-a", key, OutcomeSuccess, 2*time.Second, "", policy, now.Add(time.Duration(i)*time.Second))
 	}
 
-	assert.Equal(t, HealthCooldown, ht.GetTargetHealthForRule("rule-a", key, policy, now.Add(10*time.Second)))
-	snap := ht.GetTargetStatusForRule("rule-a", key, policy, now.Add(41*time.Second))
+	assert.Equal(t, HealthDegraded, ht.GetTargetHealthForRule("rule-a", key, policy, now.Add(10*time.Second)))
+	// Last slow was at now+5s; after 30s recovery window (now+36s) slow samples auto-clear.
+	snap := ht.GetTargetStatusForRule("rule-a", key, policy, now.Add(36*time.Second))
 	assert.Equal(t, "available", snap.Status)
 	assert.Equal(t, "healthy", snap.HealthLevel)
 	assert.Equal(t, 0, snap.SlowCount)
 	assert.Equal(t, 4, snap.SampleCount)
 }
 
-func TestGetTargetHealth_SlowCooldownHalfOpenSuccessClearsSlowSamples(t *testing.T) {
+func TestRecordOutcome_OutcomeIgnoreDoesNotResetFailuresOrPolluteHealth(t *testing.T) {
 	ht := NewHealthTracker()
-	recovery := 0
 	policy := ApplyHealthPolicyDefaults(&configstoreTables.HealthPolicy{
-		SlowWindowSize:       10,
-		SlowRatioThreshold:   0.5,
-		SlowRecoverySeconds:  &recovery,
-		FailureThreshold:     2,
-		FailureWindowSeconds: 30,
-		CooldownSeconds:      30,
+		FailureThreshold:         3,
+		FailureWindowSeconds:     60,
+		CooldownSeconds:          30,
+		FatalConsecutiveFailures: 2,
+		FatalCooldownSeconds:     120,
 	})
 	now := time.Now()
-	key := "openai:gpt-4.1"
+	key := "B.AI:gemini-3.1-pro:key-1"
 
+	// Record 1 fatal error, then an ignored 499 / client 400 — must NOT reset fatalConsecutiveFailures!
+	ht.RecordOutcome("rule-a", key, OutcomeFatalChannel, 0, "credit insufficient balance", policy, now)
+	ht.RecordOutcome("rule-a", key, OutcomeIgnore, 0, "context canceled", policy, now.Add(time.Second))
+	assert.Equal(t, HealthHealthy, ht.GetTargetHealthForRule("rule-a", key, policy, now.Add(2*time.Second)))
+
+	// Second fatal error hits FatalConsecutiveFailures=2 and immediately enters 120s fatal cooldown.
+	ht.RecordOutcome("rule-a", key, OutcomeFatalChannel, 0, "credit insufficient balance", policy, now.Add(3*time.Second))
+	snap := ht.GetTargetStatusForRule("rule-a", key, policy, now.Add(4*time.Second))
+	assert.Equal(t, "cooldown", snap.Status)
+	assert.Equal(t, string(OutcomeFatalChannel), snap.CooldownReason)
+	require.NotNil(t, snap.CooldownUntil)
+	until, err := time.Parse(time.RFC3339, *snap.CooldownUntil)
+	require.NoError(t, err)
+	assert.Equal(t, now.Add(123*time.Second).UTC().Format(time.RFC3339), until.UTC().Format(time.RFC3339))
+
+	// Another ignored error while in cooldown must NOT clear cooldown!
+	ht.RecordOutcome("rule-a", key, OutcomeIgnore, 0, "invalid request", policy, now.Add(5*time.Second))
+	assert.Equal(t, HealthCooldown, ht.GetTargetHealthForRule("rule-a", key, policy, now.Add(6*time.Second)))
+}
+
+func TestRecordOutcome_OutcomeIgnoreReleasesInFlightHalfOpenLease(t *testing.T) {
+	ht := NewHealthTracker()
+	policy := ApplyHealthPolicyDefaults(&configstoreTables.HealthPolicy{
+		FailureThreshold:     1,
+		FailureWindowSeconds: 30,
+		CooldownSeconds:      10,
+	})
+	now := time.Now()
+	key := "yunwu:gemini:key-1"
+
+	ht.RecordOutcome("rule-a", key, OutcomeSoftFail, 0, "timeout", policy, now)
+	require.Equal(t, HealthCooldown, ht.GetTargetHealthForRule("rule-a", key, policy, now.Add(1*time.Second)))
+
+	// Cooldown expires (20s soft cooldown); first caller claims half-open.
+	probeAt := now.Add(25 * time.Second)
+	require.True(t, ht.TryClaimHalfOpenProbeForRule("rule-a", key, policy, probeAt))
+	require.False(t, ht.TryClaimHalfOpenProbeForRule("rule-a", key, policy, probeAt.Add(time.Second)))
+
+	// Client cancels mid-probe (499 -> OutcomeIgnore): lease is released, cooldown remains armed for next probe.
+	ht.RecordOutcome("rule-a", key, OutcomeIgnore, 0, "context canceled", policy, probeAt.Add(2*time.Second))
+	state := ht.InspectTargetRoutingStateForRule("rule-a", key, policy, probeAt.Add(3*time.Second))
+	assert.Equal(t, HealthCooldown, state.Level)
+	assert.True(t, state.HalfOpenEligible)
+}
+
+func TestEvaluateCooldown_ErrorRateWindowAvoidsFalseCooldownUnderHighConcurrency(t *testing.T) {
+	ht := NewHealthTracker()
+	policy := ApplyHealthPolicyDefaults(&configstoreTables.HealthPolicy{
+		FailureThreshold:       3,
+		FailureWindowSeconds:   120,
+		CooldownSeconds:        45,
+		ConsecutiveFailures:    4,
+		SoftCooldownMultiplier: 1,
+		ErrorRateWindowSize:    20,
+		ErrorRateMinSamples:    5,
+		ErrorRateThreshold:     0.4,
+	})
+	now := time.Now()
+	key := "yunwu:gemini-3.1-pro-preview:k1"
+
+	// 17 fast successes interspersed with 3 timeouts (15% error rate < 40%, max consecutive = 1 < 4)
+	for i := 0; i < 20; i++ {
+		kind := OutcomeSuccess
+		if i == 3 || i == 9 || i == 15 {
+			kind = OutcomeSoftFail
+		}
+		ht.RecordOutcome("rule-a", key, kind, 10*time.Second, "", policy, now.Add(time.Duration(i)*time.Second))
+	}
+	assert.Equal(t, HealthHealthy, ht.GetTargetHealthForRule("rule-a", key, policy, now.Add(21*time.Second)),
+		"15% transient error rate must not trigger cooldown when error_rate_threshold is 40%")
+
+	// Push error rate to >= 40% (add 6 non-consecutive failures interleaved with 2 successes)
+	t0 := now.Add(22 * time.Second)
 	for i := 0; i < 6; i++ {
-		ht.RecordOutcome("rule-a", key, OutcomeSlow, 60*time.Second, "", policy, now.Add(time.Duration(i)*time.Second))
+		ht.RecordOutcome("rule-a", key, OutcomeSoftFail, 60*time.Second, "timeout", policy, t0.Add(time.Duration(i*2)*time.Second))
+		if i%2 == 0 {
+			ht.RecordOutcome("rule-a", key, OutcomeSuccess, 10*time.Second, "", policy, t0.Add(time.Duration(i*2+1)*time.Second))
+		}
 	}
-	for i := 6; i < 10; i++ {
-		ht.RecordOutcome("rule-a", key, OutcomeSuccess, 2*time.Second, "", policy, now.Add(time.Duration(i)*time.Second))
+	snap := ht.GetTargetStatusForRule("rule-a", key, policy, t0.Add(15*time.Second))
+	assert.Equal(t, "cooldown", snap.Status)
+	assert.GreaterOrEqual(t, snap.ErrorRate, 0.4)
+}
+
+func TestRecordOutcome_SporadicFatalErrorResetsOnSuccess(t *testing.T) {
+	ht := NewHealthTracker()
+	policy := ApplyHealthPolicyDefaults(&configstoreTables.HealthPolicy{
+		FailureThreshold:         5,
+		FailureWindowSeconds:     120,
+		CooldownSeconds:          45,
+		ConsecutiveFailures:      4,
+		FatalConsecutiveFailures: 2,
+		FatalCooldownSeconds:     120,
+		ErrorRateWindowSize:      20,
+		ErrorRateMinSamples:      5,
+		ErrorRateThreshold:       0.4,
+	})
+	now := time.Now()
+	key := "NightRouter:gemini-3.1-pro-preview:k1"
+
+	// Relay pool has 1 bad sub-account out of 5 (20% sporadic 403s < 40% error-rate threshold):
+	// consecutive fatal count resets on every success so cheap relay stays healthy!
+	ht.RecordOutcome("rule-a", key, OutcomeFatalChannel, 0, "no active subscription", policy, now)
+	for i := 1; i <= 4; i++ {
+		ht.RecordOutcome("rule-a", key, OutcomeSuccess, 8*time.Second, "", policy, now.Add(time.Duration(i)*time.Second))
+	}
+	ht.RecordOutcome("rule-a", key, OutcomeFatalChannel, 0, "no active subscription", policy, now.Add(5*time.Second))
+	for i := 6; i <= 9; i++ {
+		ht.RecordOutcome("rule-a", key, OutcomeSuccess, 8*time.Second, "", policy, now.Add(time.Duration(i)*time.Second))
 	}
 
-	assert.Equal(t, HealthCooldown, ht.GetTargetHealthForRule("rule-a", key, policy, now.Add(10*time.Second)))
-	level, halfOpen := ht.GetTargetRoutingHealthForRule("rule-a", key, policy, now.Add(36*time.Second))
-	assert.Equal(t, HealthCooldown, level)
-	assert.True(t, halfOpen)
-
-	ht.RecordOutcome("rule-a", key, OutcomeSuccess, time.Second, "", policy, now.Add(37*time.Second))
-	snap := ht.GetTargetStatusForRule("rule-a", key, policy, now.Add(37*time.Second))
-	assert.Equal(t, "available", snap.Status)
-	assert.Equal(t, "healthy", snap.HealthLevel)
-	assert.Equal(t, 0, snap.SlowCount)
-	assert.Equal(t, 5, snap.SampleCount)
+	assert.Equal(t, HealthHealthy, ht.GetTargetHealthForRule("rule-a", key, policy, now.Add(10*time.Second)))
 }
 
 func TestGetTargetHealth_SlowRatioThresholdAboveOneDisablesDegraded(t *testing.T) {

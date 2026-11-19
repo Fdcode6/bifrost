@@ -4291,6 +4291,14 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 
 	// Try fallbacks in order
 	for i, fallback := range fallbacks {
+		if ctx.Err() != nil {
+			bifrost.logger.Debug("request context done (%v), stopping fallback loop", ctx.Err())
+			break
+		}
+		if fallbackDeadline, ok := ctx.Value(schemas.BifrostContextKeyFallbackDeadline).(time.Time); ok && !fallbackDeadline.IsZero() && !time.Now().Before(fallbackDeadline) {
+			bifrost.logger.Debug("fallback deadline budget exhausted, skipping remaining %d fallbacks", len(fallbacks)-i)
+			break
+		}
 		ctx.SetValue(schemas.BifrostContextKeyFallbackIndex, i+1)
 		bifrost.logger.Debug(fmt.Sprintf("trying fallback provider %s with model %s", fallback.Provider, fallback.Model))
 		ctx.SetValue(schemas.BifrostContextKeyFallbackRequestID, uuid.New().String())
@@ -4413,6 +4421,14 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 
 	// Try fallbacks in order
 	for i, fallback := range fallbacks {
+		if ctx.Err() != nil {
+			bifrost.logger.Debug("request context done (%v), stopping fallback loop", ctx.Err())
+			break
+		}
+		if fallbackDeadline, ok := ctx.Value(schemas.BifrostContextKeyFallbackDeadline).(time.Time); ok && !fallbackDeadline.IsZero() && !time.Now().Before(fallbackDeadline) {
+			bifrost.logger.Debug("fallback deadline budget exhausted, skipping remaining %d fallbacks", len(fallbacks)-i)
+			break
+		}
 		ctx.SetValue(schemas.BifrostContextKeyFallbackIndex, i+1)
 		ctx.SetValue(schemas.BifrostContextKeyFallbackRequestID, uuid.New().String())
 		clearCtxForFallback(ctx)

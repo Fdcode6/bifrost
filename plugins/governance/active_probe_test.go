@@ -238,6 +238,101 @@ func TestApplyActiveProbeResult_RecordsProbeSuccessWithoutClearingRuleCooldown(t
 	assert.True(t, activity.LastRealAccessAt.IsZero())
 }
 
+func TestApplyActiveProbeResult_OptInActiveProbeWakeupUnlocksInPlaceHalfOpen(t *testing.T) {
+	ht := NewHealthTracker()
+	now := time.Now()
+	targetKey := TargetKey("yunwu", "gemini-3.1-pro-preview", "relay-a")
+	wakeup := true
+	policy := ApplyHealthPolicyDefaults(&configstoreTables.HealthPolicy{
+		FailureThreshold:     1,
+		FailureWindowSeconds: 30,
+		CooldownSeconds:      120,
+		ActiveProbeWakeup:    &wakeup,
+	})
+
+	ht.RecordFailureForRule("rule-a", targetKey, "timeout", now)
+	require.True(t, ht.IsInCooldownForRule("rule-a", targetKey, policy, now.Add(5*time.Second)))
+
+	applyActiveProbeResult(ht, activeProbePlan{
+		TargetKey:     targetKey,
+		RequestType:   schemas.ChatCompletionRequest,
+		RuleIDs:       []string{"rule-a"},
+		WakeupRuleIDs: []string{"rule-a"},
+	}, activeProbeResult{
+		Success: true,
+	}, now.Add(10*time.Second))
+
+	// Active probe wakeup does not blindly wipe cooldown, but immediately unlocks one in-place half-open probe.
+	state := ht.InspectTargetRoutingStateForRule("rule-a", targetKey, policy, now.Add(11*time.Second))
+	assert.Equal(t, HealthCooldown, state.Level)
+	assert.True(t, state.HalfOpenEligible)
+	assert.True(t, ht.TryClaimHalfOpenProbeForRule("rule-a", targetKey, policy, now.Add(11*time.Second)))
+}
+
+func TestBuildActiveProbePlans_KeepsProbingCooledTargetWhileRuleHasRecentTraffic(t *testing.T) {
+	ht := NewHealthTracker()
+	now := time.Now()
+	wakeup := true
+	policy := ApplyHealthPolicyDefaults(&configstoreTables.HealthPolicy{
+		FailureThreshold:         2,
+		FailureWindowSeconds:     60,
+		CooldownSeconds:          300,
+		FatalConsecutiveFailures: 2,
+		FatalCooldownSeconds:     300,
+		ActiveProbeWakeup:        &wakeup,
+	})
+
+	cheapKey := TargetKey("yunwu", "gemini-3.1-pro-preview", "k-cheap")
+	backupKey := TargetKey("B.AI", "gemini-3.1-pro", "k-backup")
+	idleBackupKey := TargetKey("poloapi_vip", "gemini-3.1-pro-preview", "k-vip")
+
+	rule := &configstoreTables.TableRoutingRule{
+		ID:                    "gemini-auto",
+		Name:                  "gemini-auto",
+		Enabled:               true,
+		GroupedRoutingEnabled: true,
+		ParsedHealthPolicy:    policy,
+		ParsedRouteGroups: []configstoreTables.RouteGroup{
+			{Name: "cheap", Targets: []configstoreTables.RouteGroupTarget{{Provider: bifrost.Ptr("yunwu"), Model: bifrost.Ptr("gemini-3.1-pro-preview"), KeyID: bifrost.Ptr("k-cheap"), Weight: 1}}},
+			{Name: "backup", Targets: []configstoreTables.RouteGroupTarget{{Provider: bifrost.Ptr("B.AI"), Model: bifrost.Ptr("gemini-3.1-pro"), KeyID: bifrost.Ptr("k-backup"), Weight: 1}}},
+			{Name: "vip", Targets: []configstoreTables.RouteGroupTarget{{Provider: bifrost.Ptr("poloapi_vip"), Model: bifrost.Ptr("gemini-3.1-pro-preview"), KeyID: bifrost.Ptr("k-vip"), Weight: 1}}},
+		},
+	}
+
+	// cheap entered 300s fatal cooldown 3 minutes ago (past idlePause=2m!), while backup served traffic 10s ago.
+	// idleBackup is healthy and hasn't had traffic in 10 minutes (should stay idle-paused to save tokens).
+	ht.RecordRealAccess(cheapKey, schemas.ChatCompletionRequest, now.Add(-3*time.Minute))
+	ht.RecordOutcome(rule.ID, cheapKey, OutcomeFatalChannel, 0, "insufficient balance", policy, now.Add(-3*time.Minute))
+	ht.RecordOutcome(rule.ID, cheapKey, OutcomeFatalChannel, 0, "insufficient balance", policy, now.Add(-3*time.Minute))
+	ht.RecordRealAccess(backupKey, schemas.ChatCompletionRequest, now.Add(-10*time.Second))
+	ht.RecordRealAccess(idleBackupKey, schemas.ChatCompletionRequest, now.Add(-10*time.Minute))
+
+	enabled := map[string]bool{
+		cheapKey:      true,
+		backupKey:     true,
+		idleBackupKey: true,
+	}
+
+	plans := buildActiveProbePlans([]*configstoreTables.TableRoutingRule{rule}, ht, enabled, now, 2*time.Minute)
+	planByKey := make(map[string]activeProbePlan, len(plans))
+	for _, p := range plans {
+		planByKey[p.TargetKey] = p
+	}
+
+	cheapPlan, hasCheap := planByKey[cheapKey]
+	require.True(t, hasCheap, "cooled cheap primary must keep being probed while rule is actively serving traffic on backup")
+	assert.Equal(t, []string{"gemini-auto"}, cheapPlan.WakeupRuleIDs)
+	_, hasBackup := planByKey[backupKey]
+	assert.True(t, hasBackup, "active backup should remain eligible for probing")
+	_, hasIdleVIP := planByKey[idleBackupKey]
+	assert.False(t, hasIdleVIP, "healthy idle backup past idlePause must stay paused")
+
+	// When the ENTIRE rule goes idle (overnight: backup also past idlePause=2m), cooled cheap target also pauses!
+	overnight := now.Add(4 * time.Minute)
+	plansOvernight := buildActiveProbePlans([]*configstoreTables.TableRoutingRule{rule}, ht, enabled, overnight, 2*time.Minute)
+	assert.Empty(t, plansOvernight, "when entire rule is idle overnight, cooled target should also pause probing")
+}
+
 func TestApplyActiveProbeResult_DoesNotInventRealAccess(t *testing.T) {
 	ht := NewHealthTracker()
 	now := time.Now()

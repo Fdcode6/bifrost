@@ -133,17 +133,18 @@ type HealthStatusResponse struct {
 }
 
 type healthDetectionTargetRecord struct {
-	CanonicalKey        string
-	TargetID            string
-	RuntimeTargetKey    string
-	Provider            string
-	Model               string
-	KeyID               *string
-	ReferencedRuleIDs   []string
-	ReferencedRuleNames []string
-	RouteGroups         []RouteGroupReferenceResponse
-	DegradedRuleCount   int
-	CooldownRuleCount   int
+	CanonicalKey         string
+	TargetID             string
+	RuntimeTargetKey     string
+	Provider             string
+	Model                string
+	KeyID                *string
+	ReferencedRuleIDs    []string
+	ReferencedRuleNames  []string
+	RouteGroups          []RouteGroupReferenceResponse
+	DegradedRuleCount    int
+	CooldownRuleCount    int
+	CooldownInActiveRule bool
 }
 
 func NewAdaptiveRoutingHandler(manager AdaptiveRoutingManager, configStore configstore.ConfigStore) (*AdaptiveRoutingHandler, error) {
@@ -410,9 +411,35 @@ func (h *AdaptiveRoutingHandler) updateHealthDetectionTarget(ctx *fasthttp.Reque
 		}
 	}
 
+	cooldownInActiveRule := false
+	if governancePlugin != nil && governancePlugin.GetHealthTracker() != nil && governancePlugin.GetGovernanceStore() != nil {
+		tracker := governancePlugin.GetHealthTracker()
+		for _, rule := range governancePlugin.GetGovernanceStore().GetAllRoutingRules() {
+			if rule == nil || !rule.Enabled || !rule.GroupedRoutingEnabled || len(rule.ParsedRouteGroups) == 0 {
+				continue
+			}
+			if !governance.RuleHasRecentRealAccess(rule, tracker, now, probeConfig.IdlePause) {
+				continue
+			}
+			policy := healthPolicyOrDefault(rule)
+			for _, group := range rule.ParsedRouteGroups {
+				if group.FallbackOnly {
+					continue
+				}
+				for _, target := range group.Targets {
+					if governance.RouteGroupTargetKey(target) == runtimeTargetKey {
+						if tracker.GetTargetStatusForRule(rule.ID, runtimeTargetKey, policy, now).HealthLevel == string(governance.HealthCooldown) {
+							cooldownInActiveRule = true
+						}
+					}
+				}
+			}
+		}
+	}
+
 	updatedTarget := *selected
 	updatedTarget.DetectionEnabled = *request.DetectionEnabled
-	updatedTarget.ProbeState = resolveHealthDetectionProbeState(updatedTarget.SupportStatus, updatedTarget.DetectionEnabled, activity, probeConfig.IdlePause, now)
+	updatedTarget.ProbeState = resolveHealthDetectionProbeState(updatedTarget.SupportStatus, updatedTarget.DetectionEnabled, activity, cooldownInActiveRule, probeConfig.IdlePause, now)
 	updatedTarget.LastRealAccessAt = formatTimePtr(activity.LastRealAccessAt)
 	updatedTarget.LastProbeAt = formatTimePtr(activity.LastProbeAt)
 	updatedTarget.LastProbeResult = activity.LastProbeResult
@@ -442,6 +469,7 @@ func (h *AdaptiveRoutingHandler) buildHealthDetectionTargets(ctx context.Context
 		}
 
 		policy := healthPolicyOrDefault(rule)
+		ruleHasRecentTraffic := governance.RuleHasRecentRealAccess(rule, tracker, now, probeConfig.IdlePause)
 		seenInRule := make(map[string]struct{})
 
 		for groupIndex, group := range rule.ParsedRouteGroups {
@@ -474,6 +502,9 @@ func (h *AdaptiveRoutingHandler) buildHealthDetectionTargets(ctx context.Context
 						} else if snap.HealthLevel == string(governance.HealthDegraded) {
 							record.DegradedRuleCount++
 						}
+					}
+					if !group.FallbackOnly && snap.HealthLevel == string(governance.HealthCooldown) && ruleHasRecentTraffic {
+						record.CooldownInActiveRule = true
 					}
 				}
 
@@ -512,7 +543,7 @@ func (h *AdaptiveRoutingHandler) buildHealthDetectionTargets(ctx context.Context
 			SupportStatus:       supportStatus,
 			SupportReason:       supportReason,
 			DetectionEnabled:    detectionEnabled,
-			ProbeState:          resolveHealthDetectionProbeState(supportStatus, detectionEnabled, activity, probeConfig.IdlePause, now),
+			ProbeState:          resolveHealthDetectionProbeState(supportStatus, detectionEnabled, activity, record.CooldownInActiveRule, probeConfig.IdlePause, now),
 			RuleHealthSummary: HealthDetectionRuleHealthSummary{
 				TotalRuleCount:    len(record.ReferencedRuleIDs),
 				DegradedRuleCount: record.DegradedRuleCount,
@@ -782,6 +813,7 @@ func resolveHealthDetectionProbeState(
 	supportStatus string,
 	detectionEnabled bool,
 	activity governance.TargetActivitySnapshot,
+	cooldownInActiveRule bool,
 	idlePause time.Duration,
 	now time.Time,
 ) string {
@@ -793,6 +825,9 @@ func resolveHealthDetectionProbeState(
 	}
 	if activity.PendingFirstProbe || (activity.LastRealAccessAt.IsZero() && activity.LastProbeAt.IsZero()) {
 		return healthDetectionProbeStatePendingFirstProbe
+	}
+	if cooldownInActiveRule {
+		return healthDetectionProbeStateEligible
 	}
 	if activity.LastRealAccessAt.IsZero() {
 		return healthDetectionProbeStatePausedIdle

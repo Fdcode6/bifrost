@@ -14,17 +14,26 @@ type HealthPolicy struct {
 	FailureThreshold     int `json:"failure_threshold"`      // failures within window before cooldown (default: 2)
 	FailureWindowSeconds int `json:"failure_window_seconds"` // sliding window in seconds (default: 30)
 	CooldownSeconds      int `json:"cooldown_seconds"`       // cooldown duration in seconds (default: 30)
-	ConsecutiveFailures  int `json:"consecutive_failures"`   // consecutive failures (ignoring time) before cooldown; 0 = use failure_threshold (default: 0)
+	ConsecutiveFailures  int `json:"consecutive_failures"`   // consecutive transient failures before cooldown; 0 = use failure_threshold (default: 0)
 
-	SlowThresholdMs        int     `json:"slow_threshold_ms,omitempty"`        // latency threshold for slow success (default: 45000)
-	SlowWindowSize         int     `json:"slow_window_size,omitempty"`         // recent samples used for slow ratio (default: 10)
-	SlowRatioThreshold     float64 `json:"slow_ratio_threshold,omitempty"`     // slow/window >= threshold enters degraded; >1 disables ratio (default: 0.5)
-	SlowRecoverySeconds    *int    `json:"slow_recovery_seconds,omitempty"`    // nil = default 60; explicit 0 disables last-slow recency degraded
-	RequestDeadlineMs      int     `json:"request_deadline_ms,omitempty"`      // reserved; 0 = disabled
-	SoftCooldownMultiplier float64 `json:"soft_cooldown_multiplier,omitempty"` // soft failure cooldown multiplier (default: 2.0)
-	CooldownBackoffFactor  float64 `json:"cooldown_backoff_factor,omitempty"`  // cooldown exponential backoff factor (default: 2.0)
-	CooldownMaxSeconds     int     `json:"cooldown_max_seconds,omitempty"`     // maximum cooldown duration (default: 600)
-	HalfOpenProbe          *bool   `json:"half_open_probe,omitempty"`          // nil = default true
+	FatalConsecutiveFailures int     `json:"fatal_consecutive_failures,omitempty"` // consecutive fatal channel errors (401/402/403/404/insufficient balance/no channel) before cooldown (default: 2)
+	FatalCooldownSeconds     int     `json:"fatal_cooldown_seconds,omitempty"`     // base cooldown for fatal channel errors in seconds (default: 120)
+	ErrorRateWindowSize      int     `json:"error_rate_window_size,omitempty"`     // sliding sample window size for error-rate trigger; 0 = legacy count-only mode
+	ErrorRateMinSamples      int     `json:"error_rate_min_samples,omitempty"`     // minimum samples before error-rate trigger fires (default: 5 when window > 0)
+	ErrorRateThreshold       float64 `json:"error_rate_threshold,omitempty"`       // failure ratio >= threshold triggers cooldown (e.g. 0.4 = 40%); 0 = disabled
+
+	SlowThresholdMs         int     `json:"slow_threshold_ms,omitempty"`         // latency threshold for slow success (default: 45000)
+	SlowWindowSize          int     `json:"slow_window_size,omitempty"`          // recent samples used for slow ratio (default: 10)
+	SlowRatioThreshold      float64 `json:"slow_ratio_threshold,omitempty"`      // slow/window >= threshold enters degraded; >1 disables ratio (default: 0.5)
+	SlowRecoverySeconds     *int    `json:"slow_recovery_seconds,omitempty"`     // nil = default 60; explicit 0 disables auto-expiry of slow degradation
+	RequestDeadlineMs       int     `json:"request_deadline_ms,omitempty"`       // fallback budget in ms (0 = disabled; gemini-auto defaults to 135000)
+	MaxFallbackAttempts     int     `json:"max_fallback_attempts,omitempty"`     // max total channel attempts per request including primary (0 = unlimited; gemini-auto defaults to 6)
+	SoftCooldownMultiplier  float64 `json:"soft_cooldown_multiplier,omitempty"`  // soft failure cooldown multiplier (default: 2.0)
+	CooldownBackoffFactor   float64 `json:"cooldown_backoff_factor,omitempty"`   // cooldown exponential backoff factor (default: 2.0)
+	CooldownMaxSeconds      int     `json:"cooldown_max_seconds,omitempty"`      // maximum cooldown duration (default: 600)
+	HalfOpenProbe           *bool   `json:"half_open_probe,omitempty"`           // nil = default true
+	EnableUpstreamDiversity *bool   `json:"enable_upstream_diversity,omitempty"` // nil = default true; diversify fallback chain across distinct upstream hosts
+	ActiveProbeWakeup       *bool   `json:"active_probe_wakeup,omitempty"`       // nil = default false; true lets successful active probe unlock an immediate in-place half-open probe
 }
 
 // RouteGroupTarget is a single weighted target inside a route group.

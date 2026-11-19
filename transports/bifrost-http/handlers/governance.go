@@ -138,19 +138,27 @@ type RoutingTarget struct {
 
 // HealthPolicyRequest represents the health policy for grouped routing
 type HealthPolicyRequest struct {
-	FailureThreshold       *int     `json:"failure_threshold,omitempty"`
-	FailureWindowSeconds   *int     `json:"failure_window_seconds,omitempty"`
-	CooldownSeconds        *int     `json:"cooldown_seconds,omitempty"`
-	ConsecutiveFailures    *int     `json:"consecutive_failures,omitempty"`
-	SlowThresholdMs        *int     `json:"slow_threshold_ms,omitempty"`
-	SlowWindowSize         *int     `json:"slow_window_size,omitempty"`
-	SlowRatioThreshold     *float64 `json:"slow_ratio_threshold,omitempty"`
-	SlowRecoverySeconds    *int     `json:"slow_recovery_seconds,omitempty"`
-	RequestDeadlineMs      *int     `json:"request_deadline_ms,omitempty"`
-	SoftCooldownMultiplier *float64 `json:"soft_cooldown_multiplier,omitempty"`
-	CooldownBackoffFactor  *float64 `json:"cooldown_backoff_factor,omitempty"`
-	CooldownMaxSeconds     *int     `json:"cooldown_max_seconds,omitempty"`
-	HalfOpenProbe          *bool    `json:"half_open_probe,omitempty"`
+	FailureThreshold         *int     `json:"failure_threshold,omitempty"`
+	FailureWindowSeconds     *int     `json:"failure_window_seconds,omitempty"`
+	CooldownSeconds          *int     `json:"cooldown_seconds,omitempty"`
+	ConsecutiveFailures      *int     `json:"consecutive_failures,omitempty"`
+	FatalConsecutiveFailures *int     `json:"fatal_consecutive_failures,omitempty"`
+	FatalCooldownSeconds     *int     `json:"fatal_cooldown_seconds,omitempty"`
+	ErrorRateWindowSize      *int     `json:"error_rate_window_size,omitempty"`
+	ErrorRateMinSamples      *int     `json:"error_rate_min_samples,omitempty"`
+	ErrorRateThreshold       *float64 `json:"error_rate_threshold,omitempty"`
+	SlowThresholdMs          *int     `json:"slow_threshold_ms,omitempty"`
+	SlowWindowSize           *int     `json:"slow_window_size,omitempty"`
+	SlowRatioThreshold       *float64 `json:"slow_ratio_threshold,omitempty"`
+	SlowRecoverySeconds      *int     `json:"slow_recovery_seconds,omitempty"`
+	RequestDeadlineMs        *int     `json:"request_deadline_ms,omitempty"`
+	MaxFallbackAttempts      *int     `json:"max_fallback_attempts,omitempty"`
+	SoftCooldownMultiplier   *float64 `json:"soft_cooldown_multiplier,omitempty"`
+	CooldownBackoffFactor    *float64 `json:"cooldown_backoff_factor,omitempty"`
+	CooldownMaxSeconds       *int     `json:"cooldown_max_seconds,omitempty"`
+	HalfOpenProbe            *bool    `json:"half_open_probe,omitempty"`
+	EnableUpstreamDiversity  *bool    `json:"enable_upstream_diversity,omitempty"`
+	ActiveProbeWakeup        *bool    `json:"active_probe_wakeup,omitempty"`
 }
 
 // RouteGroupRequest represents a route group in a create/update request
@@ -3505,6 +3513,21 @@ func validateHealthPolicy(hp *HealthPolicyRequest) error {
 	if hp.ConsecutiveFailures != nil && *hp.ConsecutiveFailures < 0 {
 		return fmt.Errorf("health_policy.consecutive_failures must be >= 0")
 	}
+	if hp.FatalConsecutiveFailures != nil && *hp.FatalConsecutiveFailures < 1 {
+		return fmt.Errorf("health_policy.fatal_consecutive_failures must be >= 1")
+	}
+	if hp.FatalCooldownSeconds != nil && *hp.FatalCooldownSeconds < 1 {
+		return fmt.Errorf("health_policy.fatal_cooldown_seconds must be >= 1")
+	}
+	if hp.ErrorRateWindowSize != nil && *hp.ErrorRateWindowSize < 0 {
+		return fmt.Errorf("health_policy.error_rate_window_size must be >= 0")
+	}
+	if hp.ErrorRateMinSamples != nil && *hp.ErrorRateMinSamples < 0 {
+		return fmt.Errorf("health_policy.error_rate_min_samples must be >= 0")
+	}
+	if hp.ErrorRateThreshold != nil && (*hp.ErrorRateThreshold < 0 || *hp.ErrorRateThreshold > 1) {
+		return fmt.Errorf("health_policy.error_rate_threshold must be between 0 and 1")
+	}
 	if hp.SlowThresholdMs != nil && *hp.SlowThresholdMs < 1 {
 		return fmt.Errorf("health_policy.slow_threshold_ms must be >= 1")
 	}
@@ -3519,6 +3542,9 @@ func validateHealthPolicy(hp *HealthPolicyRequest) error {
 	}
 	if hp.RequestDeadlineMs != nil && *hp.RequestDeadlineMs < 0 {
 		return fmt.Errorf("health_policy.request_deadline_ms must be >= 0")
+	}
+	if hp.MaxFallbackAttempts != nil && *hp.MaxFallbackAttempts < 0 {
+		return fmt.Errorf("health_policy.max_fallback_attempts must be >= 0")
 	}
 	if hp.SoftCooldownMultiplier != nil && *hp.SoftCooldownMultiplier < 1 {
 		return fmt.Errorf("health_policy.soft_cooldown_multiplier must be >= 1")
@@ -3550,6 +3576,21 @@ func buildHealthPolicy(hp *HealthPolicyRequest) *configstoreTables.HealthPolicy 
 	if hp.ConsecutiveFailures != nil {
 		result.ConsecutiveFailures = *hp.ConsecutiveFailures
 	}
+	if hp.FatalConsecutiveFailures != nil {
+		result.FatalConsecutiveFailures = *hp.FatalConsecutiveFailures
+	}
+	if hp.FatalCooldownSeconds != nil {
+		result.FatalCooldownSeconds = *hp.FatalCooldownSeconds
+	}
+	if hp.ErrorRateWindowSize != nil {
+		result.ErrorRateWindowSize = *hp.ErrorRateWindowSize
+	}
+	if hp.ErrorRateMinSamples != nil {
+		result.ErrorRateMinSamples = *hp.ErrorRateMinSamples
+	}
+	if hp.ErrorRateThreshold != nil {
+		result.ErrorRateThreshold = *hp.ErrorRateThreshold
+	}
 	if hp.SlowThresholdMs != nil {
 		result.SlowThresholdMs = *hp.SlowThresholdMs
 	}
@@ -3565,6 +3606,9 @@ func buildHealthPolicy(hp *HealthPolicyRequest) *configstoreTables.HealthPolicy 
 	if hp.RequestDeadlineMs != nil {
 		result.RequestDeadlineMs = *hp.RequestDeadlineMs
 	}
+	if hp.MaxFallbackAttempts != nil {
+		result.MaxFallbackAttempts = *hp.MaxFallbackAttempts
+	}
 	if hp.SoftCooldownMultiplier != nil {
 		result.SoftCooldownMultiplier = *hp.SoftCooldownMultiplier
 	}
@@ -3576,6 +3620,12 @@ func buildHealthPolicy(hp *HealthPolicyRequest) *configstoreTables.HealthPolicy 
 	}
 	if hp.HalfOpenProbe != nil {
 		result.HalfOpenProbe = hp.HalfOpenProbe
+	}
+	if hp.EnableUpstreamDiversity != nil {
+		result.EnableUpstreamDiversity = hp.EnableUpstreamDiversity
+	}
+	if hp.ActiveProbeWakeup != nil {
+		result.ActiveProbeWakeup = hp.ActiveProbeWakeup
 	}
 	return governance.ApplyHealthPolicyDefaults(result)
 }

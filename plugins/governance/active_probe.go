@@ -34,12 +34,13 @@ func (p *GovernancePlugin) GetActiveHealthProbeConfig() ActiveHealthProbeConfig 
 }
 
 type activeProbePlan struct {
-	TargetKey   string
-	Provider    schemas.ModelProvider
-	Model       string
-	KeyID       string
-	RequestType schemas.RequestType
-	RuleIDs     []string
+	TargetKey     string
+	Provider      schemas.ModelProvider
+	Model         string
+	KeyID         string
+	RequestType   schemas.RequestType
+	RuleIDs       []string
+	WakeupRuleIDs []string
 }
 
 type activeProbeResult struct {
@@ -91,6 +92,38 @@ func supportsActiveProbeRequestType(requestType schemas.RequestType) bool {
 	}
 }
 
+// RuleHasRecentRealAccess reports whether any target configured on the rule
+// has observed real traffic within idlePause (or ever, when idlePause <= 0).
+func RuleHasRecentRealAccess(
+	rule *configstoreTables.TableRoutingRule,
+	tracker *HealthTracker,
+	now time.Time,
+	idlePause time.Duration,
+) bool {
+	if rule == nil || tracker == nil {
+		return false
+	}
+	for _, group := range rule.ParsedRouteGroups {
+		for _, target := range group.Targets {
+			if target.Provider == nil || strings.TrimSpace(*target.Provider) == "" {
+				continue
+			}
+			if target.Model == nil || strings.TrimSpace(*target.Model) == "" {
+				continue
+			}
+			targetKey := RouteGroupTargetKey(target)
+			activity := tracker.GetTargetActivity(targetKey)
+			if activity.LastRealAccessAt.IsZero() {
+				continue
+			}
+			if idlePause <= 0 || now.Sub(activity.LastRealAccessAt) <= idlePause {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func buildActiveProbePlans(
 	rules []*configstoreTables.TableRoutingRule,
 	tracker *HealthTracker,
@@ -107,6 +140,8 @@ func buildActiveProbePlans(
 		if rule == nil || !rule.Enabled || !rule.GroupedRoutingEnabled || len(rule.ParsedRouteGroups) == 0 {
 			continue
 		}
+		policy := ApplyHealthPolicyDefaults(rule.ParsedHealthPolicy)
+		ruleHasRecentTraffic := RuleHasRecentRealAccess(rule, tracker, now, idlePause)
 		for _, group := range rule.ParsedRouteGroups {
 			if group.FallbackOnly {
 				continue
@@ -133,11 +168,18 @@ func buildActiveProbePlans(
 					continue
 				}
 
+				state := tracker.InspectTargetRoutingStateForRule(rule.ID, targetKey, policy, now)
+				isCooled := state.Level == HealthCooldown
+
 				shouldProbe := false
 				switch {
 				case activity.PendingFirstProbe:
 					shouldProbe = true
 				case activity.LastRealAccessAt.IsZero() && activity.LastProbeAt.IsZero():
+					shouldProbe = true
+				case isCooled && ruleHasRecentTraffic:
+					// Keep probing cooled targets while their parent rule is actively serving
+					// real traffic on backup targets, so recovery/recharge wakes them promptly.
 					shouldProbe = true
 				case activity.LastRealAccessAt.IsZero():
 					shouldProbe = false
@@ -164,6 +206,11 @@ func buildActiveProbePlans(
 				}
 				if !containsString(plan.RuleIDs, rule.ID) {
 					plan.RuleIDs = append(plan.RuleIDs, rule.ID)
+				}
+				if rule.ParsedHealthPolicy != nil && rule.ParsedHealthPolicy.ActiveProbeWakeup != nil && *rule.ParsedHealthPolicy.ActiveProbeWakeup {
+					if !containsString(plan.WakeupRuleIDs, rule.ID) {
+						plan.WakeupRuleIDs = append(plan.WakeupRuleIDs, rule.ID)
+					}
 				}
 			}
 		}
@@ -212,6 +259,11 @@ func applyActiveProbeResult(
 		return
 	}
 	tracker.RecordProbeResult(plan.TargetKey, plan.RequestType, result.Success, result.FailureMsg, now)
+	if result.Success {
+		for _, ruleID := range plan.WakeupRuleIDs {
+			tracker.WakeTargetForHalfOpenProbeForRule(ruleID, plan.TargetKey, now)
+		}
+	}
 }
 
 func (p *GovernancePlugin) SetBifrostClient(client *bifrost.Bifrost) {

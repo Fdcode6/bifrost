@@ -11,6 +11,8 @@ import (
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 )
 
+const halfOpenProbeLeaseDuration = 65 * time.Second
+
 // TargetKey uniquely identifies a routing target for health tracking: provider:model[:key_id]
 func TargetKey(provider, model, keyID string) string {
 	if keyID != "" {
@@ -43,23 +45,26 @@ func scopedTargetKey(ruleID, targetKey string) string {
 
 // TargetHealthState holds the health state for a single target
 type TargetHealthState struct {
-	mu                  sync.Mutex
-	failures            []time.Time // timestamps of recent failures
-	consecutiveFailures int         // consecutive failures without any success
-	cooldownUntil       time.Time   // zero value means not in cooldown
-	lastFailureTime     time.Time
-	lastFailureMsg      string
-	recentSamples       []latencySample
-	slowCount           int
-	softFailCount       int
-	hardFailCount       int
-	lastSlowAt          time.Time
-	lastSlowLatency     time.Duration
-	cooldownStreak      int
-	cooldownReason      OutcomeKind
-	halfOpenInFlight    bool
-	halfOpenStartedAt   time.Time
-	lastOutcomeKind     OutcomeKind
+	mu                       sync.Mutex
+	failures                 []time.Time // timestamps of recent failures
+	consecutiveFailures      int         // consecutive failures without any success
+	fatalConsecutiveFailures int         // consecutive fatal channel failures (401/402/403/404/insufficient balance/no channel)
+	cooldownUntil            time.Time   // zero value means not in cooldown
+	lastFailureTime          time.Time
+	lastFailureMsg           string
+	recentSamples            []latencySample
+	slowCount                int
+	softFailCount            int
+	hardFailCount            int
+	fatalFailCount           int
+	lastSlowAt               time.Time
+	lastSlowLatency          time.Duration
+	cooldownStreak           int
+	cooldownReason           OutcomeKind
+	halfOpenInFlight         bool
+	halfOpenStartedAt        time.Time
+	activeProbeWakeup        bool
+	lastOutcomeKind          OutcomeKind
 }
 
 type latencySample struct {
@@ -75,6 +80,15 @@ const (
 	HealthDegraded HealthLevel = "degraded"
 	HealthCooldown HealthLevel = "cooldown"
 )
+
+// TargetRoutingState captures a read-only snapshot of routing health for decision building
+// without prematurely claiming a half-open probe slot.
+type TargetRoutingState struct {
+	Level            HealthLevel
+	HalfOpenEligible bool
+	CooldownUntil    time.Time
+	CooldownReason   OutcomeKind
+}
 
 type HealthObservationSource string
 
@@ -112,12 +126,12 @@ type TargetObservationSnapshot struct {
 
 // HealthTracker tracks health state for routing targets (in-process, not shared across instances).
 //
-// Failure recording is decoupled from cooldown triggering:
-// - RecordFailure just appends a timestamp (cheap, called from PostLLMHook for every failure)
-// - IsInCooldown evaluates the policy lazily during chain building
+// Failure recording is decoupled from cooldown evaluation for transient failures, while fatal
+// channel errors (e.g. banned/insufficient balance/invalid token) trigger rapid cooldown once
+// fatal_consecutive_failures is reached.
 type HealthTracker struct {
 	mu         sync.RWMutex
-	targets    map[string]*TargetHealthState   // key = TargetKey
+	targets    map[string]*TargetHealthState   // key = TargetKey or ruleID::TargetKey
 	activities map[string]*TargetActivityState // key = concrete TargetKey (provider:model[:key_id])
 }
 
@@ -141,6 +155,15 @@ func ApplyHealthPolicyDefaults(policy *configstoreTables.HealthPolicy) *configst
 	}
 	if policy.CooldownSeconds <= 0 {
 		policy.CooldownSeconds = 30
+	}
+	if policy.FatalConsecutiveFailures <= 0 {
+		policy.FatalConsecutiveFailures = 2
+	}
+	if policy.FatalCooldownSeconds <= 0 {
+		policy.FatalCooldownSeconds = 120
+	}
+	if policy.ErrorRateWindowSize > 0 && policy.ErrorRateMinSamples <= 0 {
+		policy.ErrorRateMinSamples = 5
 	}
 	if policy.SlowThresholdMs <= 0 {
 		policy.SlowThresholdMs = 45000
@@ -170,6 +193,14 @@ func ApplyHealthPolicyDefaults(policy *configstoreTables.HealthPolicy) *configst
 	if policy.HalfOpenProbe == nil {
 		halfOpen := true
 		policy.HalfOpenProbe = &halfOpen
+	}
+	if policy.EnableUpstreamDiversity == nil {
+		diversify := true
+		policy.EnableUpstreamDiversity = &diversify
+	}
+	if policy.ActiveProbeWakeup == nil {
+		wakeup := false
+		policy.ActiveProbeWakeup = &wakeup
 	}
 	return policy
 }
@@ -246,42 +277,95 @@ func (ht *HealthTracker) recordOutcomeForStateKey(stateKey string, kind OutcomeK
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if kind == OutcomeIgnore {
+		// Client cancellations / pure client 4xx must neither penalize nor clear health state.
+		// If this request held the half-open probe lease, release it so another request can probe.
+		if s.halfOpenInFlight {
+			s.halfOpenInFlight = false
+			s.halfOpenStartedAt = time.Time{}
+		}
+		return
+	}
+
 	s.lastOutcomeKind = kind
-	appendLatencySampleLocked(s, latencySample{at: now, latency: latency, kind: kind}, policy)
 
 	switch kind {
 	case OutcomeSuccess:
+		wasInCooldown := !s.cooldownUntil.IsZero() || s.halfOpenInFlight
 		expiredReason := s.cooldownReason
 		resetCooldownLocked(s)
+		if wasInCooldown {
+			resetFailureSamplesLocked(s)
+		}
 		if expiredReason == OutcomeSlow {
 			resetSlowSamplesLocked(s)
 		}
 		s.cooldownStreak = 0
+		appendLatencySampleLocked(s, latencySample{at: now, latency: latency, kind: kind}, policy)
 	case OutcomeSlow:
+		wasInCooldown := !s.cooldownUntil.IsZero() || s.halfOpenInFlight
 		s.consecutiveFailures = 0
+		s.fatalConsecutiveFailures = 0
 		s.lastSlowAt = now
 		s.lastSlowLatency = latency
-		if s.halfOpenInFlight {
-			s.lastFailureTime = now
-			if failureMsg == "" {
-				failureMsg = "half-open probe was slow"
-			}
-			s.lastFailureMsg = failureMsg
-			s.failures = append(s.failures, now)
-			s.consecutiveFailures = 1
-			startCooldownLocked(s, policy, now, kind)
-			return
+		if wasInCooldown && (s.halfOpenInFlight || !now.Before(s.cooldownUntil)) {
+			// A slow success during half-open proves the channel is alive again; exit cooldown
+			// and let ratio-based degradation rank it behind faster healthy channels.
+			resetCooldownLocked(s)
+			resetFailureSamplesLocked(s)
+			s.cooldownStreak = 0
 		}
-	case OutcomeSoftFail, OutcomeHardFail:
+		appendLatencySampleLocked(s, latencySample{at: now, latency: latency, kind: kind}, policy)
+	case OutcomeFatalChannel:
+		appendLatencySampleLocked(s, latencySample{at: now, latency: latency, kind: kind}, policy)
 		s.lastFailureTime = now
 		s.lastFailureMsg = failureMsg
 		s.failures = append(s.failures, now)
 		s.consecutiveFailures++
-		if s.halfOpenInFlight {
+		s.fatalConsecutiveFailures++
+		if s.halfOpenInFlight || (!s.cooldownUntil.IsZero() && !now.Before(s.cooldownUntil)) {
+			startCooldownLocked(s, policy, now, OutcomeFatalChannel)
+			return
+		}
+		if s.fatalConsecutiveFailures >= policy.FatalConsecutiveFailures {
+			startCooldownLocked(s, policy, now, OutcomeFatalChannel)
+			return
+		}
+	case OutcomeSoftFail, OutcomeHardFail:
+		appendLatencySampleLocked(s, latencySample{at: now, latency: latency, kind: kind}, policy)
+		s.lastFailureTime = now
+		s.lastFailureMsg = failureMsg
+		s.failures = append(s.failures, now)
+		s.consecutiveFailures++
+		s.fatalConsecutiveFailures = 0
+		if s.halfOpenInFlight || (!s.cooldownUntil.IsZero() && !now.Before(s.cooldownUntil)) {
 			startCooldownLocked(s, policy, now, kind)
+			return
 		}
 	}
 	s.halfOpenInFlight = false
+	s.halfOpenStartedAt = time.Time{}
+}
+
+// WakeTargetForHalfOpenProbeForRule accelerates a cooled target so the next real request
+// may immediately send a single in-place half-open verification probe without clearing
+// cooldown outright.
+func (ht *HealthTracker) WakeTargetForHalfOpenProbeForRule(ruleID, targetKey string, now time.Time) {
+	stateKey := scopedTargetKey(ruleID, targetKey)
+	if stateKey == "" {
+		return
+	}
+	ht.mu.RLock()
+	s, ok := ht.targets[stateKey]
+	ht.mu.RUnlock()
+	if !ok {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.cooldownUntil.IsZero() && now.Before(s.cooldownUntil) && !s.halfOpenInFlight {
+		s.activeProbeWakeup = true
+	}
 }
 
 func (ht *HealthTracker) RecordRealAccess(targetKey string, requestType schemas.RequestType, now time.Time) {
@@ -391,7 +475,6 @@ func (ht *HealthTracker) GetObservation(targetKey string) TargetObservationSnaps
 
 // IsInCooldown checks if the target should be considered in cooldown based on the given policy.
 // It prunes old failures, evaluates the threshold, and triggers/expires cooldown as needed.
-// This is the main evaluation point, called during grouped routing chain building.
 func (ht *HealthTracker) IsInCooldown(key string, policy *configstoreTables.HealthPolicy, now time.Time) bool {
 	policy = ApplyHealthPolicyDefaults(policy)
 	ht.mu.RLock()
@@ -420,8 +503,28 @@ func (ht *HealthTracker) GetTargetHealthForRule(ruleID, targetKey string, policy
 	return ht.getTargetHealth(scopedTargetKey(ruleID, targetKey), policy, now)
 }
 
+// InspectTargetRoutingStateForRule evaluates routing health without mutating halfOpenInFlight.
+func (ht *HealthTracker) InspectTargetRoutingStateForRule(ruleID, targetKey string, policy *configstoreTables.HealthPolicy, now time.Time) TargetRoutingState {
+	return ht.inspectTargetRoutingState(scopedTargetKey(ruleID, targetKey), policy, now)
+}
+
+// TryClaimHalfOpenProbeForRule atomically claims the single in-flight half-open probe lease
+// for a cooled target whose cooldown has expired (or was woken by an active probe).
+func (ht *HealthTracker) TryClaimHalfOpenProbeForRule(ruleID, targetKey string, policy *configstoreTables.HealthPolicy, now time.Time) bool {
+	return ht.tryClaimHalfOpenProbe(scopedTargetKey(ruleID, targetKey), policy, now)
+}
+
+// GetTargetRoutingHealthForRule inspects routing health and claims the half-open slot if eligible.
 func (ht *HealthTracker) GetTargetRoutingHealthForRule(ruleID, targetKey string, policy *configstoreTables.HealthPolicy, now time.Time) (HealthLevel, bool) {
-	return ht.getTargetRoutingHealth(scopedTargetKey(ruleID, targetKey), policy, now)
+	stateKey := scopedTargetKey(ruleID, targetKey)
+	state := ht.inspectTargetRoutingState(stateKey, policy, now)
+	if state.Level == HealthCooldown && state.HalfOpenEligible {
+		if ht.tryClaimHalfOpenProbe(stateKey, policy, now) {
+			return HealthCooldown, true
+		}
+		return HealthCooldown, false
+	}
+	return state.Level, false
 }
 
 func (ht *HealthTracker) getTargetHealth(stateKey string, policy *configstoreTables.HealthPolicy, now time.Time) HealthLevel {
@@ -445,70 +548,105 @@ func (ht *HealthTracker) getTargetHealth(stateKey string, policy *configstoreTab
 	return HealthHealthy
 }
 
-func (ht *HealthTracker) getTargetRoutingHealth(stateKey string, policy *configstoreTables.HealthPolicy, now time.Time) (HealthLevel, bool) {
+func (ht *HealthTracker) inspectTargetRoutingState(stateKey string, policy *configstoreTables.HealthPolicy, now time.Time) TargetRoutingState {
 	policy = ApplyHealthPolicyDefaults(policy)
 	ht.mu.RLock()
 	s, ok := ht.targets[stateKey]
 	ht.mu.RUnlock()
 	if !ok {
-		return HealthHealthy, false
+		return TargetRoutingState{Level: HealthHealthy}
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if !s.cooldownUntil.IsZero() {
-		if now.Before(s.cooldownUntil) {
-			return HealthCooldown, false
+		if now.Before(s.cooldownUntil) && !s.activeProbeWakeup {
+			return TargetRoutingState{
+				Level:            HealthCooldown,
+				HalfOpenEligible: false,
+				CooldownUntil:    s.cooldownUntil,
+				CooldownReason:   s.cooldownReason,
+			}
 		}
-		if shouldHalfOpenProbeLocked(s, policy, now) {
-			return HealthCooldown, true
+		// Cooldown expired or active-probe woken.
+		if policy.HalfOpenProbe != nil && !*policy.HalfOpenProbe {
+			expiredReason := s.cooldownReason
+			resetCooldownLocked(s)
+			resetFailureSamplesLocked(s)
+			if expiredReason == OutcomeSlow {
+				resetSlowSamplesLocked(s)
+			}
+			if isDegradedLocked(s, policy, now) {
+				return TargetRoutingState{Level: HealthDegraded}
+			}
+			return TargetRoutingState{Level: HealthHealthy}
 		}
-		if s.halfOpenInFlight {
-			return HealthCooldown, false
+		eligible := !s.halfOpenInFlight || now.Sub(s.halfOpenStartedAt) >= halfOpenProbeLeaseDuration
+		return TargetRoutingState{
+			Level:            HealthCooldown,
+			HalfOpenEligible: eligible,
+			CooldownUntil:    s.cooldownUntil,
+			CooldownReason:   s.cooldownReason,
 		}
-		expiredReason := s.cooldownReason
-		resetCooldownLocked(s)
-		if expiredReason == OutcomeSlow {
-			resetSlowSamplesLocked(s)
-		}
-		if isDegradedLocked(s, policy, now) {
-			return HealthDegraded, false
-		}
-		return HealthHealthy, false
 	}
 
 	if evaluateCooldownLocked(s, policy, now) {
-		return HealthCooldown, false
+		return TargetRoutingState{
+			Level:            HealthCooldown,
+			HalfOpenEligible: false,
+			CooldownUntil:    s.cooldownUntil,
+			CooldownReason:   s.cooldownReason,
+		}
 	}
 	if isDegradedLocked(s, policy, now) {
-		return HealthDegraded, false
+		return TargetRoutingState{Level: HealthDegraded}
 	}
-	return HealthHealthy, false
+	return TargetRoutingState{Level: HealthHealthy}
+}
+
+func (ht *HealthTracker) tryClaimHalfOpenProbe(stateKey string, policy *configstoreTables.HealthPolicy, now time.Time) bool {
+	policy = ApplyHealthPolicyDefaults(policy)
+	if policy.HalfOpenProbe != nil && !*policy.HalfOpenProbe {
+		return false
+	}
+	ht.mu.RLock()
+	s, ok := ht.targets[stateKey]
+	ht.mu.RUnlock()
+	if !ok {
+		return false
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return shouldHalfOpenProbeLocked(s, policy, now)
 }
 
 // TargetHealthSnapshot is a point-in-time view of a target's health state
 type TargetHealthSnapshot struct {
-	Key                     string  `json:"key"`
-	Status                  string  `json:"status"` // "available" | "cooldown"
-	HealthLevel             string  `json:"health_level"`
-	FailureCount            int     `json:"failure_count"`
-	ConsecutiveFailures     int     `json:"consecutive_failures"`
-	SlowCount               int     `json:"slow_count"`
-	SampleCount             int     `json:"sample_count"`
-	SlowRatio               float64 `json:"slow_ratio"`
-	P95LatencyMs            *int64  `json:"p95_latency_ms,omitempty"`
-	CooldownStreak          int     `json:"cooldown_streak"`
-	LastSlowAt              *string `json:"last_slow_at,omitempty"`
-	LastSlowLatencyMs       *int64  `json:"last_slow_latency_ms,omitempty"`
-	LastOutcomeKind         string  `json:"last_outcome_kind,omitempty"`
-	HalfOpenInFlight        bool    `json:"half_open_in_flight,omitempty"`
-	CooldownUntil           *string `json:"cooldown_until,omitempty"`
-	LastFailureTime         *string `json:"last_failure_time,omitempty"`
-	LastFailureMsg          string  `json:"last_failure_msg,omitempty"`
-	LastObservedAt          *string `json:"last_observed_at,omitempty"`
-	LastObservedRequestType string  `json:"last_observed_request_type,omitempty"`
-	LastObservationSource   string  `json:"last_observation_source,omitempty"`
+	Key                      string  `json:"key"`
+	Status                   string  `json:"status"` // "available" | "cooldown"
+	HealthLevel              string  `json:"health_level"`
+	FailureCount             int     `json:"failure_count"`
+	ConsecutiveFailures      int     `json:"consecutive_failures"`
+	FatalConsecutiveFailures int     `json:"fatal_consecutive_failures,omitempty"`
+	ErrorRate                float64 `json:"error_rate,omitempty"`
+	SlowCount                int     `json:"slow_count"`
+	SampleCount              int     `json:"sample_count"`
+	SlowRatio                float64 `json:"slow_ratio"`
+	P95LatencyMs             *int64  `json:"p95_latency_ms,omitempty"`
+	CooldownStreak           int     `json:"cooldown_streak"`
+	CooldownReason           string  `json:"cooldown_reason,omitempty"`
+	LastSlowAt               *string `json:"last_slow_at,omitempty"`
+	LastSlowLatencyMs        *int64  `json:"last_slow_latency_ms,omitempty"`
+	LastOutcomeKind          string  `json:"last_outcome_kind,omitempty"`
+	HalfOpenInFlight         bool    `json:"half_open_in_flight,omitempty"`
+	CooldownUntil            *string `json:"cooldown_until,omitempty"`
+	LastFailureTime          *string `json:"last_failure_time,omitempty"`
+	LastFailureMsg           string  `json:"last_failure_msg,omitempty"`
+	LastObservedAt           *string `json:"last_observed_at,omitempty"`
+	LastObservedRequestType  string  `json:"last_observed_request_type,omitempty"`
+	LastObservationSource    string  `json:"last_observation_source,omitempty"`
 }
 
 // GetTargetStatus returns a snapshot of the health state for the given target.
@@ -550,20 +688,24 @@ func (ht *HealthTracker) getTargetStatus(stateKey, displayKey string, policy *co
 	}
 
 	slowCount, sampleCount, slowRatio := sampleStatsLocked(s, policy)
+	_, _, errorRate := errorRateStatsLocked(s, policy, now)
 	p95LatencyMs := p95LatencyMsLocked(s)
 
 	snap := TargetHealthSnapshot{
-		Key:                 displayKey,
-		HealthLevel:         string(healthLevel),
-		FailureCount:        len(s.failures),
-		ConsecutiveFailures: s.consecutiveFailures,
-		SlowCount:           slowCount,
-		SampleCount:         sampleCount,
-		SlowRatio:           slowRatio,
-		P95LatencyMs:        p95LatencyMs,
-		CooldownStreak:      s.cooldownStreak,
-		LastOutcomeKind:     string(s.lastOutcomeKind),
-		HalfOpenInFlight:    s.halfOpenInFlight,
+		Key:                      displayKey,
+		HealthLevel:              string(healthLevel),
+		FailureCount:             len(s.failures),
+		ConsecutiveFailures:      s.consecutiveFailures,
+		FatalConsecutiveFailures: s.fatalConsecutiveFailures,
+		ErrorRate:                errorRate,
+		SlowCount:                slowCount,
+		SampleCount:              sampleCount,
+		SlowRatio:                slowRatio,
+		P95LatencyMs:             p95LatencyMs,
+		CooldownStreak:           s.cooldownStreak,
+		CooldownReason:           string(s.cooldownReason),
+		LastOutcomeKind:          string(s.lastOutcomeKind),
+		HalfOpenInFlight:         s.halfOpenInFlight && now.Sub(s.halfOpenStartedAt) < halfOpenProbeLeaseDuration,
 	}
 
 	if healthLevel == HealthCooldown && !s.cooldownUntil.IsZero() {
@@ -608,9 +750,14 @@ func applyObservationSnapshot(snap *TargetHealthSnapshot, observation TargetObse
 }
 
 func appendLatencySampleLocked(s *TargetHealthState, sample latencySample, policy *configstoreTables.HealthPolicy) {
-	maxSamples := policy.SlowWindowSize
-	if maxSamples < 20 {
-		maxSamples = 20
+	maxSamples := 20
+	if policy != nil {
+		if policy.SlowWindowSize > maxSamples {
+			maxSamples = policy.SlowWindowSize
+		}
+		if policy.ErrorRateWindowSize > maxSamples {
+			maxSamples = policy.ErrorRateWindowSize
+		}
 	}
 	s.recentSamples = append(s.recentSamples, sample)
 	for len(s.recentSamples) > maxSamples {
@@ -629,6 +776,8 @@ func incrementSampleCountLocked(s *TargetHealthState, kind OutcomeKind) {
 		s.softFailCount++
 	case OutcomeHardFail:
 		s.hardFailCount++
+	case OutcomeFatalChannel:
+		s.fatalFailCount++
 	}
 }
 
@@ -645,6 +794,10 @@ func decrementSampleCountLocked(s *TargetHealthState, kind OutcomeKind) {
 	case OutcomeHardFail:
 		if s.hardFailCount > 0 {
 			s.hardFailCount--
+		}
+	case OutcomeFatalChannel:
+		if s.fatalFailCount > 0 {
+			s.fatalFailCount--
 		}
 	}
 }
@@ -666,6 +819,40 @@ func sampleStatsLocked(s *TargetHealthState, policy *configstoreTables.HealthPol
 		return 0, 0, 0
 	}
 	return slow, considered, float64(slow) / float64(considered)
+}
+
+func isFailureOutcome(kind OutcomeKind) bool {
+	return kind == OutcomeSoftFail || kind == OutcomeHardFail || kind == OutcomeFatalChannel
+}
+
+func errorRateStatsLocked(s *TargetHealthState, policy *configstoreTables.HealthPolicy, now time.Time) (int, int, float64) {
+	windowSize := policy.ErrorRateWindowSize
+	if windowSize <= 0 {
+		windowSize = len(s.recentSamples)
+	}
+	if windowSize <= 0 {
+		return 0, 0, 0
+	}
+	var cutoff time.Time
+	if policy.FailureWindowSeconds > 0 {
+		cutoff = now.Add(-time.Duration(policy.FailureWindowSeconds) * time.Second)
+	}
+	considered := 0
+	failed := 0
+	for i := len(s.recentSamples) - 1; i >= 0 && considered < windowSize; i-- {
+		sample := s.recentSamples[i]
+		if !cutoff.IsZero() && sample.at.Before(cutoff) {
+			break
+		}
+		considered++
+		if isFailureOutcome(sample.kind) {
+			failed++
+		}
+	}
+	if considered == 0 {
+		return 0, 0, 0
+	}
+	return failed, considered, float64(failed) / float64(considered)
 }
 
 func p95LatencyMsLocked(s *TargetHealthState) *int64 {
@@ -693,22 +880,32 @@ func p95LatencyMsLocked(s *TargetHealthState) *int64 {
 	return &v
 }
 
+// isDegradedLocked reports whether a target is degraded due to sustained slow responses.
+// Slow responses never trigger hard cooldown; they only demote the target behind fast healthy channels
+// and auto-expire once SlowRecoverySeconds elapse without new slow responses.
 func isDegradedLocked(s *TargetHealthState, policy *configstoreTables.HealthPolicy, now time.Time) bool {
-	windowSize := policy.SlowWindowSize
-	if windowSize <= 0 {
-		windowSize = 10
-	}
-	if len(s.recentSamples) >= windowSize/2 {
-		_, considered, ratio := sampleStatsLocked(s, policy)
-		if considered > 0 && policy.SlowRatioThreshold > 0 && ratio >= policy.SlowRatioThreshold {
-			return true
-		}
+	if policy.SlowRatioThreshold > 1 {
+		return false
 	}
 	recoverySeconds := 60
 	if policy.SlowRecoverySeconds != nil {
 		recoverySeconds = *policy.SlowRecoverySeconds
 	}
-	if recoverySeconds > 0 && !s.lastSlowAt.IsZero() && now.Sub(s.lastSlowAt) < time.Duration(recoverySeconds)*time.Second {
+	if recoverySeconds > 0 && !s.lastSlowAt.IsZero() && now.Sub(s.lastSlowAt) >= time.Duration(recoverySeconds)*time.Second {
+		resetSlowSamplesLocked(s)
+		return false
+	}
+
+	windowSize := policy.SlowWindowSize
+	if windowSize <= 0 {
+		windowSize = 10
+	}
+	minSamples := windowSize / 2
+	if minSamples < 1 {
+		minSamples = 1
+	}
+	slow, considered, ratio := sampleStatsLocked(s, policy)
+	if considered >= minSamples && slow > 0 && policy.SlowRatioThreshold > 0 && ratio >= policy.SlowRatioThreshold {
 		return true
 	}
 	return false
@@ -717,15 +914,24 @@ func isDegradedLocked(s *TargetHealthState, policy *configstoreTables.HealthPoli
 func evaluateCooldownLocked(s *TargetHealthState, policy *configstoreTables.HealthPolicy, now time.Time) bool {
 	policy = ApplyHealthPolicyDefaults(policy)
 	if !s.cooldownUntil.IsZero() {
-		if !now.Before(s.cooldownUntil) {
+		if now.Before(s.cooldownUntil) && !s.activeProbeWakeup {
+			return true
+		}
+		if policy.HalfOpenProbe != nil && !*policy.HalfOpenProbe {
 			expiredReason := s.cooldownReason
 			resetCooldownLocked(s)
+			resetFailureSamplesLocked(s)
 			if expiredReason == OutcomeSlow {
 				resetSlowSamplesLocked(s)
 			}
 			return false
 		}
-		return true
+		// Under HalfOpenProbe=true, preserve cooldownUntil so routing enforces a single
+		// in-place verification request, while reporting active in-flight probes as cooled.
+		if s.halfOpenInFlight && now.Sub(s.halfOpenStartedAt) < halfOpenProbeLeaseDuration {
+			return true
+		}
+		return false
 	}
 
 	windowStart := now.Add(-time.Duration(policy.FailureWindowSeconds) * time.Second)
@@ -737,40 +943,36 @@ func evaluateCooldownLocked(s *TargetHealthState, policy *configstoreTables.Heal
 	}
 	s.failures = pruned
 
-	windowTriggered := len(s.failures) >= policy.FailureThreshold
+	fatalTriggered := s.fatalConsecutiveFailures >= policy.FatalConsecutiveFailures
 	consecThreshold := policy.ConsecutiveFailures
 	if consecThreshold <= 0 {
 		consecThreshold = policy.FailureThreshold
 	}
 	consecutiveTriggered := s.consecutiveFailures >= consecThreshold
-	if windowTriggered || consecutiveTriggered {
+
+	windowTriggered := false
+	if policy.ErrorRateWindowSize > 0 && policy.ErrorRateThreshold > 0 {
+		minSamples := policy.ErrorRateMinSamples
+		if minSamples <= 0 {
+			minSamples = 5
+		}
+		_, considered, ratio := errorRateStatsLocked(s, policy, now)
+		windowTriggered = considered >= minSamples && ratio >= policy.ErrorRateThreshold
+	} else {
+		windowTriggered = len(s.failures) >= policy.FailureThreshold
+	}
+
+	if fatalTriggered || windowTriggered || consecutiveTriggered {
 		cooldownStart := s.lastFailureTime
 		if cooldownStart.IsZero() {
 			cooldownStart = now
 		}
-		if !startCooldownLocked(s, policy, cooldownStart, s.lastOutcomeKind) || !now.Before(s.cooldownUntil) {
+		reason := s.lastOutcomeKind
+		if fatalTriggered {
+			reason = OutcomeFatalChannel
+		}
+		if !startCooldownLocked(s, policy, cooldownStart, reason) || !now.Before(s.cooldownUntil) {
 			resetCooldownLocked(s)
-			return false
-		}
-		return true
-	}
-
-	if isDegradedLocked(s, policy, now) {
-		cooldownStart := s.lastSlowAt
-		if cooldownStart.IsZero() {
-			cooldownStart = latestSlowSampleAtLocked(s)
-		}
-		if cooldownStart.IsZero() {
-			return false
-		}
-		cooldownUntil := cooldownStart.Add(cooldownDuration(policy, OutcomeSlow, s.cooldownStreak+1))
-		if !now.Before(cooldownUntil) {
-			resetSlowSamplesLocked(s)
-			return false
-		}
-		if !startCooldownLocked(s, policy, cooldownStart, OutcomeSlow) || !now.Before(s.cooldownUntil) {
-			resetCooldownLocked(s)
-			resetSlowSamplesLocked(s)
 			return false
 		}
 		return true
@@ -783,14 +985,18 @@ func shouldHalfOpenProbeLocked(s *TargetHealthState, policy *configstoreTables.H
 	if policy.HalfOpenProbe != nil && !*policy.HalfOpenProbe {
 		return false
 	}
-	if s.cooldownUntil.IsZero() || now.Before(s.cooldownUntil) {
+	if s.cooldownUntil.IsZero() {
 		return false
 	}
-	if s.halfOpenInFlight && now.Sub(s.halfOpenStartedAt) < 30*time.Second {
+	if now.Before(s.cooldownUntil) && !s.activeProbeWakeup {
+		return false
+	}
+	if s.halfOpenInFlight && now.Sub(s.halfOpenStartedAt) < halfOpenProbeLeaseDuration {
 		return false
 	}
 	s.halfOpenInFlight = true
 	s.halfOpenStartedAt = now
+	s.activeProbeWakeup = false
 	return true
 }
 
@@ -808,12 +1014,18 @@ func startCooldownLocked(s *TargetHealthState, policy *configstoreTables.HealthP
 	s.cooldownReason = kind
 	s.halfOpenInFlight = false
 	s.halfOpenStartedAt = time.Time{}
+	s.activeProbeWakeup = false
 	return true
 }
 
 func cooldownDuration(policy *configstoreTables.HealthPolicy, kind OutcomeKind, nextStreak int) time.Duration {
+	baseSeconds := float64(policy.CooldownSeconds)
 	multiplier := 1.0
-	if kind == OutcomeSoftFail {
+	if kind == OutcomeFatalChannel {
+		if policy.FatalCooldownSeconds > 0 {
+			baseSeconds = float64(policy.FatalCooldownSeconds)
+		}
+	} else if kind == OutcomeSoftFail {
 		multiplier = policy.SoftCooldownMultiplier
 	}
 	if multiplier < 1 {
@@ -823,7 +1035,7 @@ func cooldownDuration(policy *configstoreTables.HealthPolicy, kind OutcomeKind, 
 	if policy.CooldownBackoffFactor > 1 && nextStreak > 1 {
 		backoff = math.Pow(policy.CooldownBackoffFactor, float64(nextStreak-1))
 	}
-	durationSeconds := float64(policy.CooldownSeconds) * multiplier * backoff
+	durationSeconds := baseSeconds * multiplier * backoff
 	if maxSeconds := float64(policy.CooldownMaxSeconds); maxSeconds > 0 && durationSeconds > maxSeconds {
 		durationSeconds = maxSeconds
 	}
@@ -835,19 +1047,12 @@ func resetCooldownLocked(s *TargetHealthState) {
 	s.cooldownReason = ""
 	s.failures = s.failures[:0]
 	s.consecutiveFailures = 0
+	s.fatalConsecutiveFailures = 0
 	s.lastFailureTime = time.Time{}
 	s.lastFailureMsg = ""
 	s.halfOpenInFlight = false
 	s.halfOpenStartedAt = time.Time{}
-}
-
-func latestSlowSampleAtLocked(s *TargetHealthState) time.Time {
-	for i := len(s.recentSamples) - 1; i >= 0; i-- {
-		if s.recentSamples[i].kind == OutcomeSlow {
-			return s.recentSamples[i].at
-		}
-	}
-	return time.Time{}
+	s.activeProbeWakeup = false
 }
 
 func resetSlowSamplesLocked(s *TargetHealthState) {
@@ -862,6 +1067,20 @@ func resetSlowSamplesLocked(s *TargetHealthState) {
 	s.slowCount = 0
 	s.lastSlowAt = time.Time{}
 	s.lastSlowLatency = 0
+}
+
+func resetFailureSamplesLocked(s *TargetHealthState) {
+	filtered := s.recentSamples[:0]
+	for _, sample := range s.recentSamples {
+		if isFailureOutcome(sample.kind) {
+			continue
+		}
+		filtered = append(filtered, sample)
+	}
+	s.recentSamples = filtered
+	s.softFailCount = 0
+	s.hardFailCount = 0
+	s.fatalFailCount = 0
 }
 
 // GetAllStatuses returns snapshots for all tracked targets

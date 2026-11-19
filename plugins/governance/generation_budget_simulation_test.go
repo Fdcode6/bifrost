@@ -24,7 +24,7 @@ type budgetSimulationAccount struct {
 }
 
 func (a budgetSimulationAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
-	return []schemas.ModelProvider{"a", "b", "c", "vip"}, nil
+	return []schemas.ModelProvider{"a", "b", "c", "d", "e", "vip"}, nil
 }
 func (a budgetSimulationAccount) GetKeysForProvider(_ context.Context, p schemas.ModelProvider) ([]schemas.Key, error) {
 	return []schemas.Key{{ID: string(p) + "-key", Value: *schemas.NewEnvVar("local-fixture"), Weight: 1}}, nil
@@ -39,27 +39,33 @@ func (a budgetSimulationAccount) GetConfigForProvider(p schemas.ModelProvider) (
 
 func TestAutoRouteGatewaySimulation(t *testing.T) {
 	cases := []struct {
-		name, model string
-		failures    int
-		cooldown    bool
-		timeout     int
+		name           string
+		model          string
+		failures       int
+		cooldown       bool
+		timeout        int
+		budgetMs       int
+		wantAttemptCap int
 	}{
-		{"first-success", "gemini-auto", 0, false, 0},
-		{"second-success", "gemini-auto", 1, false, 0},
-		{"third-success", "gemini-auto-bif", 2, false, 0},
-		{"stop-after-three", "gemini-auto", 3, false, 0},
-		{"alias-stop-after-three", "gemini-auto-bif", 3, false, 0},
-		{"cooled-first-vip-third", "gemini-auto", 2, true, 0},
-		{"other-model-still-four", "other-model", 3, false, 0},
-		{"timeouts-no-inner-retry", "gemini-auto", 3, false, 1},
+		{"first-success", "gemini-auto", 0, false, 0, 135000, 6},
+		{"second-success", "gemini-auto", 1, false, 0, 135000, 6},
+		{"third-success", "gemini-auto-bif", 2, false, 0, 135000, 6},
+		{"fast-fail-recovers-on-fifth-channel", "gemini-auto", 4, false, 0, 135000, 6},
+		{"alias-fast-fail-recovers-on-sixth-channel", "gemini-auto-bif", 5, false, 0, 135000, 6},
+		{"stop-after-six-fast-failures", "gemini-auto", 6, false, 0, 135000, 6},
+		{"cooled-first-skips-a", "gemini-auto", 2, true, 0, 135000, 5},
+		{"slow-timeouts-stop-by-deadline-budget", "gemini-auto", 6, false, 1, 2200, 3},
 	}
 	if os.Getenv("RUN_GENERATION_BUDGET_CLOCK") == "1" {
 		cases = append(cases, struct {
-			name, model string
-			failures    int
-			cooldown    bool
-			timeout     int
-		}{"three-real-60s-timeouts", "gemini-auto", 3, false, 60})
+			name           string
+			model          string
+			failures       int
+			cooldown       bool
+			timeout        int
+			budgetMs       int
+			wantAttemptCap int
+		}{"three-real-60s-timeouts-under-190s", "gemini-auto", 6, false, 60, 135000, 3})
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -94,10 +100,14 @@ func TestAutoRouteGatewaySimulation(t *testing.T) {
 			defer client.Shutdown()
 			tracker := NewHealthTracker()
 			rule := &tables.TableRoutingRule{ID: "local-budget"}
-			for _, name := range []string{"a", "b", "c", "vip"} {
+			for _, name := range []string{"a", "b", "c", "d", "e", "vip"} {
 				rule.ParsedRouteGroups = append(rule.ParsedRouteGroups, tables.RouteGroup{Name: name, Targets: []tables.RouteGroupTarget{{Provider: bifrost.Ptr(name), Model: bifrost.Ptr("upstream"), KeyID: bifrost.Ptr(name + "-key"), Weight: 1}}})
 			}
-			policy := ApplyHealthPolicyDefaults(&tables.HealthPolicy{FailureThreshold: 1, CooldownSeconds: 120})
+			policy := ApplyHealthPolicyDefaults(&tables.HealthPolicy{
+				FailureThreshold:  1,
+				CooldownSeconds:   120,
+				RequestDeadlineMs: tc.budgetMs,
+			})
 			rule.ParsedHealthPolicy = policy
 			if tc.cooldown {
 				tracker.RecordOutcome(rule.ID, TargetKey("a", "upstream", "a-key"), OutcomeHardFail, 0, "503", policy, time.Now())
@@ -105,12 +115,16 @@ func TestAutoRouteGatewaySimulation(t *testing.T) {
 			parent, cancel := context.WithTimeout(context.Background(), 190*time.Second)
 			defer cancel()
 			ctx := schemas.NewBifrostContext(parent, schemas.NoDeadline)
-			decision := buildGroupedRoutingDecision(ctx, rule, &RoutingContext{Provider: schemas.OpenAI, Model: tc.model}, tracker, NewMockLogger())
+			routingCtx := &RoutingContext{Provider: schemas.OpenAI, Model: tc.model}
+			decision := buildGroupedRoutingDecision(ctx, rule, routingCtx, tracker, NewMockLogger())
 			require.NotNil(t, decision)
 			// Same grouped-route context contract as the governance pre-hook.
 			ctx.SetValue(schemas.BifrostContextKeyDisableProviderRetries, true)
 			ctx.SetValue(schemas.BifrostContextKeyAPIKeyID, decision.KeyID)
 			ctx.SetValue(schemas.BifrostContextKeyFallbackKeyIDs, decision.FallbackKeyIDs)
+			if budgetMs := effectiveFallbackBudgetMs(policy, routingCtx); budgetMs > 0 {
+				ctx.SetValue(schemas.BifrostContextKeyFallbackDeadline, time.Now().Add(time.Duration(budgetMs)*time.Millisecond))
+			}
 			req := &schemas.BifrostChatRequest{Provider: schemas.ModelProvider(decision.Provider), Model: decision.Model, Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: bifrost.Ptr("local fixture")}}}}
 			for _, fallback := range decision.Fallbacks {
 				parts := strings.SplitN(fallback, "/", 2)
@@ -119,20 +133,16 @@ func TestAutoRouteGatewaySimulation(t *testing.T) {
 			started := time.Now()
 			result, failure := client.ChatCompletionRequest(ctx, req)
 			elapsed := time.Since(started)
-			want := []string{"a", "b", "c", "vip"}
+			want := []string{"a", "b", "c", "d", "e", "vip"}
 			if tc.cooldown {
 				want = want[1:]
 			}
-			limit := 3
-			if tc.model == "other-model" {
-				limit = 4
-			}
-			count := min(tc.failures+1, limit)
+			count := min(tc.failures+1, tc.wantAttemptCap)
 			mu.Lock()
 			got := append([]string(nil), calls...)
 			mu.Unlock()
 			require.Equal(t, want[:count], got)
-			if tc.failures >= limit {
+			if tc.failures >= tc.wantAttemptCap {
 				require.NotNil(t, failure)
 			} else {
 				require.Nil(t, failure, fmt.Sprint(failure))

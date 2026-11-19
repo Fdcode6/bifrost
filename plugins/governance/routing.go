@@ -13,6 +13,10 @@ import (
 
 type RoutingTargetCostResolver func(provider schemas.ModelProvider, model string, requestType schemas.RequestType) (float64, bool)
 
+// RoutingTargetUpstreamResolver returns the canonical upstream host / failure domain
+// for a provider so grouped routing can diversify fallbacks across independent upstreams.
+type RoutingTargetUpstreamResolver func(provider schemas.ModelProvider) string
+
 // headerKeyPattern matches header map access patterns like headers["X-Api-Key"] or headers['X-Api-Key']
 var headerKeyPattern = regexp.MustCompile(`headers\[["']([^"']+)["']\]`)
 
@@ -68,6 +72,7 @@ type RoutingContext struct {
 	QueryParams              map[string]string                  // Query parameters for dynamic routing
 	BudgetAndRateLimitStatus *BudgetAndRateLimitStatus          // Budget and rate limit status by provider/model
 	TargetCostResolver       RoutingTargetCostResolver          // Optional effective price lookup for cost-aware grouped routing
+	TargetUpstreamResolver   RoutingTargetUpstreamResolver      // Optional upstream host lookup for cross-domain fallback diversity
 }
 
 type RoutingEngine struct {

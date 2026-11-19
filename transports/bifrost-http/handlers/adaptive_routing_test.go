@@ -975,11 +975,30 @@ func TestResolveHealthDetectionProbeState_PausesWithoutRealTrafficAfterInitialPr
 			LastProbeRequestType: schemas.ChatCompletionRequest,
 			LastProbeResult:      "success",
 		},
+		false,
 		2*time.Minute,
 		now,
 	)
 
 	require.Equal(t, healthDetectionProbeStatePausedIdle, state)
+}
+
+func TestResolveHealthDetectionProbeState_EligibleWhenCooledInActiveRule(t *testing.T) {
+	now := time.Now()
+
+	state := resolveHealthDetectionProbeState(
+		healthDetectionSupportSupported,
+		true,
+		governance.TargetActivitySnapshot{
+			LastRealAccessAt:          now.Add(-4 * time.Minute),
+			LastRealAccessRequestType: schemas.ChatCompletionRequest,
+		},
+		true,
+		2*time.Minute,
+		now,
+	)
+
+	require.Equal(t, healthDetectionProbeStateEligible, state)
 }
 
 func newAdaptiveRoutingRule(ruleID, ruleName, provider, model string, keyID *string, failureThreshold, failureWindowSeconds, cooldownSeconds int) *configstoreTables.TableRoutingRule {

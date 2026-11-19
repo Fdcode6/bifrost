@@ -183,6 +183,7 @@ const (
 	BifrostContextKeyNumberOfRetries                     BifrostContextKey = "bifrost-number-of-retries"            // int (to store the number of retries (set by bifrost - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyFallbackIndex                       BifrostContextKey = "bifrost-fallback-index"               // int (to store the fallback index (set by bifrost - DO NOT SET THIS MANUALLY)) 0 for primary, 1 for first fallback, etc.
 	BifrostContextKeyFallbackKeyIDs                      BifrostContextKey = "bifrost-fallback-key-ids"             // []string (key_id plan for each fallback attempt, aligned with fallback index; set by grouped routing before core fallback execution)
+	BifrostContextKeyFallbackDeadline                    BifrostContextKey = "bifrost-fallback-deadline"            // time.Time (stop starting new fallback attempts once wall clock reaches this deadline; set by grouped routing)
 	BifrostContextKeyProviderMaxRetries                  BifrostContextKey = "bifrost-provider-max-retries"         // int (effective max provider retries for the current attempt chain - set by bifrost)
 	BifrostContextKeyStreamEndIndicator                  BifrostContextKey = "bifrost-stream-end-indicator"         // bool (set by bifrost - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyStreamEffectiveOutputSeen           BifrostContextKey = "bifrost-stream-effective-output-seen" // bool (tracks whether current streaming attempt has emitted real output)
