@@ -451,6 +451,36 @@ func TestUpdateRoutingRule_GroupedModeAllowsEmptyTargets(t *testing.T) {
 	require.Equal(t, "rule-1", manager.reloadedRuleID)
 }
 
+func TestV22AdminRuleRoundTrip(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := &mockConfigStoreForRoutingRule{rule: &configstoreTables.TableRoutingRule{ID: "rule", Name: "gemini-auto", Scope: "global", Enabled: true, GroupedRoutingEnabled: true, CelExpression: "true"}}
+	manager := &mockGovernanceManagerForRoutingRule{}
+	handler := &GovernanceHandler{configStore: store, governanceManager: manager}
+	for _, enabled := range []bool{true, false} {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.SetUserValue("rule_id", "rule")
+		ctx.Request.Header.SetMethod("PUT")
+		ctx.Request.SetBodyString(fmt.Sprintf(`{"health_policy":{"adaptive_ranking_enabled":true,"adaptive_v22_enabled":%t,"primary_attempt_timeout_ms":35000,"request_deadline_ms":58000,"rescue_attempt_timeout_ms":20000},"route_groups":[{"name":"last","last_resort":true,"targets":[{"provider":"relay","model":"pro","key_id":"key-1","weight":1,"primary_attempt_timeout_ms":22000}]}]}`, enabled))
+		handler.updateRoutingRule(ctx)
+		require.Equal(t, 200, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		store.rule = store.updatedRule
+		require.Equal(t, store.rule.ID, manager.reloadedRuleID)
+		require.NoError(t, store.rule.BeforeSave(nil))
+		back := configstoreTables.TableRoutingRule{HealthPolicyJSON: store.rule.HealthPolicyJSON, RouteGroupsJSON: store.rule.RouteGroupsJSON}
+		require.NoError(t, back.AfterFind(nil))
+		require.Equal(t, enabled, back.ParsedHealthPolicy.AdaptiveV22Enabled)
+		require.Equal(t, 58000, back.ParsedHealthPolicy.RequestDeadlineMs)
+		group := back.ParsedRouteGroups[0]
+		require.True(t, group.LastResort)
+		require.Equal(t, 22000, group.Targets[0].PrimaryAttemptTimeoutMs)
+		require.Equal(t, "key-1", *group.Targets[0].KeyID)
+	}
+	for _, invalid := range []int{-1, 0, 2147483648} {
+		groups := []RouteGroupRequest{{Name: "test", Targets: []RoutingTarget{{Provider: schemas.Ptr("relay"), Model: schemas.Ptr("pro"), PrimaryAttemptTimeoutMs: &invalid}}}}
+		require.ErrorContains(t, validateRouteGroups(groups), "primary_attempt_timeout_ms")
+	}
+}
+
 func TestCreateRoutingRule_GroupedModeRequiresExplicitProviderAndModel(t *testing.T) {
 	SetLogger(&mockLogger{})
 

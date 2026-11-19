@@ -40,6 +40,8 @@ import { Separator } from "@/components/ui/separator";
 import { getErrorMessage } from "@/lib/store";
 import {
 	getRouteGroupAvailableKeys,
+	toRouteGroupForm,
+	toRouteGroupRequest,
 	shouldShowRouteGroupKeySelector,
 	updateRouteGroupTarget as applyRouteGroupTargetPatch,
 } from "./routeGroupState";
@@ -146,19 +148,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 				setTargets([{ ...DEFAULT_ROUTING_TARGET }]);
 			}
 			if (editingRule.route_groups && editingRule.route_groups.length > 0) {
-				setRouteGroups(
-					editingRule.route_groups.map((g) => ({
-						name: g.name,
-						retry_limit: g.retry_limit,
-						fallback_only: g.fallback_only ?? false,
-						targets: g.targets.map((t) => ({
-							provider: t.provider || "",
-							model: t.model || "",
-							key_id: t.key_id || "",
-							weight: t.weight,
-						})),
-					})),
-				);
+				setRouteGroups(editingRule.route_groups.map(toRouteGroupForm));
 			} else {
 				setRouteGroups([]);
 			}
@@ -331,19 +321,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 			query: query,
 			grouped_routing_enabled: data.grouped_routing_enabled,
 			health_policy: data.grouped_routing_enabled ? data.health_policy : undefined,
-			route_groups: data.grouped_routing_enabled
-				? routeGroups.map((g) => ({
-						name: g.name,
-						retry_limit: g.retry_limit,
-						fallback_only: g.fallback_only,
-						targets: g.targets.map(({ provider, model, key_id, weight }) => ({
-							provider,
-							model,
-							key_id: key_id || undefined,
-							weight,
-						})),
-					}))
-				: undefined,
+			route_groups: data.grouped_routing_enabled ? routeGroups.map(toRouteGroupRequest) : undefined,
 		};
 
 		const submitPromise =

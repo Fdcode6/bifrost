@@ -16,7 +16,17 @@ type LargeResponseReader struct {
 	io.Reader
 	Resp     *fasthttp.Response
 	cleanup  func()
+	attempt  *StreamAttempt
 	consumed bool // true after Read returns io.EOF — body fully consumed through Reader chain
+}
+
+// AdoptAttempt transfers socket ownership to the transport until the raw body is closed.
+func (r *LargeResponseReader) AdoptAttempt(a *StreamAttempt) error {
+	if err := a.commit(); err != nil {
+		return err
+	}
+	r.attempt = a
+	return nil
 }
 
 // Read delegates to the wrapped Reader and tracks EOF so Close() can skip
@@ -41,6 +51,9 @@ func (r *LargeResponseReader) Read(p []byte) (int, error) {
 func (r *LargeResponseReader) Close() error {
 	if r == nil || r.Resp == nil {
 		return nil
+	}
+	if r.attempt != nil {
+		r.attempt.Close()
 	}
 	if !r.consumed {
 		if bodyStream := r.Resp.BodyStream(); bodyStream != nil {

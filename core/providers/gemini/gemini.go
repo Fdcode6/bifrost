@@ -436,7 +436,7 @@ func HandleGeminiChatCompletionStream(
 
 	// Make the request
 	streamingClient := buildStreamingResponseClient(client)
-	doErr := streamingClient.Do(req, resp)
+	doErr := providerUtils.DoStreamRequest(ctx, streamingClient, req, resp)
 	if doErr != nil {
 		defer providerUtils.ReleaseStreamingResponse(resp)
 		if errors.Is(doErr, context.Canceled) {
@@ -547,6 +547,7 @@ func HandleGeminiChatCompletionStream(
 			} else {
 				eventData, readErr = sseReader.ReadDataLine()
 			}
+			readErr = providerUtils.StreamReadError(ctx, sseReader, readErr, false)
 			if readErr == io.EOF {
 				break
 			}
@@ -973,7 +974,7 @@ func HandleGeminiResponsesStream(
 
 	// Make the request
 	streamingClient := buildStreamingResponseClient(client)
-	doErr := streamingClient.Do(req, resp)
+	doErr := providerUtils.DoStreamRequest(ctx, streamingClient, req, resp)
 	if doErr != nil {
 		defer providerUtils.ReleaseStreamingResponse(resp)
 		if errors.Is(doErr, context.Canceled) {
@@ -1092,6 +1093,7 @@ func HandleGeminiResponsesStream(
 			} else {
 				eventData, readErr = sseReader.ReadDataLine()
 			}
+			readErr = providerUtils.StreamReadError(ctx, sseReader, readErr, false)
 			if readErr == io.EOF {
 				break
 			}

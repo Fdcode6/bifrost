@@ -1,4 +1,30 @@
-import type { RouteGroupFormData, RoutingTargetFormData } from "@/lib/types/routingRules";
+import type { RouteGroup, RouteGroupFormData, RoutingTargetFormData } from "@/lib/types/routingRules";
+
+export function toRouteGroupForm(group: RouteGroup): RouteGroupFormData {
+	return {
+		...group,
+		fallback_only: group.fallback_only ?? false,
+		targets: group.targets.map((target) => ({
+			...target,
+			provider: target.provider || "",
+			model: target.model || "",
+			key_id: target.key_id || "",
+		})),
+	};
+}
+
+export function toRouteGroupRequest(group: RouteGroupFormData): RouteGroup {
+	return {
+		...group,
+		targets: group.targets.map(({ provider, model, key_id, weight, primary_attempt_timeout_ms }) => ({
+			provider,
+			model,
+			weight,
+			key_id: key_id || undefined,
+			primary_attempt_timeout_ms,
+		})),
+	};
+}
 
 export interface RouteGroupProviderKeyOption {
 	id: string;

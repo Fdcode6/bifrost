@@ -895,14 +895,15 @@ func (bs BifrostStreamChunk) MarshalJSON() ([]byte, error) {
 // - AllowFallbacks = &false: Bifrost will return this error immediately, no fallbacks
 // - AllowFallbacks = nil: Treated as true by default (fallbacks allowed for resilience)
 type BifrostError struct {
-	EventID        *string                 `json:"event_id,omitempty"`
-	Type           *string                 `json:"type,omitempty"`
-	IsBifrostError bool                    `json:"is_bifrost_error"`
-	StatusCode     *int                    `json:"status_code,omitempty"`
-	Error          *ErrorField             `json:"error"`
-	AllowFallbacks *bool                   `json:"-"` // Optional: Controls fallback behavior (nil = true by default)
-	StreamControl  *StreamControl          `json:"-"` // Optional: Controls stream behavior
-	ExtraFields    BifrostErrorExtraFields `json:"extra_fields"`
+	LocalQueueTimeout bool                    `json:"-"` // Attempt expired before provider dispatch.
+	EventID           *string                 `json:"event_id,omitempty"`
+	Type              *string                 `json:"type,omitempty"`
+	IsBifrostError    bool                    `json:"is_bifrost_error"`
+	StatusCode        *int                    `json:"status_code,omitempty"`
+	Error             *ErrorField             `json:"error"`
+	AllowFallbacks    *bool                   `json:"-"` // Optional: Controls fallback behavior (nil = true by default)
+	StreamControl     *StreamControl          `json:"-"` // Optional: Controls stream behavior
+	ExtraFields       BifrostErrorExtraFields `json:"extra_fields"`
 }
 
 // StreamControl represents stream control options.
@@ -991,15 +992,19 @@ type BifrostErrorExtraFields struct {
 // so the core fallback loop can apply per-hop timeouts, dynamic fast-channel rescue when elapsed
 // time exceeds the slow budget, and strict last-resort isolation for 100% full-price channels.
 type FallbackAttemptHint struct {
-	AttemptTimeoutMs int  `json:"attempt_timeout_ms,omitempty"`
-	IsFastRescue     bool `json:"is_fast_rescue,omitempty"`
-	IsLastResort     bool `json:"is_last_resort,omitempty"`
-	IsProbationProbe bool `json:"is_probation_probe,omitempty"`
+	ContinuationRank int                                                       `json:"-"` // Positive for healthy regular targets, in their cost/health order.
+	Available        func() bool                                               `json:"-"`
+	Observe          func(*BifrostContext, bool, time.Duration, *BifrostError) `json:"-"`
+	AttemptTimeoutMs int                                                       `json:"attempt_timeout_ms,omitempty"`
+	IsFastRescue     bool                                                      `json:"is_fast_rescue,omitempty"`
+	IsLastResort     bool                                                      `json:"is_last_resort,omitempty"`
+	IsProbationProbe bool                                                      `json:"is_probation_probe,omitempty"`
 }
 
 // AdaptiveFallbackRuntimePolicy coordinates per-hop timeout budgets, elapsed-time-triggered
 // fast-channel rescue, and final-attempt-only last-resort channels across a single request.
 type AdaptiveFallbackRuntimePolicy struct {
+	V22                    bool                  `json:"v22,omitempty"`
 	RequestStartTime       time.Time             `json:"request_start_time"`
 	FastRescueElapsedMs    int                   `json:"fast_rescue_elapsed_ms,omitempty"`
 	RescueAttemptTimeoutMs int                   `json:"rescue_attempt_timeout_ms,omitempty"`

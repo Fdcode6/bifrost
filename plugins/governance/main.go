@@ -407,6 +407,9 @@ func (p *GovernancePlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req
 	if hasRoutingRules {
 		var err error
 		payload, routingDecision, err = p.applyRoutingRules(ctx, req, payload, virtualKey)
+		if errors.Is(err, errNoAdaptiveTargets) {
+			return &schemas.HTTPResponse{StatusCode: 503, Headers: map[string]string{"Content-Type": "application/json"}, Body: []byte(`{"error":{"message":"no eligible adaptive routing target","type":"service_unavailable"}}`)}, nil
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -476,6 +479,9 @@ func (p *GovernancePlugin) governLargePayload(ctx *schemas.BifrostContext, req *
 	if hasRoutingRules {
 		var err error
 		payload, _, err = p.applyRoutingRules(ctx, req, payload, virtualKey)
+		if errors.Is(err, errNoAdaptiveTargets) {
+			return &schemas.HTTPResponse{StatusCode: 503, Headers: map[string]string{"Content-Type": "application/json"}, Body: []byte(`{"error":{"message":"no eligible adaptive routing target","type":"service_unavailable"}}`)}, nil
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -797,7 +803,9 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 	}
 
 	// Build routing context
+	stream, _ := body["stream"].(bool)
 	routingCtx := &RoutingContext{
+		Stream:                   stream || strings.Contains(genaiRequestSuffix, "streamGenerateContent") || bifrost.IsStreamRequestType(schemas.RequestType(requestType)),
 		VirtualKey:               virtualKey,
 		Provider:                 provider,
 		Model:                    model,
@@ -805,8 +813,11 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 		Headers:                  req.Headers,
 		QueryParams:              req.Query,
 		BudgetAndRateLimitStatus: p.store.GetBudgetAndRateLimitStatus(ctx, model, provider, virtualKey, nil, nil, nil),
-		TargetCostResolver:       p.resolveRoutingTargetCost,
-		TargetUpstreamResolver:   p.resolveRoutingTargetUpstream,
+		TargetAvailable: func(provider, model, keyID string) bool {
+			return p.routeTargetAvailable(virtualKey, provider, model, keyID)
+		},
+		TargetCostResolver:     p.resolveRoutingTargetCost,
+		TargetUpstreamResolver: p.resolveRoutingTargetUpstream,
 	}
 
 	p.logger.Debug("[HTTPTransport] Built routing context: provider=%s, model=%s, requestType=%s, vk=%v, headerCount=%d, paramCount=%d",
@@ -815,6 +826,9 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 
 	// Evaluate routing rules
 	decision, err := p.engine.EvaluateRoutingRules(ctx, routingCtx)
+	if errors.Is(err, errNoAdaptiveTargets) {
+		return body, nil, err
+	}
 	if err != nil {
 		p.logger.Error("failed to evaluate routing rules: %v", err)
 		ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, fmt.Sprintf("Routing rule evaluation error: %v", err))
@@ -857,6 +871,8 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 		// Add fallbacks if present
 		if len(decision.Fallbacks) > 0 {
 			body["fallbacks"] = decision.Fallbacks
+		} else if decision.AdaptivePolicy != nil && decision.AdaptivePolicy.V22 {
+			delete(body, "fallbacks")
 		}
 
 		// Pin specific API key by ID if the routing rule specifies one
@@ -877,7 +893,11 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 			ctx.SetValue(schemas.BifrostContextKeyRouteLayerIndex, decision.PrimaryLayer.LayerIndex)
 			ctx.SetValue(schemas.BifrostContextKeyDisableProviderRetries, true)
 			if budgetMs := effectiveFallbackBudgetMs(effectivePolicy, routingCtx); budgetMs > 0 {
-				ctx.SetValue(schemas.BifrostContextKeyFallbackDeadline, time.Now().Add(time.Duration(budgetMs)*time.Millisecond))
+				start := time.Now()
+				if decision.AdaptivePolicy != nil && decision.AdaptivePolicy.V22 {
+					start = decision.AdaptivePolicy.RequestStartTime
+				}
+				ctx.SetValue(schemas.BifrostContextKeyFallbackDeadline, start.Add(time.Duration(budgetMs)*time.Millisecond))
 			}
 			if decision.AdaptivePolicy != nil {
 				ctx.SetValue(schemas.BifrostContextKeyAdaptiveFallbackPolicy, decision.AdaptivePolicy)
@@ -909,6 +929,34 @@ func (p *GovernancePlugin) resolveRoutingTargetCost(provider schemas.ModelProvid
 		return 0, false
 	}
 	return cost, true
+}
+
+func (p *GovernancePlugin) routeTargetAvailable(vk *configstoreTables.TableVirtualKey, provider, model, keyID string) bool {
+	if vk != nil && p.store != nil && vk.Value != "" {
+		current, found := p.store.GetVirtualKey(vk.Value)
+		if !found || current == nil || !current.IsActive {
+			return false
+		}
+		vk = current
+	}
+	if vk != nil && len(vk.ProviderConfigs) > 0 {
+		if !p.resolver.isModelAllowed(vk, schemas.ModelProvider(provider), model) {
+			return false
+		}
+		for _, pc := range vk.ProviderConfigs {
+			if pc.Provider == provider && keyID != "" && len(pc.Keys) > 0 && !slices.ContainsFunc(pc.Keys, func(k configstoreTables.TableKey) bool { return k.KeyID == keyID }) {
+				return false
+			}
+		}
+	}
+	if reader, ok := p.store.(providerConfigReader); ok && keyID != "" {
+		if tp, found := reader.GetProvider(provider); found && tp != nil && tp.Keys != nil {
+			return slices.ContainsFunc(tp.Keys, func(k configstoreTables.TableKey) bool {
+				return k.KeyID == keyID && (k.Enabled == nil || *k.Enabled) && !slices.Contains(k.BlacklistedModels, model) && (len(k.Models) == 0 || slices.Contains(k.Models, model))
+			})
+		}
+	}
+	return true
 }
 
 type providerConfigReader interface {
@@ -1248,7 +1296,9 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		if ruleID != "" && trackedProvider != "" && trackedModel != "" {
 			now := time.Now()
 			targetKey := TargetKey(trackedProvider, trackedModel, trackedKeyID)
-			p.healthTracker.RecordRealAccess(targetKey, requestType, now)
+			if err == nil || !err.LocalQueueTimeout {
+				p.healthTracker.RecordRealAccess(targetKey, requestType, now)
+			}
 
 			policy, _ := ctx.Value(groupedRoutingHealthPolicyContextKey).(*configstoreTables.HealthPolicy)
 			policy = ApplyHealthPolicyDefaults(policy)
@@ -1262,7 +1312,14 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 				failureMsg = err.Error.Message
 			}
 			kind := ClassifyOutcome(err, latency, time.Duration(policy.SlowThresholdMs)*time.Millisecond)
-			p.healthTracker.RecordOutcome(ruleID, targetKey, kind, latency, failureMsg, policy, now)
+			runtime, _ := ctx.Value(schemas.BifrostContextKeyAdaptiveFallbackPolicy).(*schemas.AdaptiveFallbackRuntimePolicy)
+			large, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadMode).(bool)
+			measuresFirstOutput := requestType == schemas.ChatCompletionStreamRequest || requestType == schemas.TextCompletionStreamRequest || requestType == schemas.ResponsesStreamRequest
+			bufferedText := requestType == schemas.ChatCompletionRequest || requestType == schemas.TextCompletionRequest || requestType == schemas.ResponsesRequest
+			observedByAttempt := measuresFirstOutput || bufferedText && err != nil && err.LocalQueueTimeout
+			if runtime == nil || !runtime.V22 || !observedByAttempt || large {
+				p.healthTracker.RecordOutcome(ruleID, targetKey, kind, latency, failureMsg, policy, now)
+			}
 		}
 	}
 

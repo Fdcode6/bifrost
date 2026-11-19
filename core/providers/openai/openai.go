@@ -487,7 +487,7 @@ func HandleOpenAITextCompletionStreaming(
 	activeClient := providerUtils.PrepareResponseStreaming(ctx, client, resp)
 
 	// Make the request
-	err := activeClient.Do(req, resp)
+	err := providerUtils.DoStreamRequest(ctx, activeClient, req, resp)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(resp)
 		if errors.Is(err, context.Canceled) {
@@ -578,6 +578,7 @@ func HandleOpenAITextCompletionStreaming(
 			}
 			data, readErr := sseReader.ReadDataLine()
 			if readErr != nil {
+				readErr = providerUtils.StreamReadError(ctx, sseReader, readErr, finishReason != nil)
 				if readErr != io.EOF {
 					if ctx.Err() != nil {
 						return
@@ -1040,7 +1041,7 @@ func HandleOpenAIChatCompletionStreaming(
 	activeClient := providerUtils.PrepareResponseStreaming(ctx, client, resp)
 
 	// Make the request
-	err := activeClient.Do(req, resp)
+	err := providerUtils.DoStreamRequest(ctx, activeClient, req, resp)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(resp)
 		if errors.Is(err, context.Canceled) {
@@ -1141,6 +1142,7 @@ func HandleOpenAIChatCompletionStreaming(
 			}
 			data, readErr := sseReader.ReadDataLine()
 			if readErr != nil {
+				readErr = providerUtils.StreamReadError(ctx, sseReader, readErr, finishReason != nil)
 				if readErr != io.EOF {
 					if ctx.Err() != nil {
 						return
@@ -1650,7 +1652,7 @@ func HandleOpenAIResponsesStreaming(
 	activeClient := providerUtils.PrepareResponseStreaming(ctx, client, resp)
 
 	// Make the request
-	err := activeClient.Do(req, resp)
+	err := providerUtils.DoStreamRequest(ctx, activeClient, req, resp)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(resp)
 		if errors.Is(err, context.Canceled) {
@@ -1736,6 +1738,7 @@ func HandleOpenAIResponsesStreaming(
 			}
 			data, readErr := sseReader.ReadDataLine()
 			if readErr != nil {
+				readErr = providerUtils.StreamReadError(ctx, sseReader, readErr, false)
 				if readErr != io.EOF {
 					if ctx.Err() != nil {
 						return

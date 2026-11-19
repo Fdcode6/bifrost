@@ -52,6 +52,7 @@ import (
 type ChannelMessage struct {
 	schemas.BifrostRequest
 	Context        *schemas.BifrostContext
+	ticket         *queueTicket
 	Response       chan *schemas.BifrostResponse
 	ResponseStream chan chan *schemas.BifrostStreamChunk
 	Err            chan schemas.BifrostError
@@ -93,6 +94,7 @@ type ProviderQueue struct {
 	queue      chan *ChannelMessage // the actual request queue channel
 	done       chan struct{}        // closed to signal shutdown to producers
 	closing    uint32               // atomic: 0 = open, 1 = closing
+	sendMu     sync.RWMutex         // Closing waits for producers already inside the send select.
 	signalOnce sync.Once
 	closeOnce  sync.Once
 }
@@ -238,6 +240,8 @@ func (pq *ProviderQueue) signalClosing() {
 // Protected by sync.Once to prevent double-close.
 func (pq *ProviderQueue) closeQueue() {
 	pq.closeOnce.Do(func() {
+		pq.sendMu.Lock()
+		defer pq.sendMu.Unlock()
 		close(pq.queue)
 	})
 }
@@ -3394,6 +3398,9 @@ func (bifrost *Bifrost) UpdateProvider(providerKey schemas.ModelProvider) error 
 					case <-time.After(5 * time.Second):
 						bifrost.logger.Warn("Failed to transfer buffered request to new queue within timeout")
 						// Send error response to avoid hanging the client
+						if !bifrost.claimQueued(m) {
+							return
+						}
 						provider, model, _ := m.BifrostRequest.GetRequestFields()
 						select {
 						case m.Err <- schemas.BifrostError{
@@ -4237,10 +4244,24 @@ func applyAdaptiveAttemptDeadline(ctx *schemas.BifrostContext, attemptTimeoutMs 
 	if deadline.IsZero() {
 		return func() {}
 	}
+	if parent, ok := ctx.Deadline(); adaptiveV22(ctx) != nil && ok && parent.Before(deadline) {
+		deadline = parent
+	}
 	ctx.SetValue(schemas.BifrostContextKeyAttemptDeadline, deadline)
 	return func() {
 		ctx.ClearValue(schemas.BifrostContextKeyAttemptDeadline)
 	}
+}
+
+func adaptiveV22(ctx *schemas.BifrostContext) *schemas.AdaptiveFallbackRuntimePolicy {
+	if ctx == nil {
+		return nil
+	}
+	p, _ := ctx.Value(schemas.BifrostContextKeyAdaptiveFallbackPolicy).(*schemas.AdaptiveFallbackRuntimePolicy)
+	if p != nil && p.V22 {
+		return p
+	}
+	return nil
 }
 
 func adaptivePrimaryTimeoutMs(ctx *schemas.BifrostContext) int {
@@ -4392,15 +4413,14 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 		requestID := uuid.New().String()
 		ctx.SetValue(schemas.BifrostContextKeyRequestID, requestID)
 	}
-	clearPrimaryDeadline := applyAdaptiveAttemptDeadline(ctx, adaptivePrimaryTimeoutMs(ctx))
-	primaryResult, primaryErr := bifrost.tryRequest(ctx, req)
-	clearPrimaryDeadline()
+	primaryResult, primaryErr := bifrost.tryBudgetedRequest(ctx, req, 0, 1, adaptivePrimaryTimeoutMs(ctx))
 	if primaryErr == nil {
 		if emptyRespErr := ensureSuccessfulResponsePayload(primaryResult, req.RequestType, provider, model); emptyRespErr != nil {
 			primaryResult = nil
 			primaryErr = emptyRespErr
 		}
 	}
+
 	if primaryErr != nil {
 		if primaryErr.Error != nil {
 			bifrost.logger.Debug(fmt.Sprintf("primary provider %s with model %s returned error: %s", provider, model, primaryErr.Error.Message))
@@ -4430,24 +4450,17 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 
 	// Try fallbacks in order
 	attemptsExecuted := 1
-	for i, fallback := range fallbacks {
+	var cursor fallbackCursor
+	for {
 		if ctx.Err() != nil {
 			bifrost.logger.Debug("request context done (%v), stopping fallback loop", ctx.Err())
 			break
 		}
-		if fallbackDeadline, ok := ctx.Value(schemas.BifrostContextKeyFallbackDeadline).(time.Time); ok && !fallbackDeadline.IsZero() && !time.Now().Before(fallbackDeadline) {
-			bifrost.logger.Debug("fallback deadline budget exhausted, skipping remaining %d fallbacks", len(fallbacks)-i)
+		i, fbTimeoutMs := cursor.next(ctx, len(fallbacks), attemptsExecuted)
+		if i < 0 {
 			break
 		}
-		skipFallback, stopFallback, fbTimeoutMs := selectAdaptiveFallbackAction(ctx, len(fallbacks), i, attemptsExecuted)
-		if stopFallback {
-			bifrost.logger.Debug("adaptive fallback budget reached after %d attempts, stopping fallback loop", attemptsExecuted)
-			break
-		}
-		if skipFallback {
-			bifrost.logger.Debug("adaptive fallback skipping candidate[%d] %s/%s", i, fallback.Provider, fallback.Model)
-			continue
-		}
+		fallback := fallbacks[i]
 		ctx.SetValue(schemas.BifrostContextKeyFallbackIndex, i+1)
 		bifrost.logger.Debug(fmt.Sprintf("trying fallback provider %s with model %s", fallback.Provider, fallback.Model))
 		ctx.SetValue(schemas.BifrostContextKeyFallbackRequestID, uuid.New().String())
@@ -4472,15 +4485,14 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 
 		// Try the fallback provider
 		attemptsExecuted++
-		clearFbDeadline := applyAdaptiveAttemptDeadline(ctx, fbTimeoutMs)
-		result, fallbackErr := bifrost.tryRequest(ctx, fallbackReq)
-		clearFbDeadline()
+		result, fallbackErr := bifrost.tryBudgetedRequest(ctx, fallbackReq, i+1, attemptsExecuted, fbTimeoutMs)
 		if fallbackErr == nil {
 			if emptyRespErr := ensureSuccessfulResponsePayload(result, req.RequestType, fallback.Provider, fallback.Model); emptyRespErr != nil {
 				result = nil
 				fallbackErr = emptyRespErr
 			}
 		}
+
 		if fallbackErr == nil {
 			bifrost.logger.Debug(fmt.Sprintf("successfully used fallback provider %s with model %s", fallback.Provider, fallback.Model))
 			tracer.EndSpan(handle, schemas.SpanStatusOk, "")
@@ -4553,7 +4565,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 		requestID := uuid.New().String()
 		ctx.SetValue(schemas.BifrostContextKeyRequestID, requestID)
 	}
-	primaryResult, primaryErr := bifrost.tryStreamRequest(ctx, req)
+	primaryResult, primaryErr := bifrost.tryBudgetedStream(ctx, req, 0, 1, adaptivePrimaryTimeoutMs(ctx))
 
 	// Check if we should proceed with fallbacks
 	shouldTryFallbacks := bifrost.shouldTryFallbacks(ctx, req, primaryErr)
@@ -4573,24 +4585,17 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 
 	// Try fallbacks in order
 	attemptsExecuted := 1
-	for i, fallback := range fallbacks {
+	var cursor fallbackCursor
+	for {
 		if ctx.Err() != nil {
 			bifrost.logger.Debug("request context done (%v), stopping fallback loop", ctx.Err())
 			break
 		}
-		if fallbackDeadline, ok := ctx.Value(schemas.BifrostContextKeyFallbackDeadline).(time.Time); ok && !fallbackDeadline.IsZero() && !time.Now().Before(fallbackDeadline) {
-			bifrost.logger.Debug("fallback deadline budget exhausted, skipping remaining %d fallbacks", len(fallbacks)-i)
+		i, fbTimeoutMs := cursor.next(ctx, len(fallbacks), attemptsExecuted)
+		if i < 0 {
 			break
 		}
-		skipFallback, stopFallback, _ := selectAdaptiveFallbackAction(ctx, len(fallbacks), i, attemptsExecuted)
-		if stopFallback {
-			bifrost.logger.Debug("adaptive fallback budget reached after %d stream attempts, stopping fallback loop", attemptsExecuted)
-			break
-		}
-		if skipFallback {
-			bifrost.logger.Debug("adaptive fallback skipping stream candidate[%d] %s/%s", i, fallback.Provider, fallback.Model)
-			continue
-		}
+		fallback := fallbacks[i]
 		ctx.SetValue(schemas.BifrostContextKeyFallbackIndex, i+1)
 		ctx.SetValue(schemas.BifrostContextKeyFallbackRequestID, uuid.New().String())
 		clearCtxForFallback(ctx)
@@ -4613,7 +4618,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 
 		// Try the fallback provider
 		attemptsExecuted++
-		result, fallbackErr := bifrost.tryStreamRequest(ctx, fallbackReq)
+		result, fallbackErr := bifrost.tryBudgetedStream(ctx, fallbackReq, i+1, attemptsExecuted, fbTimeoutMs)
 		if fallbackErr == nil {
 			bifrost.logger.Debug(fmt.Sprintf("successfully used fallback provider %s with model %s", fallback.Provider, fallback.Model))
 			tracer.EndSpan(handle, schemas.SpanStatusOk, "")
@@ -4727,79 +4732,17 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 	msg := bifrost.getChannelMessage(*preReq)
 	msg.Context = ctx
 
-	// Check if provider is closing before attempting to send (lock-free atomic check)
-	// This prevents "send on closed channel" panics during provider removal/update
-	if pq.isClosing() {
-		bifrost.releaseChannelMessage(msg)
-		bifrostErr := newBifrostErrorFromMsg("provider is shutting down")
-		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-			RequestType:    req.RequestType,
-			Provider:       provider,
-			ModelRequested: model,
-		}
-		return nil, bifrostErr
-	}
-
-	// Use select with done channel to detect shutdown during send
-	select {
-	case pq.queue <- msg:
-		// Message was sent successfully
-	case <-pq.done:
-		bifrost.releaseChannelMessage(msg)
-		bifrostErr := newBifrostErrorFromMsg("provider is shutting down")
-		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-			RequestType:    req.RequestType,
-			Provider:       provider,
-			ModelRequested: model,
-		}
-		return nil, bifrostErr
-	case <-ctx.Done():
-		bifrost.releaseChannelMessage(msg)
-		return nil, newBifrostCtxDoneError(ctx, provider, model, req.RequestType, "while waiting for queue space")
-	default:
-		if bifrost.dropExcessRequests.Load() {
-			bifrost.releaseChannelMessage(msg)
-			bifrost.logger.Warn("request dropped: queue is full, please increase the queue size or set dropExcessRequests to false")
-			bifrostErr := newBifrostErrorFromMsg("request dropped: queue is full")
-			bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-				RequestType:    req.RequestType,
-				Provider:       provider,
-				ModelRequested: model,
-			}
-			return nil, bifrostErr
-		}
-		// Re-check closing flag before blocking send (lock-free atomic check)
-		if pq.isClosing() {
-			bifrost.releaseChannelMessage(msg)
-			bifrostErr := newBifrostErrorFromMsg("provider is shutting down")
-			bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-				RequestType:    req.RequestType,
-				Provider:       provider,
-				ModelRequested: model,
-			}
-			return nil, bifrostErr
-		}
-		select {
-		case pq.queue <- msg:
-			// Message was sent successfully
-		case <-pq.done:
-			bifrost.releaseChannelMessage(msg)
-			bifrostErr := newBifrostErrorFromMsg("provider is shutting down")
-			bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-				RequestType:    req.RequestType,
-				Provider:       provider,
-				ModelRequested: model,
-			}
-			return nil, bifrostErr
-		case <-ctx.Done():
-			bifrost.releaseChannelMessage(msg)
-			return nil, newBifrostCtxDoneError(ctx, provider, model, req.RequestType, "while waiting for queue space")
-		}
+	if err := bifrost.enqueueAttempt(pq, msg, provider, model); err != nil {
+		return nil, err
 	}
 
 	var result *schemas.BifrostResponse
 	var resp *schemas.BifrostResponse
 	pluginCount := len(*bifrost.llmPlugins.Load())
+	cancelled := ctx.Done()
+	if msg.ticket != nil {
+		cancelled = nil
+	} // The owning worker must finish before recycling the message.
 	select {
 	case result = <-msg.Response:
 		resp, bifrostErr := pipeline.RunPostLLMHooks(msg.Context, result, nil, pluginCount)
@@ -4843,7 +4786,7 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 			return nil, emptyRespErr
 		}
 		return resp, nil
-	case <-ctx.Done():
+	case <-cancelled:
 		bifrost.releaseChannelMessage(msg)
 		provider, model, _ := req.GetRequestFields()
 		return nil, newBifrostCtxDoneError(ctx, provider, model, req.RequestType, "waiting for provider response")
@@ -5016,74 +4959,8 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 	msg := bifrost.getChannelMessage(*preReq)
 	msg.Context = ctx
 
-	// Check if provider is closing before attempting to send (lock-free atomic check)
-	// This prevents "send on closed channel" panics during provider removal/update
-	if pq.isClosing() {
-		bifrost.releaseChannelMessage(msg)
-		bifrostErr := newBifrostErrorFromMsg("provider is shutting down")
-		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-			RequestType:    req.RequestType,
-			Provider:       provider,
-			ModelRequested: model,
-		}
-		return nil, bifrostErr
-	}
-
-	// Use select with done channel to detect shutdown during send
-	select {
-	case pq.queue <- msg:
-		// Message was sent successfully
-	case <-pq.done:
-		bifrost.releaseChannelMessage(msg)
-		bifrostErr := newBifrostErrorFromMsg("provider is shutting down")
-		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-			RequestType:    req.RequestType,
-			Provider:       provider,
-			ModelRequested: model,
-		}
-		return nil, bifrostErr
-	case <-ctx.Done():
-		bifrost.releaseChannelMessage(msg)
-		return nil, newBifrostCtxDoneError(ctx, provider, model, req.RequestType, "while waiting for queue space")
-	default:
-		if bifrost.dropExcessRequests.Load() {
-			bifrost.releaseChannelMessage(msg)
-			bifrost.logger.Warn("request dropped: queue is full, please increase the queue size or set dropExcessRequests to false")
-			bifrostErr := newBifrostErrorFromMsg("request dropped: queue is full")
-			bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-				RequestType:    req.RequestType,
-				Provider:       provider,
-				ModelRequested: model,
-			}
-			return nil, bifrostErr
-		}
-		// Re-check closing flag before blocking send (lock-free atomic check)
-		if pq.isClosing() {
-			bifrost.releaseChannelMessage(msg)
-			bifrostErr := newBifrostErrorFromMsg("provider is shutting down")
-			bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-				RequestType:    req.RequestType,
-				Provider:       provider,
-				ModelRequested: model,
-			}
-			return nil, bifrostErr
-		}
-		select {
-		case pq.queue <- msg:
-			// Message was sent successfully
-		case <-pq.done:
-			bifrost.releaseChannelMessage(msg)
-			bifrostErr := newBifrostErrorFromMsg("provider is shutting down")
-			bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-				RequestType:    req.RequestType,
-				Provider:       provider,
-				ModelRequested: model,
-			}
-			return nil, bifrostErr
-		case <-ctx.Done():
-			bifrost.releaseChannelMessage(msg)
-			return nil, newBifrostCtxDoneError(ctx, provider, model, req.RequestType, "while waiting for queue space")
-		}
+	if err := bifrost.enqueueAttempt(pq, msg, provider, model); err != nil {
+		return nil, err
 	}
 
 	select {
@@ -5132,7 +5009,7 @@ func executeRequestWithRetries[T any](
 	var bifrostError *schemas.BifrostError
 	var attempts int
 	effectiveMaxRetries := config.NetworkConfig.MaxRetries
-	if disableProviderRetries, _ := ctx.Value(schemas.BifrostContextKeyDisableProviderRetries).(bool); disableProviderRetries {
+	if disableProviderRetries, _ := ctx.Value(schemas.BifrostContextKeyDisableProviderRetries).(bool); disableProviderRetries || adaptiveV22(ctx) != nil {
 		effectiveMaxRetries = 0
 	}
 	ctx.SetValue(schemas.BifrostContextKeyProviderMaxRetries, effectiveMaxRetries)
@@ -5163,6 +5040,9 @@ func executeRequestWithRetries[T any](
 			time.Sleep(backoff)
 		}
 
+		if deadline, ok := ctx.Value(schemas.BifrostContextKeyAttemptDeadline).(time.Time); ok && adaptiveV22(ctx) != nil && (ctx.Err() != nil || !time.Now().Before(deadline)) {
+			return result, queueDeadlineError(ctx, providerKey, model, requestType)
+		}
 		logger.Debug("attempting %s request for provider %s", requestType, providerKey)
 
 		// Start span for LLM call (or retry attempt)
@@ -5252,7 +5132,7 @@ func executeRequestWithRetries[T any](
 		// the SSE stream instead of returning proper HTTP error status codes.
 		if bifrostError == nil {
 			if streamChan, ok := any(result).(chan *schemas.BifrostStreamChunk); ok {
-				checkedStream, drainDone, firstChunkErr := providerUtils.CheckFirstStreamChunkForError(streamChan)
+				checkedStream, drainDone, firstChunkErr := providerUtils.CheckStreamPrelude(streamChan, providerUtils.CurrentStreamAttempt(ctx))
 				if firstChunkErr != nil {
 					<-drainDone
 					ctx.SetValue(streamPreludeErrorPostHooksAppliedContextKey, true)
@@ -5345,6 +5225,9 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 	}()
 
 	for req := range pq.queue {
+		if !bifrost.claimQueued(req) {
+			continue
+		}
 		_, model, _ := req.BifrostRequest.GetRequestFields()
 
 		var result *schemas.BifrostResponse
@@ -5473,6 +5356,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		// Create plugin pipeline for streaming requests outside retry loop to prevent leaks
 		var postHookRunner schemas.PostHookRunner
 		var pipeline *PluginPipeline
+		var finishPipeline func(context.Context)
 		if IsStreamRequestType(req.RequestType) {
 			attemptRequestType := req.RequestType
 			attemptProvider := provider.GetProviderKey()
@@ -5507,12 +5391,14 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 			}
 			// Store a finalizer callback to create aggregated post-hook spans at stream end
 			// This closure captures the pipeline reference and releases it after finalization
-			postHookSpanFinalizer := func(ctx context.Context) {
-				pipeline.FinalizeStreamingPostHookSpans(ctx)
-				// Release the pipeline AFTER finalizing spans (not before streaming completes)
-				bifrost.releasePluginPipeline(pipeline)
+			var once sync.Once
+			finishPipeline = func(ctx context.Context) {
+				once.Do(func() {
+					pipeline.FinalizeStreamingPostHookSpans(ctx)
+					bifrost.releasePluginPipeline(pipeline)
+				})
 			}
-			req.Context.SetValue(schemas.BifrostContextKeyPostHookSpanFinalizer, postHookSpanFinalizer)
+			req.Context.SetValue(schemas.BifrostContextKeyPostHookSpanFinalizer, finishPipeline)
 		}
 
 		// Execute request with retries
@@ -5529,8 +5415,13 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		// Release pipeline immediately for non-streaming requests only
 		// For streaming, the pipeline is released in the postHookSpanFinalizer after streaming completes
 		// Exception: if streaming request has an error, release immediately since finalizer won't be called
-		if pipeline != nil && (!IsStreamRequestType(req.RequestType) || bifrostError != nil) {
-			bifrost.releasePluginPipeline(pipeline)
+		if finishPipeline != nil && bifrostError != nil {
+			finishPipeline(req.Context)
+		}
+		// A ticketed request always has a waiting receiver, including after cancellation.
+		cancelled := req.Context.Done()
+		if req.ticket != nil {
+			cancelled = nil
 		}
 
 		if bifrostError != nil {
@@ -5547,7 +5438,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 			select {
 			case req.Err <- *bifrostError:
 				// Error sent successfully
-			case <-req.Context.Done():
+			case <-cancelled:
 				// Client no longer listening, log and continue
 				bifrost.logger.Debug("Client context cancelled while sending error response")
 			case <-time.After(5 * time.Second):
@@ -5560,7 +5451,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				select {
 				case req.ResponseStream <- stream:
 					// Stream sent successfully
-				case <-req.Context.Done():
+				case <-cancelled:
 					// Client no longer listening, log and continue
 					bifrost.logger.Debug("Client context cancelled while sending stream response")
 				case <-time.After(5 * time.Second):
@@ -5572,7 +5463,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				select {
 				case req.Response <- result:
 					// Response sent successfully
-				case <-req.Context.Done():
+				case <-cancelled:
 					// Client no longer listening, log and continue
 					bifrost.logger.Debug("Client context cancelled while sending response")
 				case <-time.After(5 * time.Second):
@@ -6469,6 +6360,8 @@ func (bifrost *Bifrost) releaseChannelMessage(msg *ChannelMessage) {
 	// Release of Bifrost Request is handled in handle methods as they are required for fallbacks
 
 	// Clear references and return to pool
+	msg.ticket = nil
+
 	msg.Response = nil
 	msg.ResponseStream = nil
 	msg.Err = nil

@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	sseInitialBufSize = 8 * 1024        // 8KB — sufficient for >99.9% of SSE lines
+	sseInitialBufSize = 8 * 1024         // 8KB — sufficient for >99.9% of SSE lines
 	sseMaxBufSize     = 10 * 1024 * 1024 // 10MB — allow large tokens (tool calls, audio)
 )
 
@@ -72,7 +72,8 @@ var (
 // defaultSSEDataReader implements SSEDataReader using bufio.NewScanner.
 // Handles Format A SSE streams (data-only: OpenAI, Gemini, Cohere, etc.).
 type defaultSSEDataReader struct {
-	scanner *bufio.Scanner
+	scanner    *bufio.Scanner
+	doneMarker bool
 }
 
 func newDefaultSSEDataReader(reader io.Reader) *defaultSSEDataReader {
@@ -99,6 +100,7 @@ func (r *defaultSSEDataReader) ReadDataLine() ([]byte, error) {
 				continue
 			}
 			if bytes.Equal(data, sseDoneMarker) {
+				r.doneMarker = true
 				return nil, io.EOF
 			}
 			// Copy to decouple from scanner's internal buffer

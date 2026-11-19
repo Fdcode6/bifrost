@@ -17,17 +17,20 @@ const (
 )
 
 type adaptiveCandidate struct {
-	resolved      resolvedTarget
-	snap          AdaptiveTargetSnapshot
-	rawCost       float64
-	hasCost       bool
-	normCost      float64
-	score         float64
-	isFastRescue  bool
-	isBackup      bool
-	isLastResort  bool
-	isProbation   bool
-	originalOrder int
+	continuationRank int
+	primaryLimit     int
+	recent           rescueCounts
+	resolved         resolvedTarget
+	snap             AdaptiveTargetSnapshot
+	rawCost          float64
+	hasCost          bool
+	normCost         float64
+	score            float64
+	isFastRescue     bool
+	isBackup         bool
+	isLastResort     bool
+	isProbation      bool
+	originalOrder    int
 }
 
 func effectiveAdaptiveBudgetMs(policy *configstoreTables.HealthPolicy, routingCtx *RoutingContext) int {
@@ -92,6 +95,9 @@ func buildAdaptiveGroupedRoutingDecision(
 		isFallbackOnly := group.FallbackOnly || isLastResort
 		for _, t := range group.Targets {
 			resolved := resolveRouteGroupTarget(t, routingCtx, gi, group.Name)
+			if policy.AdaptiveV22Enabled && routingCtx != nil && routingCtx.TargetAvailable != nil && !routingCtx.TargetAvailable(resolved.provider, resolved.model, resolved.keyID) {
+				continue
+			}
 			resolved.fallbackOnly = isFallbackOnly
 			resolved.order = orderCounter
 			orderCounter++
@@ -138,6 +144,9 @@ func buildAdaptiveGroupedRoutingDecision(
 			snap = healthTracker.InspectAdaptiveTargetForRule(rule.ID, re.resolved.key, policy, now)
 		}
 
+		if policy.AdaptiveV22Enabled && (snap.InFatal || snap.InShortTripwire) {
+			continue
+		}
 		normCost := 0.50
 		if re.hasCost && maxCost > 0 {
 			normCost = re.rawCost / maxCost
@@ -173,7 +182,12 @@ func buildAdaptiveGroupedRoutingDecision(
 			}
 		}
 
+		var recent rescueCounts
+		if policy.AdaptiveV22Enabled && healthTracker != nil {
+			recent = healthTracker.recentRescue(rule.ID, re.resolved.key, routingCtx != nil && routingCtx.Stream, now)
+		}
 		cand := adaptiveCandidate{
+			primaryLimit: re.target.PrimaryAttemptTimeoutMs, recent: recent,
 			resolved:      re.resolved,
 			snap:          snap,
 			rawCost:       re.rawCost,
@@ -320,6 +334,15 @@ func buildAdaptiveGroupedRoutingDecision(
 		return out
 	}
 
+	// Keep the cost/health order for early failures even when the rescue snapshot
+	// later prefers a different upstream or a faster channel.
+	if policy.AdaptiveV22Enabled {
+		for i := range activeRegular {
+			if !activeRegular[i].snap.InProbation {
+				activeRegular[i].continuationRank = i + 1
+			}
+		}
+	}
 	// Preserve #1 lowest-score active channel at index 0; diversify fallbacks strictly within each tier!
 	if len(activeRegular) > 2 {
 		tail := diversifyAdaptive(activeRegular[1:])
@@ -383,6 +406,7 @@ func buildAdaptiveGroupedRoutingDecision(
 	ordered := make([]adaptiveCandidate, 0, len(rawEntries))
 	seen := make(map[string]struct{}, len(rawEntries))
 	appendCandidate := func(c adaptiveCandidate) {
+
 		if len(ordered) >= maxAdaptiveCandidateChainLen {
 			return
 		}
@@ -424,6 +448,58 @@ func buildAdaptiveGroupedRoutingDecision(
 		return nil
 	}
 
+	if policy.AdaptiveV22Enabled && len(ordered) > 2 {
+		// Keep the chosen primary and its pinned key; rank whole fallback records together.
+		tail := ordered[1:]
+		higherRescuePriority := func(a, b adaptiveCandidate) bool {
+			if a.snap.InProbation != b.snap.InProbation {
+				return !a.snap.InProbation
+			}
+			if a.isLastResort != b.isLastResort {
+				return !a.isLastResort
+			}
+			ak, bk := a.recent.attempts >= 6, b.recent.attempts >= 6
+			if ak && bk {
+				left, right := int64(a.recent.fast)*int64(b.recent.attempts), int64(b.recent.fast)*int64(a.recent.attempts)
+				if left != right {
+					return left > right
+				}
+			} else if ak != bk {
+				// An unmeasured candidate inherits only its existing fast-rescue qualification.
+				if ak {
+					return a.recent.fast > 0 || !b.isFastRescue
+				}
+				return b.recent.fast == 0 && a.isFastRescue
+			}
+			if a.isFastRescue != b.isFastRescue {
+				return a.isFastRescue
+			}
+			if a.isBackup != b.isBackup {
+				return !a.isBackup
+			}
+			if a.hasCost != b.hasCost {
+				return a.hasCost
+			}
+			return a.hasCost && a.rawCost < b.rawCost
+		}
+		sort.SliceStable(tail, func(i, j int) bool { return higherRescuePriority(tail[i], tail[j]) })
+		// Diversify ties without promoting a less reliable rescue channel.
+		if upstreamResolver != nil {
+			last := upstreamResolver(schemas.ModelProvider(ordered[0].resolved.provider))
+			for i := range tail {
+				for j := i; j < len(tail) && !higherRescuePriority(tail[i], tail[j]); j++ {
+					host := upstreamResolver(schemas.ModelProvider(tail[j].resolved.provider))
+					if host != "" && host != last {
+						chosen := tail[j]
+						copy(tail[i+1:j+1], tail[i:j])
+						tail[i] = chosen
+						break
+					}
+				}
+				last = upstreamResolver(schemas.ModelProvider(tail[i].resolved.provider))
+			}
+		}
+	}
 	probeTimeoutMs := policy.PrimaryAttemptTimeoutMs - 3000
 	if probeTimeoutMs > 35000 {
 		probeTimeoutMs = 35000
@@ -439,12 +515,50 @@ func buildAdaptiveGroupedRoutingDecision(
 		} else if c.isLastResort && policy.RescueAttemptTimeoutMs > 0 {
 			timeoutMs = policy.RescueAttemptTimeoutMs
 		}
-		return schemas.FallbackAttemptHint{
+		if policy.AdaptiveV22Enabled && (isPrimary || c.continuationRank > 0) {
+			if c.primaryLimit > 0 {
+				timeoutMs = c.primaryLimit
+			}
+			if c.isProbation {
+				timeoutMs = min(timeoutMs, probeTimeoutMs, 22000)
+			}
+		}
+		hint := schemas.FallbackAttemptHint{
+			ContinuationRank: c.continuationRank,
 			AttemptTimeoutMs: timeoutMs,
 			IsFastRescue:     c.isFastRescue,
 			IsLastResort:     c.isLastResort,
 			IsProbationProbe: isPrimary && c.isProbation,
 		}
+		if policy.AdaptiveV22Enabled && healthTracker != nil {
+			hint.Available = func() bool {
+				s := healthTracker.InspectAdaptiveTargetForRule(rule.ID, c.resolved.key, policy, time.Now())
+				return !s.InFatal && !s.InShortTripwire && (routingCtx == nil || routingCtx.TargetAvailable == nil || routingCtx.TargetAvailable(c.resolved.provider, c.resolved.model, c.resolved.keyID))
+			}
+			hint.Observe = func(ctx *schemas.BifrostContext, stream bool, elapsed time.Duration, err *schemas.BifrostError) {
+				cached, _ := ctx.Value(governanceIsCacheReadContextKey).(bool)
+				if rejected, _ := ctx.Value(governanceRejectedContextKey).(bool); rejected || cached {
+					return
+				}
+				kind := ClassifyOutcome(err, elapsed, time.Duration(policy.SlowThresholdMs)*time.Millisecond)
+				if ctx.Err() != nil {
+					kind = OutcomeIgnore
+				}
+				now := time.Now()
+				// Queue expiry can return before the normal post-hook. Release the
+				// attempt's in-flight lease once, including for non-stream calls.
+				if stream || err != nil && err.LocalQueueTimeout {
+					msg := ""
+					if err != nil && err.Error != nil {
+						msg = err.Error.Message
+					}
+					healthTracker.RecordOutcome(rule.ID, c.resolved.key, kind, elapsed, msg, policy, now)
+				}
+				healthTracker.observeRescue(rule.ID, c.resolved.key, stream, kind, elapsed, now)
+			}
+			ctx.AppendRoutingEngineLog(routingGroupEngine, fmt.Sprintf("V2.2 snapshot=%d target=%s/%s layer=%s stream=%t timely=%d attempts=%d fast=%t last=%t", now.Unix(), c.resolved.provider, c.resolved.model, c.resolved.layerName, routingCtx != nil && routingCtx.Stream, c.recent.fast, c.recent.attempts, c.isFastRescue, c.isLastResort))
+		}
+		return hint
 	}
 
 	primary := ordered[0]
@@ -463,6 +577,7 @@ func buildAdaptiveGroupedRoutingDecision(
 	}
 
 	adaptiveRuntime := &schemas.AdaptiveFallbackRuntimePolicy{
+		V22:                    policy.AdaptiveV22Enabled,
 		RequestStartTime:       now,
 		FastRescueElapsedMs:    policy.FastRescueElapsedMs,
 		RescueAttemptTimeoutMs: policy.RescueAttemptTimeoutMs,

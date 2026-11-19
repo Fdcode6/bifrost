@@ -118,11 +118,34 @@ func DoWithAttemptDeadline(ctx context.Context, client *fasthttp.Client, req *fa
 			effectiveDeadline = attemptDeadline
 		}
 	}
-	if !effectiveDeadline.IsZero() && (resp == nil || !resp.StreamBody) {
+	var attempt *StreamAttempt
+	if ctx != nil {
+		attempt, _ = ctx.Value(streamAttemptKey).(*StreamAttempt)
+	}
+	if !effectiveDeadline.IsZero() && (resp == nil || !resp.StreamBody || attempt != nil) {
 		rem := time.Until(effectiveDeadline)
 		timeoutSec := int((rem + 999*time.Millisecond) / time.Second)
 		if timeoutSec < 1 {
 			timeoutSec = 1
+		}
+		if rem <= 0 {
+			return context.DeadlineExceeded, timeoutSec
+		}
+		if attempt != nil {
+			if _, ok := client.Transport.(bufferedAttemptTransport); ok && client.ConfigureClient == nil && resp != nil && !resp.StreamBody && !client.StreamResponseBody {
+				if err := attempt.acquireHost(client, string(req.URI().Host())); err != nil {
+					return err, timeoutSec
+				}
+				defer func() {
+					attempt.mu.Lock()
+					attempt.releaseHostLocked()
+					attempt.mu.Unlock()
+				}()
+				req.SetUserValue(streamAttemptKey, attempt)
+				defer req.RemoveUserValue(streamAttemptKey)
+				return client.DoDeadline(req, resp, effectiveDeadline), timeoutSec
+			}
+			return attempt.do(client, req, resp), timeoutSec
 		}
 		return client.DoDeadline(req, resp, effectiveDeadline), timeoutSec
 	}
@@ -283,6 +306,9 @@ func ConfigureRetry(client *fasthttp.Client) *fasthttp.Client {
 // Dead connections are detected within ~25s (10 + 5*3), before the 30s
 // MaxIdleConnDuration expires and the connection is reused.
 func ConfigureDialer(client *fasthttp.Client) *fasthttp.Client {
+	if client.Transport == nil {
+		client.Transport = bufferedAttemptTransport{}
+	}
 	// Configure stale-connection retry policy
 	client.RetryIfErr = network.StaleConnectionRetryIfErr
 

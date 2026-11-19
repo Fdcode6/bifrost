@@ -130,14 +130,16 @@ type UpdateBudgetRequest struct {
 // All fields except Weight are optional; nil means "use the incoming request's value".
 // Weights across all targets in a rule must sum to 1 (e.g. 0.7 + 0.3 = 1.0).
 type RoutingTarget struct {
-	Provider *string `json:"provider,omitempty"` // nil = use incoming provider
-	Model    *string `json:"model,omitempty"`    // nil = use incoming model
-	KeyID    *string `json:"key_id,omitempty"`   // nil = no key pin
-	Weight   float64 `json:"weight"`             // must be > 0; all weights must sum to 1
+	PrimaryAttemptTimeoutMs *int    `json:"primary_attempt_timeout_ms,omitempty"`
+	Provider                *string `json:"provider,omitempty"` // nil = use incoming provider
+	Model                   *string `json:"model,omitempty"`    // nil = use incoming model
+	KeyID                   *string `json:"key_id,omitempty"`   // nil = no key pin
+	Weight                  float64 `json:"weight"`             // must be > 0; all weights must sum to 1
 }
 
 // HealthPolicyRequest represents the health policy for grouped routing
 type HealthPolicyRequest struct {
+	AdaptiveV22Enabled       bool     `json:"adaptive_v22_enabled,omitempty"`
 	FailureThreshold         *int     `json:"failure_threshold,omitempty"`
 	FailureWindowSeconds     *int     `json:"failure_window_seconds,omitempty"`
 	CooldownSeconds          *int     `json:"cooldown_seconds,omitempty"`
@@ -3495,6 +3497,9 @@ func validateRouteGroups(groups []RouteGroupRequest) error {
 			return fmt.Errorf("route group %q: at least one target is required", g.Name)
 		}
 		for j, t := range g.Targets {
+			if t.PrimaryAttemptTimeoutMs != nil && (*t.PrimaryAttemptTimeoutMs < 1 || *t.PrimaryAttemptTimeoutMs > 2147483647) {
+				return fmt.Errorf("route group %q: target[%d] primary_attempt_timeout_ms must be in 1..2147483647", g.Name, j)
+			}
 			if t.Provider == nil || strings.TrimSpace(*t.Provider) == "" {
 				return fmt.Errorf("route group %q: target[%d] provider is required", g.Name, j)
 			}
@@ -3670,6 +3675,7 @@ func buildHealthPolicy(hp *HealthPolicyRequest) *configstoreTables.HealthPolicy 
 	if hp.ActiveProbeWakeup != nil {
 		result.ActiveProbeWakeup = hp.ActiveProbeWakeup
 	}
+	result.AdaptiveV22Enabled = hp.AdaptiveV22Enabled
 	if hp.AdaptiveRankingEnabled != nil {
 		result.AdaptiveRankingEnabled = hp.AdaptiveRankingEnabled
 	}
@@ -3712,11 +3718,16 @@ func buildRouteGroups(groups []RouteGroupRequest) []configstoreTables.RouteGroup
 	for _, g := range groups {
 		targets := make([]configstoreTables.RouteGroupTarget, 0, len(g.Targets))
 		for _, t := range g.Targets {
+			timeout := 0
+			if t.PrimaryAttemptTimeoutMs != nil {
+				timeout = *t.PrimaryAttemptTimeoutMs
+			}
 			targets = append(targets, configstoreTables.RouteGroupTarget{
-				Provider: t.Provider,
-				Model:    t.Model,
-				KeyID:    t.KeyID,
-				Weight:   t.Weight,
+				PrimaryAttemptTimeoutMs: timeout,
+				Provider:                t.Provider,
+				Model:                   t.Model,
+				KeyID:                   t.KeyID,
+				Weight:                  t.Weight,
 			})
 		}
 		result = append(result, configstoreTables.RouteGroup{

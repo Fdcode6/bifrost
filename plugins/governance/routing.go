@@ -1,6 +1,7 @@
 package governance
 
 import (
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"regexp"
@@ -10,6 +11,8 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 )
+
+var errNoAdaptiveTargets = errors.New("no eligible adaptive routing target")
 
 type RoutingTargetCostResolver func(provider schemas.ModelProvider, model string, requestType schemas.RequestType) (float64, bool)
 
@@ -64,6 +67,8 @@ type RoutingDecision struct {
 // RoutingContext holds all data needed for routing rule evaluation
 // Reuses existing configstore table types for VirtualKey, Team, Customer
 type RoutingContext struct {
+	Stream                   bool
+	TargetAvailable          func(provider, model, keyID string) bool
 	VirtualKey               *configstoreTables.TableVirtualKey // nil if no VK
 	Provider                 schemas.ModelProvider              // Current provider
 	Model                    string                             // Current model
@@ -170,6 +175,9 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 				if rule.GroupedRoutingEnabled && len(rule.ParsedRouteGroups) > 0 {
 					decision := re.buildGroupedRoutingDecision(ctx, rule, routingCtx)
 					if decision == nil {
+						if p := rule.ParsedHealthPolicy; p != nil && p.AdaptiveV22Enabled && p.AdaptiveRankingEnabled != nil && *p.AdaptiveRankingEnabled {
+							return nil, errNoAdaptiveTargets
+						}
 						// All groups exhausted / no available targets — skip this rule
 						ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule,
 							fmt.Sprintf("Rule '%s' [%s] → matched (grouped routing), but all targets unavailable, skipping", rule.Name, rule.CelExpression))

@@ -51,6 +51,7 @@ func scopedTargetKey(ruleID, targetKey string) string {
 
 // TargetHealthState holds the health state for a single target
 type TargetHealthState struct {
+	rescueWindows            [2][10]rescueMinute
 	mu                       sync.Mutex
 	failures                 []time.Time // timestamps of recent failures
 	consecutiveFailures      int         // consecutive failures without any success
@@ -169,6 +170,10 @@ func NewHealthTracker() *HealthTracker {
 func ApplyHealthPolicyDefaults(policy *configstoreTables.HealthPolicy) *configstoreTables.HealthPolicy {
 	if policy == nil {
 		policy = &configstoreTables.HealthPolicy{}
+	} else {
+		// Rules may be shared with in-flight requests during a hot reload.
+		copy := *policy
+		policy = &copy
 	}
 	if policy.FailureThreshold <= 0 {
 		policy.FailureThreshold = 2

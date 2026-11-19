@@ -2,9 +2,25 @@ import { describe, expect, it } from "vitest";
 
 import type { RouteGroupFormData, RoutingTargetFormData } from "@/lib/types/routingRules";
 
-import { getRouteGroupAvailableKeys, shouldShowRouteGroupKeySelector, updateRouteGroupTarget } from "./routeGroupState";
+import {
+	getRouteGroupAvailableKeys,
+	shouldShowRouteGroupKeySelector,
+	toRouteGroupForm,
+	toRouteGroupRequest,
+	updateRouteGroupTarget,
+} from "./routeGroupState";
 
 describe("routeGroupState helpers", () => {
+	it("preserves pinned keys, last resort and optional timeouts across an edit", () => {
+		const group = {
+			name: "rescue",
+			retry_limit: 0,
+			fallback_only: true,
+			last_resort: true,
+			targets: [{ provider: "relay", model: "pro", key_id: "pinned", weight: 1, primary_attempt_timeout_ms: 28000 }],
+		};
+		expect(toRouteGroupRequest(toRouteGroupForm(group))).toEqual(group);
+	});
 	it("updates provider/model/key together for grouped targets", () => {
 		const group: RouteGroupFormData = {
 			name: "Primary",

@@ -1699,6 +1699,11 @@
           "description": "Allow active probe success to unlock an immediate half-open verification probe.",
           "default": false
         },
+        "adaptive_v22_enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable per-target deadlines, recent rescue ranking and bounded stream establishment for this adaptive rule."
+        },
         "adaptive_ranking_enabled": {
           "type": "boolean",
           "description": "Enable V2 decaying reputation + 4-zone profit-preserving ranking + dynamic fast-channel rescue.",
@@ -1799,6 +1804,12 @@
       "type": "object",
       "description": "A single weighted target inside a grouped health route group. provider and model must be explicit so health tracking and request history stay stable.",
       "properties": {
+        "primary_attempt_timeout_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483647,
+          "description": "Optional first-hop time limit for this target when adaptive V2.2 is enabled."
+        },
         "provider": {
           "type": "string",
           "minLength": 1,

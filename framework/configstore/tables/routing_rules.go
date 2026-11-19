@@ -11,10 +11,11 @@ import (
 
 // HealthPolicy defines failure-threshold / cooldown parameters for grouped health routing
 type HealthPolicy struct {
-	FailureThreshold     int `json:"failure_threshold"`      // failures within window before cooldown (default: 2)
-	FailureWindowSeconds int `json:"failure_window_seconds"` // sliding window in seconds (default: 30)
-	CooldownSeconds      int `json:"cooldown_seconds"`       // cooldown duration in seconds (default: 30)
-	ConsecutiveFailures  int `json:"consecutive_failures"`   // consecutive transient failures before cooldown; 0 = use failure_threshold (default: 0)
+	AdaptiveV22Enabled   bool `json:"adaptive_v22_enabled,omitempty"`
+	FailureThreshold     int  `json:"failure_threshold"`      // failures within window before cooldown (default: 2)
+	FailureWindowSeconds int  `json:"failure_window_seconds"` // sliding window in seconds (default: 30)
+	CooldownSeconds      int  `json:"cooldown_seconds"`       // cooldown duration in seconds (default: 30)
+	ConsecutiveFailures  int  `json:"consecutive_failures"`   // consecutive transient failures before cooldown; 0 = use failure_threshold (default: 0)
 
 	FatalConsecutiveFailures int     `json:"fatal_consecutive_failures,omitempty"` // consecutive fatal channel errors (401/402/403/404/insufficient balance/no channel) before cooldown (default: 2)
 	FatalCooldownSeconds     int     `json:"fatal_cooldown_seconds,omitempty"`     // base cooldown for fatal channel errors in seconds (default: 120)
@@ -52,10 +53,11 @@ type HealthPolicy struct {
 // RouteGroupTarget is a single weighted target inside a route group.
 // Grouped health routing requires provider and model to be explicit.
 type RouteGroupTarget struct {
-	Provider *string `json:"provider,omitempty"`
-	Model    *string `json:"model,omitempty"`
-	KeyID    *string `json:"key_id,omitempty"`
-	Weight   float64 `json:"weight"`
+	PrimaryAttemptTimeoutMs int     `json:"primary_attempt_timeout_ms,omitempty"`
+	Provider                *string `json:"provider,omitempty"`
+	Model                   *string `json:"model,omitempty"`
+	KeyID                   *string `json:"key_id,omitempty"`
+	Weight                  float64 `json:"weight"`
 }
 
 // RouteGroup is an ordered group of targets with its own retry budget

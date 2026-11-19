@@ -13,6 +13,7 @@ export interface RoutingTarget {
 }
 
 export interface HealthPolicy {
+	adaptive_v22_enabled?: boolean;
 	failure_threshold: number;
 	failure_window_seconds: number;
 	cooldown_seconds: number;
@@ -29,6 +30,7 @@ export interface HealthPolicy {
 }
 
 export interface RouteGroupTarget {
+	primary_attempt_timeout_ms?: number;
 	provider: string;
 	model: string;
 	key_id?: string;
@@ -36,6 +38,7 @@ export interface RouteGroupTarget {
 }
 
 export interface RouteGroup {
+	last_resort?: boolean;
 	name: string;
 	retry_limit: number;
 	fallback_only?: boolean;
@@ -198,6 +201,7 @@ export interface GetRoutingRuleResponse {
 }
 
 export interface RoutingTargetFormData {
+	primary_attempt_timeout_ms?: number;
 	provider: string;
 	model: string;
 	key_id: string;
@@ -205,6 +209,7 @@ export interface RoutingTargetFormData {
 }
 
 export interface RouteGroupFormData {
+	last_resort?: boolean;
 	name: string;
 	retry_limit: number;
 	fallback_only: boolean;

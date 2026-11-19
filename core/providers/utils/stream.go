@@ -1,7 +1,12 @@
 package utils
 
 import (
-	schemas "github.com/maximhq/bifrost/core/schemas"
+	"errors"
+	"fmt"
+	"io"
+	"time"
+
+	"github.com/maximhq/bifrost/core/schemas"
 )
 
 const (
@@ -37,11 +42,48 @@ const (
 func CheckFirstStreamChunkForError(
 	stream chan *schemas.BifrostStreamChunk,
 ) (chan *schemas.BifrostStreamChunk, <-chan struct{}, *schemas.BifrostError) {
+	return CheckStreamPrelude(stream, nil)
+}
+
+func CheckStreamPrelude(stream chan *schemas.BifrostStreamChunk, attempt *StreamAttempt) (chan *schemas.BifrostStreamChunk, <-chan struct{}, *schemas.BifrostError) {
+	var expired <-chan struct{}
+	if attempt != nil {
+		expired = attempt.done
+	}
+	fail := func(e *schemas.BifrostError) (chan *schemas.BifrostStreamChunk, <-chan struct{}, *schemas.BifrostError) {
+		if attempt != nil {
+			if cause := attempt.Err(); cause != nil {
+				e = preludeFailure(cause)
+			}
+			attempt.Close()
+		}
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			if stream != nil {
+				for range stream {
+				}
+			}
+		}()
+		return nil, done, e
+	}
 	buffered := make([]*schemas.BifrostStreamChunk, 0, max(1, min(cap(stream), maxBufferedPreludeChunks)))
 	bufferedBytes := 0
+	if attempt != nil && stream == nil {
+		return fail(preludeFailure(errors.New("upstream returned no stream")))
+	}
 
 	for {
-		chunk, ok := <-stream
+		var chunk *schemas.BifrostStreamChunk
+		var ok bool
+		select {
+		case <-expired:
+			return fail(preludeFailure(attempt.Err()))
+		case chunk, ok = <-stream:
+		}
+		if attempt != nil && !ok {
+			return fail(preludeFailure(errors.New("upstream closed before effective output")))
+		}
 		if !ok {
 			if len(buffered) == 0 {
 				// Channel closed immediately (empty stream) — return nil so callers
@@ -54,22 +96,108 @@ func CheckFirstStreamChunkForError(
 		}
 
 		if bifrostErr := extractRetryablePreludeError(chunk); bifrostErr != nil {
-			done := make(chan struct{})
-			go func() {
-				defer close(done)
-				for range stream {
-				}
-			}()
-			return nil, done, bifrostErr
+			return fail(bifrostErr)
 		}
 
 		buffered = append(buffered, chunk)
 		bufferedBytes += estimatePreludeChunkSize(chunk)
 
-		if isEffectiveStreamChunk(chunk) || len(buffered) >= maxBufferedPreludeChunks || bufferedBytes >= maxBufferedPreludeBytes {
+		effective := isEffectiveStreamChunk(chunk)
+		full := len(buffered) >= maxBufferedPreludeChunks || bufferedBytes >= maxBufferedPreludeBytes
+		if attempt != nil {
+			effective = effective && chunk != nil && (chunk.BifrostChatResponse != nil || chunk.BifrostResponsesStreamResponse != nil || chunk.BifrostTextCompletionResponse != nil)
+			if !effective && full {
+				return fail(preludeFailure(errors.New("stream prelude exceeded buffer limit")))
+			}
+			if effective {
+				if err := attempt.commit(); err != nil {
+					return fail(preludeFailure(err))
+				}
+				attempt.ctx.AppendRoutingEngineLog("adaptive-v22", fmt.Sprintf("stream effective output after %dms", time.Since(attempt.started).Milliseconds()))
+				return forwardAdaptiveStream(attempt, buffered, stream)
+			}
+		}
+		if effective || full {
 			return wrapObservedStream(buffered, stream)
 		}
 	}
+}
+
+func forwardAdaptiveStream(attempt *StreamAttempt, prefix []*schemas.BifrostStreamChunk, source chan *schemas.BifrostStreamChunk) (chan *schemas.BifrostStreamChunk, <-chan struct{}, *schemas.BifrostError) {
+	out := make(chan *schemas.BifrostStreamChunk, len(prefix))
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer close(out)
+		defer attempt.Close()
+		firstText := false
+		firstTextMs := int64(-1)
+		effectiveMs := time.Since(attempt.started).Milliseconds()
+		interrupted := false
+		defer func() {
+			p, _ := attempt.ctx.Value(schemas.BifrostContextKeyAdaptiveFallbackPolicy).(*schemas.AdaptiveFallbackRuntimePolicy)
+			prefixMs := int64(0)
+			if p != nil && !p.RequestStartTime.IsZero() {
+				prefixMs = attempt.started.Sub(p.RequestStartTime).Milliseconds()
+			}
+			if firstTextMs >= 0 {
+				firstTextMs += prefixMs
+			}
+			getLogger().Info("adaptive-v22 stream_end root=%v hop_index=%v effective_ms=%d first_text_ms=%d elapsed_ms=%d interrupted=%t caller_cancelled=%t", attempt.ctx.Value(schemas.BifrostContextKeyRequestID), attempt.ctx.Value(schemas.BifrostContextKeyFallbackIndex), prefixMs+effectiveMs, firstTextMs, prefixMs+time.Since(attempt.started).Milliseconds(), interrupted, attempt.ctx.Err() != nil)
+		}()
+		forward := func(c *schemas.BifrostStreamChunk) {
+			if !firstText && chunkHasText(c) {
+				firstText = true
+				firstTextMs = time.Since(attempt.started).Milliseconds()
+				attempt.ctx.AppendRoutingEngineLog("adaptive-v22", fmt.Sprintf("stream first text after %dms", firstTextMs))
+			}
+			if !interrupted && c != nil && c.BifrostError != nil && attempt.ctx.Err() == nil {
+				interrupted = true
+				attempt.ctx.AppendRoutingEngineLog("adaptive-v22", "stream interrupted after commit")
+			}
+			select {
+			case out <- c:
+			case <-attempt.ctx.Done():
+			}
+		}
+		for _, c := range prefix {
+			forward(c)
+		}
+		for c := range source {
+			forward(c)
+		}
+	}()
+	return out, done, nil
+}
+
+// StreamReadError detects EOF without a terminal event on V2.2's default SSE reader.
+func StreamReadError(ctx *schemas.BifrostContext, reader SSEDataReader, err error, terminal bool) error {
+	if err != io.EOF || terminal || ctx == nil {
+		return err
+	}
+	r, ok := reader.(*defaultSSEDataReader)
+	policy, _ := ctx.Value(schemas.BifrostContextKeyAdaptiveFallbackPolicy).(*schemas.AdaptiveFallbackRuntimePolicy)
+	if ok && !r.doneMarker && policy != nil && policy.V22 {
+		return io.ErrUnexpectedEOF
+	}
+	return err
+}
+
+func chunkHasText(c *schemas.BifrostStreamChunk) bool {
+	if c == nil {
+		return false
+	}
+	if r := c.BifrostChatResponse; r != nil {
+		for _, v := range r.Choices {
+			if v.ChatStreamResponseChoice != nil && v.Delta != nil && v.Delta.Content != nil && *v.Delta.Content != "" {
+				return true
+			}
+		}
+	}
+	if r := c.BifrostResponsesStreamResponse; r != nil {
+		return r.Type == schemas.ResponsesStreamResponseTypeOutputTextDelta && r.Delta != nil && *r.Delta != ""
+	}
+	return isEffectiveTextResponse(c.BifrostTextCompletionResponse)
 }
 
 func wrapObservedStream(

@@ -76,6 +76,9 @@ func ClassifyOutcome(err *schemas.BifrostError, latency time.Duration, slowThres
 		return OutcomeSuccess
 	}
 
+	if err.LocalQueueTimeout {
+		return OutcomeIgnore
+	}
 	text := strings.ToLower(classifyErrorText(err))
 
 	// Client cancellations must never penalize nor clear health state for a channel.

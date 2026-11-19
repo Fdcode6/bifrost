@@ -306,12 +306,26 @@ func (bc *BifrostContext) GetParentCtxWithUserValues() context.Context {
 //   - engineName: Name of the routing engine (e.g., "governance", "routing-rule")
 //   - message: Human-readable log message describing the decision/action
 func (bc *BifrostContext) AppendRoutingEngineLog(engineName string, message string) {
+	if bc == nil {
+		return
+	}
 	entry := RoutingEngineLogEntry{
 		Engine:    engineName,
 		Message:   message,
 		Timestamp: time.Now().UnixMilli(),
 	}
-	AppendToContextList(bc, BifrostContextKeyRoutingEngineLogs, entry)
+	bc.valuesMu.Lock()
+	defer bc.valuesMu.Unlock()
+	value, ok := bc.userValues[BifrostContextKeyRoutingEngineLogs]
+	logs, _ := value.([]RoutingEngineLogEntry)
+	if !ok && bc.parent != nil {
+		inherited, _ := bc.parent.Value(BifrostContextKeyRoutingEngineLogs).([]RoutingEngineLogEntry)
+		logs = slices.Clone(inherited)
+	}
+	if bc.userValues == nil {
+		bc.userValues = make(map[any]any)
+	}
+	bc.userValues[BifrostContextKeyRoutingEngineLogs] = append(logs, entry)
 }
 
 // GetRoutingEngineLogs retrieves all routing engine logs from the context.
@@ -323,7 +337,7 @@ func (bc *BifrostContext) AppendRoutingEngineLog(engineName string, message stri
 func (bc *BifrostContext) GetRoutingEngineLogs() []RoutingEngineLogEntry {
 	if val := bc.Value(BifrostContextKeyRoutingEngineLogs); val != nil {
 		if logs, ok := val.([]RoutingEngineLogEntry); ok {
-			return logs
+			return logs[:len(logs):len(logs)]
 		}
 	}
 	return nil
