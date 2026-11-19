@@ -1027,6 +1027,9 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 			if err != nil {
 				return fmt.Errorf("failed to initialize adaptive routing handler: %v", err)
 			}
+			if s.Config.LogsStore != nil {
+				adaptiveRoutingHandler.SetLogStore(s.Config.LogsStore)
+			}
 		}
 		if s.Config.ConfigStore != nil {
 			governanceHandler, err = handlers.NewGovernanceHandler(callbacks, s.Config.ConfigStore, healthTracker)

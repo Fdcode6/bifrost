@@ -72,6 +72,7 @@ type TargetHealthState struct {
 	halfOpenStartedAt        time.Time
 	activeProbeWakeup        bool
 	lastOutcomeKind          OutcomeKind
+	lastOutcomeAt            time.Time
 
 	// V2 adaptive decaying reputation & probation state
 	repWeightedSuccess      float64
@@ -355,6 +356,7 @@ func (ht *HealthTracker) recordOutcomeForStateKey(stateKey string, kind OutcomeK
 	}
 
 	s.lastOutcomeKind = kind
+	s.lastOutcomeAt = now
 	updateAdaptiveReputationLocked(s, kind, latency, failureMsg, policy, now)
 
 	switch kind {
@@ -1188,16 +1190,28 @@ func (ht *HealthTracker) GetAllStatuses(policy *configstoreTables.HealthPolicy, 
 
 // AdaptiveTargetSnapshot exposes read-only reputation and latency metrics for V2 adaptive routing.
 type AdaptiveTargetSnapshot struct {
-	EffectiveSuccessRate float64
-	TotalSuccesses       int
-	P80LatencyMs         int64
-	HasLatencySample     bool
-	InShortTripwire      bool
-	InFatal              bool
-	InProbation          bool
-	ProbationProbeDue    bool
-	ProbationNextProbeAt time.Time
-	ColdStartBusy        bool
+	EffectiveSuccessRate       float64
+	TotalSuccesses             int
+	P80LatencyMs               int64
+	HasLatencySample           bool
+	InShortTripwire            bool
+	ShortTripwireUntil         time.Time
+	InFatal                    bool
+	FatalUntil                 time.Time
+	InProbation                bool
+	ProbationProbeDue          bool
+	ProbationNextProbeAt       time.Time
+	ProbationConsecSuccess     int
+	ProbationProbeInFlight     bool
+	ColdStartBusy              bool
+	Rescue10mNonStreamAttempts int
+	Rescue10mNonStreamFast     int
+	Rescue10mStreamAttempts    int
+	Rescue10mStreamFast        int
+	LastOutcomeKind            OutcomeKind
+	LastOutcomeAt              time.Time
+	LastFailureMsg             string
+	LastFailureTime            time.Time
 }
 
 // MarkAttemptInFlightForRule marks an in-flight real request on a target so cold-start
@@ -1249,17 +1263,53 @@ func (ht *HealthTracker) InspectAdaptiveTargetForRule(ruleID, targetKey string, 
 
 	coldStartBusy := s.totalSuccesses < 2 && s.inFlightCount > 0 && !s.inFlightStartedAt.IsZero() && now.Sub(s.inFlightStartedAt) < adaptiveColdStartLeaseWindow
 
+	minute := now.Unix() / 60
+	var nonStreamAttempts, nonStreamFast, streamAttempts, streamFast int
+	for _, b := range s.rescueWindows[0] {
+		if b.minute <= minute && b.minute > minute-10 {
+			nonStreamAttempts += b.attempts
+			nonStreamFast += b.fast
+		}
+	}
+	for _, b := range s.rescueWindows[1] {
+		if b.minute <= minute && b.minute > minute-10 {
+			streamAttempts += b.attempts
+			streamFast += b.fast
+		}
+	}
+
+	var shortTripwireUntil time.Time
+	if inTripwire {
+		shortTripwireUntil = s.shortTripwireUntil
+	}
+	var fatalUntil time.Time
+	if inFatal {
+		fatalUntil = s.fatalUntil
+	}
+
 	return AdaptiveTargetSnapshot{
-		EffectiveSuccessRate: effRate,
-		TotalSuccesses:       s.totalSuccesses,
-		P80LatencyMs:         p80Ms,
-		HasLatencySample:     hasLat,
-		InShortTripwire:      inTripwire,
-		InFatal:              inFatal,
-		InProbation:          inProbation,
-		ProbationProbeDue:    probeDue,
-		ProbationNextProbeAt: s.probationNextProbeAt,
-		ColdStartBusy:        coldStartBusy,
+		EffectiveSuccessRate:       effRate,
+		TotalSuccesses:             s.totalSuccesses,
+		P80LatencyMs:               p80Ms,
+		HasLatencySample:           hasLat,
+		InShortTripwire:            inTripwire,
+		ShortTripwireUntil:         shortTripwireUntil,
+		InFatal:                    inFatal,
+		FatalUntil:                 fatalUntil,
+		InProbation:                inProbation,
+		ProbationProbeDue:          probeDue,
+		ProbationNextProbeAt:       s.probationNextProbeAt,
+		ProbationConsecSuccess:     s.probationConsecSuccess,
+		ProbationProbeInFlight:     probeLeaseBusy,
+		ColdStartBusy:              coldStartBusy,
+		Rescue10mNonStreamAttempts: nonStreamAttempts,
+		Rescue10mNonStreamFast:     nonStreamFast,
+		Rescue10mStreamAttempts:    streamAttempts,
+		Rescue10mStreamFast:        streamFast,
+		LastOutcomeKind:            s.lastOutcomeKind,
+		LastOutcomeAt:              s.lastOutcomeAt,
+		LastFailureMsg:             s.lastFailureMsg,
+		LastFailureTime:            s.lastFailureTime,
 	}
 }
 

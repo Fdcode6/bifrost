@@ -913,6 +913,47 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 	return body, decision, nil
 }
 
+func (p *GovernancePlugin) resolveRoutingTargetPricing(provider schemas.ModelProvider, model string, requestType schemas.RequestType) TargetPricingInfo {
+	if p == nil || p.modelCatalog == nil || provider == "" || model == "" {
+		return TargetPricingInfo{}
+	}
+	if requestType == "" {
+		requestType = schemas.ChatCompletionRequest
+	}
+	pricing := p.modelCatalog.GetEffectivePricingEntry(model, provider, requestType)
+	if pricing == nil {
+		return TargetPricingInfo{}
+	}
+	cost := pricing.InputCostPerToken + pricing.OutputCostPerToken
+	if cost <= 0 {
+		return TargetPricingInfo{}
+	}
+	return TargetPricingInfo{
+		InputCostPer1MUSD:  pricing.InputCostPerToken * 1_000_000,
+		OutputCostPer1MUSD: pricing.OutputCostPerToken * 1_000_000,
+		RawCost:            cost,
+		HasPricing:         true,
+	}
+}
+
+// InspectAdaptiveDashboardRule builds a read-only live runtime view of one routing rule
+// using the plugin's live health tracker, model catalog pricing, upstream hosts, and key availability.
+func (p *GovernancePlugin) InspectAdaptiveDashboardRule(rule *configstoreTables.TableRoutingRule, now time.Time) *AdaptiveDashboardRuleRuntime {
+	if p == nil || rule == nil {
+		return nil
+	}
+	return InspectAdaptiveRuleDashboard(
+		rule,
+		p.healthTracker,
+		p.resolveRoutingTargetPricing,
+		p.resolveRoutingTargetUpstream,
+		func(provider, model, keyID string) bool {
+			return p.routeTargetAvailable(nil, provider, model, keyID)
+		},
+		now,
+	)
+}
+
 func (p *GovernancePlugin) resolveRoutingTargetCost(provider schemas.ModelProvider, model string, requestType schemas.RequestType) (float64, bool) {
 	if p.modelCatalog == nil || provider == "" || model == "" {
 		return 0, false

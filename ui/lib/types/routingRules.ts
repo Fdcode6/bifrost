@@ -14,6 +14,7 @@ export interface RoutingTarget {
 
 export interface HealthPolicy {
 	adaptive_v22_enabled?: boolean;
+	adaptive_ranking_enabled?: boolean;
 	failure_threshold: number;
 	failure_window_seconds: number;
 	cooldown_seconds: number;
@@ -23,10 +24,21 @@ export interface HealthPolicy {
 	slow_ratio_threshold: number;
 	slow_recovery_seconds: number;
 	request_deadline_ms: number;
+	max_fallback_attempts?: number;
 	soft_cooldown_multiplier: number;
 	cooldown_backoff_factor: number;
 	cooldown_max_seconds: number;
 	half_open_probe: boolean;
+	reputation_window_seconds?: number;
+	min_qualified_success_rate?: number;
+	min_active_targets?: number;
+	primary_attempt_timeout_ms?: number;
+	fast_rescue_elapsed_ms?: number;
+	fast_channel_threshold_ms?: number;
+	rescue_attempt_timeout_ms?: number;
+	probation_probe_base_seconds?: number;
+	probation_probe_max_seconds?: number;
+	probation_recover_successes?: number;
 }
 
 export interface RouteGroupTarget {
@@ -89,6 +101,201 @@ export interface RuleHealthStatus {
 export interface HealthStatusResponse {
 	rules: RuleHealthStatus[];
 	count: number;
+}
+
+export type AdaptiveDashboardWindow = "1h" | "today" | "24h" | "7d";
+export type AdaptiveEngineMode = "adaptive_v22" | "adaptive_v21" | "grouped";
+export type AdaptiveTargetState = "active" | "tripwire" | "probation" | "fatal" | "unavailable";
+export type AdaptiveTierID = "L1" | "L2" | "L3";
+
+export interface GetAdaptiveDashboardParams {
+	window?: AdaptiveDashboardWindow;
+	rule_id?: string;
+	refresh?: boolean;
+}
+
+export interface AdaptiveDashboardRuleOption {
+	rule_id: string;
+	rule_name: string;
+	description?: string;
+	enabled: boolean;
+	engine_mode: AdaptiveEngineMode;
+	target_count: number;
+}
+
+export interface RescueWindowStats {
+	attempts: number;
+	fast: number;
+}
+
+export interface AdaptivePoolCounts {
+	total: number;
+	l1_total: number;
+	l1_active: number;
+	l1_tripwire: number;
+	l1_probation: number;
+	l1_fatal: number;
+	l2_total: number;
+	l2_ready: number;
+	l2_restricted: number;
+	l3_total: number;
+	l3_ready: number;
+	l3_restricted: number;
+}
+
+export interface AdaptiveRouteHopPreview {
+	target_key: string;
+	provider: string;
+	model: string;
+	key_id?: string;
+	tier: AdaptiveTierID;
+	official_cost_pct?: number | null;
+	timeout_ms?: number;
+	is_fast_rescue?: boolean;
+	is_last_resort?: boolean;
+	is_probation_probe?: boolean;
+}
+
+export interface AdaptiveRoutePreview {
+	primary?: AdaptiveRouteHopPreview | null;
+	fast_fail_continuation?: AdaptiveRouteHopPreview | null;
+	timeout_rescue?: AdaptiveRouteHopPreview[];
+	final_hop_fallback?: AdaptiveRouteHopPreview[];
+	probation_probe_pending?: AdaptiveRouteHopPreview | null;
+	final_hop_reserve_ms?: number;
+}
+
+export interface AdaptiveDashboardTargetMetrics {
+	request_count: number;
+	success_count: number;
+	error_count: number;
+	single_hop_success_rate?: number | null;
+	avg_latency_ms?: number | null;
+	p50_latency_ms?: number | null;
+	p80_latency_ms?: number | null;
+	p95_latency_ms?: number | null;
+	revenue_usd: number;
+	cost_usd: number;
+	profit_usd: number;
+	gross_margin?: number | null;
+	prompt_tokens: number;
+	completion_tokens: number;
+	total_tokens: number;
+	missing_cost_count: number;
+	missing_tokens_count: number;
+}
+
+export interface AdaptiveDashboardTargetRow {
+	target_key: string;
+	provider: string;
+	model: string;
+	key_id?: string;
+	group_name: string;
+	group_index: number;
+	tier: AdaptiveTierID;
+	fallback_only: boolean;
+	last_resort: boolean;
+	weight: number;
+	attempt_timeout_ms?: number;
+	primary_attempt_timeout_ms?: number;
+	input_cost_per_1m_usd?: number | null;
+	output_cost_per_1m_usd?: number | null;
+	official_cost_pct?: number | null;
+	score: number;
+	rank_label: string;
+	rank_order: number;
+	is_primary: boolean;
+	state: AdaptiveTargetState;
+	is_fast_rescue: boolean;
+	min_active_promoted?: boolean;
+	effective_success_rate: number;
+	total_successes: number;
+	p80_latency_ms?: number | null;
+	short_tripwire_until?: string | null;
+	fatal_until?: string | null;
+	probation_next_probe_at?: string | null;
+	probation_consec_success: number;
+	probation_recover_successes: number;
+	probation_probe_in_flight?: boolean;
+	probation_probe_due?: boolean;
+	rescue_10m_non_stream: RescueWindowStats;
+	rescue_10m_stream: RescueWindowStats;
+	rescue_10m_total: RescueWindowStats;
+	last_outcome_kind?: string;
+	last_outcome_at?: string | null;
+	last_failure_msg?: string;
+	last_failure_time?: string | null;
+	last_real_access_at?: string | null;
+	legacy_health_level?: string;
+	legacy_cooldown_until?: string | null;
+	legacy_consecutive_failures?: number;
+	metrics: AdaptiveDashboardTargetMetrics;
+}
+
+export interface AdaptiveDashboardRuleRuntime {
+	rule_id: string;
+	rule_name: string;
+	description?: string;
+	enabled: boolean;
+	engine_mode: AdaptiveEngineMode;
+	policy?: HealthPolicy;
+	effective_budget_ms: number;
+	effective_max_attempts: number;
+	final_hop_reserve_ms?: number;
+	official_baseline_input_per_1m_usd?: number | null;
+	official_baseline_output_per_1m_usd?: number | null;
+	pool_counts: AdaptivePoolCounts;
+	route_preview?: AdaptiveRoutePreview | null;
+}
+
+export interface AdaptiveDashboardTierSummary {
+	tier: AdaptiveTierID;
+	success_count: number;
+	request_count: number;
+	success_share: number;
+	revenue_usd: number;
+	cost_usd: number;
+	profit_usd: number;
+	gross_margin?: number | null;
+	targets: AdaptiveDashboardTargetRow[];
+}
+
+export interface AdaptiveDashboardKPI {
+	root_request_count: number;
+	root_success_count: number;
+	first_hop_success_count: number;
+	rescued_count: number;
+	root_success_rate?: number | null;
+	first_hop_success_rate?: number | null;
+	avg_latency_ms?: number | null;
+	p50_latency_ms?: number | null;
+	p80_latency_ms?: number | null;
+	p95_latency_ms?: number | null;
+	total_revenue_usd: number;
+	total_cost_usd: number;
+	total_profit_usd: number;
+	gross_margin?: number | null;
+	effective_official_cost_pct?: number | null;
+	total_prompt_tokens: number;
+	total_completion_tokens: number;
+	total_tokens: number;
+	missing_cost_count: number;
+	missing_tokens_count: number;
+	total_target_successes: number;
+}
+
+export interface AdaptiveDashboardResponse {
+	generated_at: string;
+	window: AdaptiveDashboardWindow;
+	window_start: string;
+	window_end: string;
+	timezone: string;
+	logs_connected: boolean;
+	metrics_cached_at?: string | null;
+	rules: AdaptiveDashboardRuleOption[];
+	selected_rule?: AdaptiveDashboardRuleRuntime | null;
+	kpi: AdaptiveDashboardKPI;
+	tiers: AdaptiveDashboardTierSummary[];
 }
 
 export type HealthDetectionMode = "passive" | "hybrid";

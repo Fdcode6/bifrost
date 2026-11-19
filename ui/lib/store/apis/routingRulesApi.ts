@@ -10,6 +10,8 @@ import {
 	CreateRoutingRuleRequest,
 	UpdateRoutingRuleRequest,
 	HealthStatusResponse,
+	AdaptiveDashboardResponse,
+	GetAdaptiveDashboardParams,
 	HealthDetectionConfigResponse,
 	UpdateHealthDetectionConfigRequest,
 	HealthDetectionTargetsResponse,
@@ -142,6 +144,19 @@ export const routingRulesApi = baseApi.injectEndpoints({
 			},
 		}),
 
+		// Get unified live + windowed adaptive routing & profitability dashboard
+		getAdaptiveDashboard: builder.query<AdaptiveDashboardResponse, GetAdaptiveDashboardParams | void>({
+			query: (params) => ({
+				url: "/governance/adaptive-dashboard",
+				params: {
+					...(params?.window && { window: params.window }),
+					...(params?.rule_id && { rule_id: params.rule_id }),
+					...(params?.refresh && { refresh: "true" }),
+				},
+			}),
+			providesTags: ["RoutingRules"],
+		}),
+
 		// Get health status for grouped routing targets, grouped by rule with actual policies
 		getHealthStatus: builder.query<HealthStatusResponse, void>({
 			query: () => "/governance/health-status",
@@ -198,6 +213,8 @@ export const {
 	useUpdateRoutingRuleMutation,
 	useDeleteRoutingRuleMutation,
 	useLazyGetRoutingRulesQuery,
+	useGetAdaptiveDashboardQuery,
+	useLazyGetAdaptiveDashboardQuery,
 	useGetHealthStatusQuery,
 	useGetHealthDetectionConfigQuery,
 	useGetHealthDetectionTargetsQuery,

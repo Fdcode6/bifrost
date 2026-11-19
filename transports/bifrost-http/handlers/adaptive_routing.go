@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -48,8 +49,12 @@ type adaptiveRoutingTargetPreferenceStore interface {
 }
 
 type AdaptiveRoutingHandler struct {
-	manager     AdaptiveRoutingManager
-	configStore configstore.ConfigStore
+	manager         AdaptiveRoutingManager
+	configStore     configstore.ConfigStore
+	logStore        adaptiveDashboardMetricsStore
+	metricsCacheMu  sync.RWMutex
+	metricsCache    map[string]adaptiveMetricsCacheEntry
+	metricsCacheTTL time.Duration
 }
 
 type HealthDetectionConfigResponse struct {
@@ -156,12 +161,15 @@ func NewAdaptiveRoutingHandler(manager AdaptiveRoutingManager, configStore confi
 		return nil, fmt.Errorf("governance plugin is required")
 	}
 	return &AdaptiveRoutingHandler{
-		manager:     manager,
-		configStore: configStore,
+		manager:         manager,
+		configStore:     configStore,
+		metricsCache:    make(map[string]adaptiveMetricsCacheEntry),
+		metricsCacheTTL: defaultAdaptiveDashboardCacheTTL,
 	}, nil
 }
 
 func (h *AdaptiveRoutingHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
+	r.GET("/api/governance/adaptive-dashboard", lib.ChainMiddlewares(h.getAdaptiveDashboard, middlewares...))
 	r.GET("/api/governance/health-status", lib.ChainMiddlewares(h.getHealthStatus, middlewares...))
 	r.GET("/api/governance/health-detection-config", lib.ChainMiddlewares(h.getHealthDetectionConfig, middlewares...))
 	r.PUT("/api/governance/health-detection-config", lib.ChainMiddlewares(h.updateHealthDetectionConfig, middlewares...))
