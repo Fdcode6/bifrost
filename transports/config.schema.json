@@ -1688,6 +1688,72 @@
           "type": "boolean",
           "description": "Allow one half-open probe request after cooldown expires. Omit for the default true; set false to preserve strict old cooldown expiry behavior.",
           "default": true
+        },
+        "enable_upstream_diversity": {
+          "type": "boolean",
+          "description": "Diversify fallback candidates across distinct upstream hostnames within each tier.",
+          "default": true
+        },
+        "active_probe_wakeup": {
+          "type": "boolean",
+          "description": "Allow active probe success to unlock an immediate half-open verification probe.",
+          "default": false
+        },
+        "adaptive_ranking_enabled": {
+          "type": "boolean",
+          "description": "Enable V2 decaying reputation + 4-zone profit-preserving ranking + dynamic fast-channel rescue.",
+          "default": false
+        },
+        "reputation_window_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 5400
+        },
+        "min_qualified_success_rate": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 0.70
+        },
+        "min_active_targets": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 3
+        },
+        "primary_attempt_timeout_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 38000
+        },
+        "fast_rescue_elapsed_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 15000
+        },
+        "fast_channel_threshold_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 16000
+        },
+        "rescue_attempt_timeout_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 20000
+        },
+        "probation_probe_base_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 300
+        },
+        "probation_probe_max_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 900
+        },
+        "probation_recover_successes": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 2
         }
       },
       "additionalProperties": false
@@ -1710,6 +1776,11 @@
         "fallback_only": {
           "type": "boolean",
           "description": "Do not compete for primary routing while regular groups are routable. Append this group to the current request fallback chain, become primary only when regular groups are unavailable, and skip active probing.",
+          "default": false
+        },
+        "last_resort": {
+          "type": "boolean",
+          "description": "Reserve targets in this group strictly for the final emergency attempt (e.g. 100% full-price channels).",
           "default": false
         },
         "targets": {

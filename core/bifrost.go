@@ -4090,17 +4090,21 @@ func (bifrost *Bifrost) getProviderByKey(providerKey schemas.ModelProvider) sche
 // CORE INTERNAL LOGIC
 
 // shouldTryFallbacks handles the primary error and returns true if we should proceed with fallbacks, false if we should return immediately
-func (bifrost *Bifrost) shouldTryFallbacks(req *schemas.BifrostRequest, primaryErr *schemas.BifrostError) bool {
+func (bifrost *Bifrost) shouldTryFallbacks(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, primaryErr *schemas.BifrostError) bool {
 	// If no primary error, we succeeded
 	if primaryErr == nil {
 		bifrost.logger.Debug("no primary error, we should not try fallbacks")
 		return false
 	}
 
-	// Handle request cancellation
+	// Handle request cancellation — when adaptive fallback policy is active and the outer caller
+	// context is still alive (ctx.Err() == nil), treat upstream 499 / transient cancellations as
+	// retryable across fallback channels rather than failing the live client immediately.
 	if primaryErr.Error != nil && primaryErr.Error.Type != nil && *primaryErr.Error.Type == schemas.RequestCancelled {
-		bifrost.logger.Debug("request cancelled, we should not try fallbacks")
-		return false
+		if !hasActiveCallerWithAdaptivePolicy(ctx) {
+			bifrost.logger.Debug("request cancelled, we should not try fallbacks")
+			return false
+		}
 	}
 
 	// Check if this is a short-circuit error that doesn't allow fallbacks
@@ -4209,11 +4213,142 @@ func (bifrost *Bifrost) prepareFallbackRequest(req *schemas.BifrostRequest, fall
 	return &fallbackReq
 }
 
+func hasActiveCallerWithAdaptivePolicy(ctx *schemas.BifrostContext) bool {
+	if ctx == nil || ctx.Err() != nil {
+		return false
+	}
+	policy, ok := ctx.Value(schemas.BifrostContextKeyAdaptiveFallbackPolicy).(*schemas.AdaptiveFallbackRuntimePolicy)
+	return ok && policy != nil
+}
+
+func applyAdaptiveAttemptDeadline(ctx *schemas.BifrostContext, attemptTimeoutMs int) func() {
+	if ctx == nil {
+		return func() {}
+	}
+	var deadline time.Time
+	if attemptTimeoutMs > 0 {
+		deadline = time.Now().Add(time.Duration(attemptTimeoutMs) * time.Millisecond)
+	}
+	if fallbackDeadline, ok := ctx.Value(schemas.BifrostContextKeyFallbackDeadline).(time.Time); ok && !fallbackDeadline.IsZero() {
+		if deadline.IsZero() || fallbackDeadline.Before(deadline) {
+			deadline = fallbackDeadline
+		}
+	}
+	if deadline.IsZero() {
+		return func() {}
+	}
+	ctx.SetValue(schemas.BifrostContextKeyAttemptDeadline, deadline)
+	return func() {
+		ctx.ClearValue(schemas.BifrostContextKeyAttemptDeadline)
+	}
+}
+
+func adaptivePrimaryTimeoutMs(ctx *schemas.BifrostContext) int {
+	if ctx == nil {
+		return 0
+	}
+	if policy, ok := ctx.Value(schemas.BifrostContextKeyAdaptiveFallbackPolicy).(*schemas.AdaptiveFallbackRuntimePolicy); ok && policy != nil {
+		return policy.PrimaryHint.AttemptTimeoutMs
+	}
+	return 0
+}
+
+func selectAdaptiveFallbackAction(ctx *schemas.BifrostContext, totalFallbacks int, idx int, attemptsExecuted int) (skip bool, stop bool, attemptTimeoutMs int) {
+	if ctx == nil {
+		return false, false, 0
+	}
+	policy, ok := ctx.Value(schemas.BifrostContextKeyAdaptiveFallbackPolicy).(*schemas.AdaptiveFallbackRuntimePolicy)
+	if !ok || policy == nil {
+		return false, false, 0
+	}
+	if fallbackDeadline, ok := ctx.Value(schemas.BifrostContextKeyFallbackDeadline).(time.Time); ok && !fallbackDeadline.IsZero() {
+		if time.Until(fallbackDeadline) < 3*time.Second {
+			return false, true, 0
+		}
+	}
+	if policy.MaxTotalAttempts > 0 && attemptsExecuted >= policy.MaxTotalAttempts {
+		return false, true, 0
+	}
+
+	var hint schemas.FallbackAttemptHint
+	if idx >= 0 && idx < len(policy.FallbackHints) {
+		hint = policy.FallbackHints[idx]
+	}
+	hintAt := func(j int) schemas.FallbackAttemptHint {
+		if j >= 0 && j < len(policy.FallbackHints) {
+			return policy.FallbackHints[j]
+		}
+		return schemas.FallbackAttemptHint{}
+	}
+
+	startTime := policy.RequestStartTime
+	if startTime.IsZero() {
+		startTime = time.Now()
+	}
+	elapsedMs := int(time.Since(startTime).Milliseconds())
+	inFastRescue := policy.PrimaryHint.IsProbationProbe || (policy.FastRescueElapsedMs > 0 && elapsedMs >= policy.FastRescueElapsedMs)
+
+	remainingSlots := 0
+	if policy.MaxTotalAttempts > 0 {
+		remainingSlots = policy.MaxTotalAttempts - attemptsExecuted
+	}
+
+	hasLaterNonLastResort := false
+	hasLaterFastNonLastResort := false
+	hasLaterFastAny := false
+	hasLaterLastResort := false
+	for j := idx + 1; j < totalFallbacks; j++ {
+		hj := hintAt(j)
+		if hj.IsLastResort {
+			hasLaterLastResort = true
+		} else {
+			hasLaterNonLastResort = true
+			if hj.IsFastRescue {
+				hasLaterFastNonLastResort = true
+			}
+		}
+		if hj.IsFastRescue {
+			hasLaterFastAny = true
+		}
+	}
+
+	// Rule 1: 100% full-price last-resort channels ONLY run on the very last attempt slot
+	// (or when all non-last-resort candidates ahead have already been exhausted).
+	if hint.IsLastResort {
+		laterDiscountViable := hasLaterNonLastResort && (!inFastRescue || hasLaterFastNonLastResort || !hint.IsFastRescue)
+		if laterDiscountViable && (remainingSlots == 0 || remainingSlots > 1) {
+			return true, false, 0
+		}
+	} else if remainingSlots == 1 && attemptsExecuted >= 3 && hasLaterLastResort {
+		// When 3+ discount/backup attempts already failed and only the final attempt slot remains,
+		// jump to the reserved 100% last-resort lifesaver so it guarantees completion.
+		return true, false, 0
+	}
+
+	// Rule 2: Once elapsed time crosses FastRescueElapsedMs (or after a probation probe),
+	// skip slow/unproven candidates whenever a proven fast rescue channel exists ahead.
+	if inFastRescue && !hint.IsFastRescue {
+		if (!hint.IsLastResort && hasLaterFastNonLastResort) || (hint.IsLastResort && hasLaterFastAny) || (!hasLaterNonLastResort && hasLaterFastAny) {
+			return true, false, 0
+		}
+	}
+
+	timeoutMs := hint.AttemptTimeoutMs
+	if inFastRescue && policy.RescueAttemptTimeoutMs > 0 {
+		if timeoutMs <= 0 || policy.RescueAttemptTimeoutMs < timeoutMs {
+			timeoutMs = policy.RescueAttemptTimeoutMs
+		}
+	}
+	return false, false, timeoutMs
+}
+
 // shouldContinueWithFallbacks processes errors from fallback attempts
 // Returns true if we should continue with more fallbacks, false if we should stop
-func (bifrost *Bifrost) shouldContinueWithFallbacks(fallback schemas.Fallback, fallbackErr *schemas.BifrostError) bool {
-	if fallbackErr.Error.Type != nil && *fallbackErr.Error.Type == schemas.RequestCancelled {
-		return false
+func (bifrost *Bifrost) shouldContinueWithFallbacks(ctx *schemas.BifrostContext, fallback schemas.Fallback, fallbackErr *schemas.BifrostError) bool {
+	if fallbackErr.Error != nil && fallbackErr.Error.Type != nil && *fallbackErr.Error.Type == schemas.RequestCancelled {
+		if !hasActiveCallerWithAdaptivePolicy(ctx) {
+			return false
+		}
 	}
 
 	// Check if it was a short-circuit error that doesn't allow fallbacks
@@ -4221,7 +4356,9 @@ func (bifrost *Bifrost) shouldContinueWithFallbacks(fallback schemas.Fallback, f
 		return false
 	}
 
-	bifrost.logger.Debug(fmt.Sprintf("Fallback provider %s failed: %s", fallback.Provider, fallbackErr.Error.Message))
+	if fallbackErr.Error != nil {
+		bifrost.logger.Debug(fmt.Sprintf("Fallback provider %s failed: %s", fallback.Provider, fallbackErr.Error.Message))
+	}
 	return true
 }
 
@@ -4255,7 +4392,9 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 		requestID := uuid.New().String()
 		ctx.SetValue(schemas.BifrostContextKeyRequestID, requestID)
 	}
+	clearPrimaryDeadline := applyAdaptiveAttemptDeadline(ctx, adaptivePrimaryTimeoutMs(ctx))
 	primaryResult, primaryErr := bifrost.tryRequest(ctx, req)
+	clearPrimaryDeadline()
 	if primaryErr == nil {
 		if emptyRespErr := ensureSuccessfulResponsePayload(primaryResult, req.RequestType, provider, model); emptyRespErr != nil {
 			primaryResult = nil
@@ -4274,7 +4413,7 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 	}
 
 	// Check if we should proceed with fallbacks
-	shouldTryFallbacks := bifrost.shouldTryFallbacks(req, primaryErr)
+	shouldTryFallbacks := bifrost.shouldTryFallbacks(ctx, req, primaryErr)
 	if !shouldTryFallbacks {
 		if primaryErr != nil {
 			primaryErr.ExtraFields = schemas.BifrostErrorExtraFields{
@@ -4290,6 +4429,7 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 	}
 
 	// Try fallbacks in order
+	attemptsExecuted := 1
 	for i, fallback := range fallbacks {
 		if ctx.Err() != nil {
 			bifrost.logger.Debug("request context done (%v), stopping fallback loop", ctx.Err())
@@ -4298,6 +4438,15 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 		if fallbackDeadline, ok := ctx.Value(schemas.BifrostContextKeyFallbackDeadline).(time.Time); ok && !fallbackDeadline.IsZero() && !time.Now().Before(fallbackDeadline) {
 			bifrost.logger.Debug("fallback deadline budget exhausted, skipping remaining %d fallbacks", len(fallbacks)-i)
 			break
+		}
+		skipFallback, stopFallback, fbTimeoutMs := selectAdaptiveFallbackAction(ctx, len(fallbacks), i, attemptsExecuted)
+		if stopFallback {
+			bifrost.logger.Debug("adaptive fallback budget reached after %d attempts, stopping fallback loop", attemptsExecuted)
+			break
+		}
+		if skipFallback {
+			bifrost.logger.Debug("adaptive fallback skipping candidate[%d] %s/%s", i, fallback.Provider, fallback.Model)
+			continue
 		}
 		ctx.SetValue(schemas.BifrostContextKeyFallbackIndex, i+1)
 		bifrost.logger.Debug(fmt.Sprintf("trying fallback provider %s with model %s", fallback.Provider, fallback.Model))
@@ -4322,7 +4471,10 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 		}
 
 		// Try the fallback provider
+		attemptsExecuted++
+		clearFbDeadline := applyAdaptiveAttemptDeadline(ctx, fbTimeoutMs)
 		result, fallbackErr := bifrost.tryRequest(ctx, fallbackReq)
+		clearFbDeadline()
 		if fallbackErr == nil {
 			if emptyRespErr := ensureSuccessfulResponsePayload(result, req.RequestType, fallback.Provider, fallback.Model); emptyRespErr != nil {
 				result = nil
@@ -4342,7 +4494,7 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 		tracer.EndSpan(handle, schemas.SpanStatusError, "fallback failed")
 
 		// Check if we should continue with more fallbacks
-		if !bifrost.shouldContinueWithFallbacks(fallback, fallbackErr) {
+		if !bifrost.shouldContinueWithFallbacks(ctx, fallback, fallbackErr) {
 			fallbackErr.ExtraFields = schemas.BifrostErrorExtraFields{
 				RequestType:    req.RequestType,
 				Provider:       fallback.Provider,
@@ -4404,7 +4556,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	primaryResult, primaryErr := bifrost.tryStreamRequest(ctx, req)
 
 	// Check if we should proceed with fallbacks
-	shouldTryFallbacks := bifrost.shouldTryFallbacks(req, primaryErr)
+	shouldTryFallbacks := bifrost.shouldTryFallbacks(ctx, req, primaryErr)
 	if !shouldTryFallbacks {
 		if primaryErr != nil {
 			primaryErr.ExtraFields = schemas.BifrostErrorExtraFields{
@@ -4420,6 +4572,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	}
 
 	// Try fallbacks in order
+	attemptsExecuted := 1
 	for i, fallback := range fallbacks {
 		if ctx.Err() != nil {
 			bifrost.logger.Debug("request context done (%v), stopping fallback loop", ctx.Err())
@@ -4428,6 +4581,15 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 		if fallbackDeadline, ok := ctx.Value(schemas.BifrostContextKeyFallbackDeadline).(time.Time); ok && !fallbackDeadline.IsZero() && !time.Now().Before(fallbackDeadline) {
 			bifrost.logger.Debug("fallback deadline budget exhausted, skipping remaining %d fallbacks", len(fallbacks)-i)
 			break
+		}
+		skipFallback, stopFallback, _ := selectAdaptiveFallbackAction(ctx, len(fallbacks), i, attemptsExecuted)
+		if stopFallback {
+			bifrost.logger.Debug("adaptive fallback budget reached after %d stream attempts, stopping fallback loop", attemptsExecuted)
+			break
+		}
+		if skipFallback {
+			bifrost.logger.Debug("adaptive fallback skipping stream candidate[%d] %s/%s", i, fallback.Provider, fallback.Model)
+			continue
 		}
 		ctx.SetValue(schemas.BifrostContextKeyFallbackIndex, i+1)
 		ctx.SetValue(schemas.BifrostContextKeyFallbackRequestID, uuid.New().String())
@@ -4450,6 +4612,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 		}
 
 		// Try the fallback provider
+		attemptsExecuted++
 		result, fallbackErr := bifrost.tryStreamRequest(ctx, fallbackReq)
 		if fallbackErr == nil {
 			bifrost.logger.Debug(fmt.Sprintf("successfully used fallback provider %s with model %s", fallback.Provider, fallback.Model))
@@ -4464,7 +4627,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 		tracer.EndSpan(handle, schemas.SpanStatusError, "fallback failed")
 
 		// Check if we should continue with more fallbacks
-		if !bifrost.shouldContinueWithFallbacks(fallback, fallbackErr) {
+		if !bifrost.shouldContinueWithFallbacks(ctx, fallback, fallbackErr) {
 			fallbackErr.ExtraFields = schemas.BifrostErrorExtraFields{
 				RequestType:    req.RequestType,
 				Provider:       fallback.Provider,

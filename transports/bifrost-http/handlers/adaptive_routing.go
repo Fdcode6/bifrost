@@ -86,6 +86,7 @@ type RouteGroupReferenceResponse struct {
 	GroupName    string `json:"group_name"`
 	GroupIndex   int    `json:"group_index"`
 	FallbackOnly bool   `json:"fallback_only"`
+	LastResort   bool   `json:"last_resort,omitempty"`
 	RetryLimit   int    `json:"retry_limit"`
 	HealthLevel  string `json:"health_level,omitempty"`
 }
@@ -648,7 +649,8 @@ func routeGroupReference(rule *configstoreTables.TableRoutingRule, group configs
 	ref := RouteGroupReferenceResponse{
 		GroupName:    group.Name,
 		GroupIndex:   groupIndex,
-		FallbackOnly: group.FallbackOnly,
+		FallbackOnly: group.FallbackOnly || group.LastResort,
+		LastResort:   group.LastResort,
 		RetryLimit:   group.RetryLimit,
 		HealthLevel:  healthLevel,
 	}

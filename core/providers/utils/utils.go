@@ -109,6 +109,26 @@ var UnsupportedSpeechStreamModels = []string{"tts-1", "tts-1-hd"}
 // noop is a reusable no-op function returned by MakeRequestWithContext on the normal path.
 var noop = func() {}
 
+// DoWithAttemptDeadline executes a non-streaming fasthttp request honoring BifrostContextKeyAttemptDeadline
+// when set, returning the effective timeout in seconds for error reporting.
+func DoWithAttemptDeadline(ctx context.Context, client *fasthttp.Client, req *fasthttp.Request, resp *fasthttp.Response) (error, int) {
+	var effectiveDeadline time.Time
+	if ctx != nil {
+		if attemptDeadline, ok := ctx.Value(schemas.BifrostContextKeyAttemptDeadline).(time.Time); ok && !attemptDeadline.IsZero() {
+			effectiveDeadline = attemptDeadline
+		}
+	}
+	if !effectiveDeadline.IsZero() && (resp == nil || !resp.StreamBody) {
+		rem := time.Until(effectiveDeadline)
+		timeoutSec := int((rem + 999*time.Millisecond) / time.Second)
+		if timeoutSec < 1 {
+			timeoutSec = 1
+		}
+		return client.DoDeadline(req, resp, effectiveDeadline), timeoutSec
+	}
+	return client.Do(req, resp), TimeoutSecondsFromFastHTTPClient(client)
+}
+
 // MakeRequestWithContext makes a request with a context and returns the latency, error, and a
 // wait function. The wait function MUST be called (typically via defer) before releasing the
 // request or response objects. On the normal path it is a no-op. On the context-cancellation
@@ -121,15 +141,38 @@ var noop = func() {}
 // fasthttp call and returns an error related to the context.
 func MakeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *fasthttp.Request, resp *fasthttp.Response) (time.Duration, *schemas.BifrostError, func()) {
 	startTime := time.Now()
-	errChan := make(chan error, 1)
+	type doResult struct {
+		err        error
+		timeoutSec int
+	}
+	errChan := make(chan doResult, 1)
+
+	var attemptTimerCh <-chan time.Time
+	var attemptTimeoutSec int
+	if ctx != nil && resp != nil && resp.StreamBody {
+		if attemptDeadline, ok := ctx.Value(schemas.BifrostContextKeyAttemptDeadline).(time.Time); ok && !attemptDeadline.IsZero() {
+			rem := time.Until(attemptDeadline)
+			attemptTimeoutSec = max(1, int((rem+999*time.Millisecond)/time.Second))
+			if rem <= 0 {
+				return 0, NewBifrostTimeoutErrorWithTimeoutSeconds(attemptTimeoutSec, context.DeadlineExceeded, ""), noop
+			}
+			t := time.NewTimer(rem)
+			defer t.Stop()
+			attemptTimerCh = t.C
+		}
+	}
 
 	go func() {
 		// client.Do is a blocking call.
 		// It will send an error (or nil for success) to errChan when it completes.
-		errChan <- client.Do(req, resp)
+		err, timeoutSec := DoWithAttemptDeadline(ctx, client, req, resp)
+		errChan <- doResult{err: err, timeoutSec: timeoutSec}
 	}()
 
 	select {
+	case <-attemptTimerCh:
+		latency := time.Since(startTime)
+		return latency, NewBifrostTimeoutErrorWithTimeoutSeconds(attemptTimeoutSec, context.DeadlineExceeded, ""), func() { <-errChan }
 	case <-ctx.Done():
 		// Context was cancelled (e.g., deadline exceeded or manual cancellation).
 		// Calculate latency even for cancelled requests
@@ -161,7 +204,12 @@ func MakeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *f
 				Error:   ctx.Err(),
 			},
 		}, func() { <-errChan }
-	case err := <-errChan:
+	case res := <-errChan:
+		err := res.err
+		timeoutSec := res.timeoutSec
+		if timeoutSec <= 0 {
+			timeoutSec = TimeoutSecondsFromFastHTTPClient(client)
+		}
 		// The fasthttp.Do call completed.
 		// Calculate latency for both successful and failed requests
 		latency := time.Since(startTime)
@@ -178,12 +226,12 @@ func MakeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *f
 			}
 			// Check for timeout errors first before checking net.OpError to avoid misclassification
 			if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
-				return latency, NewBifrostTimeoutErrorWithTimeoutSeconds(TimeoutSecondsFromFastHTTPClient(client), err, ""), noop
+				return latency, NewBifrostTimeoutErrorWithTimeoutSeconds(timeoutSec, err, ""), noop
 			}
 			// Check if error implements net.Error and has Timeout() == true
 			var netErr net.Error
 			if errors.As(err, &netErr) && netErr.Timeout() {
-				return latency, NewBifrostTimeoutErrorWithTimeoutSeconds(TimeoutSecondsFromFastHTTPClient(client), err, ""), noop
+				return latency, NewBifrostTimeoutErrorWithTimeoutSeconds(timeoutSec, err, ""), noop
 			}
 			// Check for DNS lookup and network errors after timeout checks
 			var opErr *net.OpError

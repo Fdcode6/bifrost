@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -11,7 +12,12 @@ import (
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 )
 
-const halfOpenProbeLeaseDuration = 65 * time.Second
+const (
+	halfOpenProbeLeaseDuration   = 65 * time.Second
+	adaptiveColdStartLeaseWindow = 45 * time.Second
+	adaptivePriorSuccess         = 3.4
+	adaptivePriorFail            = 0.6
+)
 
 // TargetKey uniquely identifies a routing target for health tracking: provider:model[:key_id]
 func TargetKey(provider, model, keyID string) string {
@@ -65,6 +71,23 @@ type TargetHealthState struct {
 	halfOpenStartedAt        time.Time
 	activeProbeWakeup        bool
 	lastOutcomeKind          OutcomeKind
+
+	// V2 adaptive decaying reputation & probation state
+	repWeightedSuccess      float64
+	repWeightedFail         float64
+	repUpdatedAt            time.Time
+	totalSuccesses          int
+	inFlightCount           int
+	inFlightStartedAt       time.Time
+	consecutiveSlowFail     int
+	shortTripwireUntil      time.Time
+	fatalUntil              time.Time
+	probationNextProbeAt    time.Time
+	probationFailStreak     int
+	probationConsecSuccess  int
+	probationProbeInFlight  bool
+	probationProbeStartedAt time.Time
+	successLatencies        []latencySample
 }
 
 type latencySample struct {
@@ -202,7 +225,44 @@ func ApplyHealthPolicyDefaults(policy *configstoreTables.HealthPolicy) *configst
 		wakeup := false
 		policy.ActiveProbeWakeup = &wakeup
 	}
+	if policy.ReputationWindowSeconds <= 0 {
+		policy.ReputationWindowSeconds = 5400
+	}
+	if policy.MinQualifiedSuccessRate <= 0 {
+		policy.MinQualifiedSuccessRate = 0.70
+	}
+	if policy.MinActiveTargets <= 0 {
+		policy.MinActiveTargets = 3
+	}
+	if policy.PrimaryAttemptTimeoutMs <= 0 {
+		policy.PrimaryAttemptTimeoutMs = 38000
+	}
+	if policy.FastRescueElapsedMs <= 0 {
+		policy.FastRescueElapsedMs = 15000
+	}
+	if policy.FastChannelThresholdMs <= 0 {
+		policy.FastChannelThresholdMs = 16000
+	}
+	if policy.RescueAttemptTimeoutMs <= 0 {
+		policy.RescueAttemptTimeoutMs = 20000
+	}
+	if policy.ProbationProbeBaseSeconds <= 0 {
+		policy.ProbationProbeBaseSeconds = 300
+	}
+	if policy.ProbationProbeMaxSeconds <= 0 {
+		policy.ProbationProbeMaxSeconds = 900
+	}
+	if policy.ProbationProbeMaxSeconds < policy.ProbationProbeBaseSeconds {
+		policy.ProbationProbeMaxSeconds = policy.ProbationProbeBaseSeconds
+	}
+	if policy.ProbationRecoverSuccesses <= 0 {
+		policy.ProbationRecoverSuccesses = 2
+	}
 	return policy
+}
+
+func isAdaptivePolicy(policy *configstoreTables.HealthPolicy) bool {
+	return policy != nil && policy.AdaptiveRankingEnabled != nil && *policy.AdaptiveRankingEnabled
 }
 
 // getOrCreate returns existing state or lazily creates one
@@ -277,6 +337,8 @@ func (ht *HealthTracker) recordOutcomeForStateKey(stateKey string, kind OutcomeK
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	releaseAdaptiveInFlightLocked(s)
+
 	if kind == OutcomeIgnore {
 		// Client cancellations / pure client 4xx must neither penalize nor clear health state.
 		// If this request held the half-open probe lease, release it so another request can probe.
@@ -288,6 +350,7 @@ func (ht *HealthTracker) recordOutcomeForStateKey(stateKey string, kind OutcomeK
 	}
 
 	s.lastOutcomeKind = kind
+	updateAdaptiveReputationLocked(s, kind, latency, failureMsg, policy, now)
 
 	switch kind {
 	case OutcomeSuccess:
@@ -539,6 +602,9 @@ func (ht *HealthTracker) getTargetHealth(stateKey string, policy *configstoreTab
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if isAdaptivePolicy(policy) {
+		return evaluateAdaptiveHealthLevelLocked(s, policy, now)
+	}
 	if evaluateCooldownLocked(s, policy, now) {
 		return HealthCooldown
 	}
@@ -681,14 +747,30 @@ func (ht *HealthTracker) getTargetStatus(stateKey, displayKey string, policy *co
 	defer s.mu.Unlock()
 
 	healthLevel := HealthHealthy
-	if evaluateCooldownLocked(s, policy, now) {
-		healthLevel = HealthCooldown
-	} else if isDegradedLocked(s, policy, now) {
-		healthLevel = HealthDegraded
+	var effectiveCooldownUntil time.Time
+	if isAdaptivePolicy(policy) {
+		healthLevel = evaluateAdaptiveHealthLevelLocked(s, policy, now)
+		if !s.fatalUntil.IsZero() && now.Before(s.fatalUntil) {
+			effectiveCooldownUntil = s.fatalUntil
+		} else if !s.probationNextProbeAt.IsZero() && now.Before(s.probationNextProbeAt) {
+			effectiveCooldownUntil = s.probationNextProbeAt
+		} else if !s.shortTripwireUntil.IsZero() && now.Before(s.shortTripwireUntil) {
+			effectiveCooldownUntil = s.shortTripwireUntil
+		}
+	} else {
+		if evaluateCooldownLocked(s, policy, now) {
+			healthLevel = HealthCooldown
+			effectiveCooldownUntil = s.cooldownUntil
+		} else if isDegradedLocked(s, policy, now) {
+			healthLevel = HealthDegraded
+		}
 	}
 
 	slowCount, sampleCount, slowRatio := sampleStatsLocked(s, policy)
 	_, _, errorRate := errorRateStatsLocked(s, policy, now)
+	if isAdaptivePolicy(policy) {
+		errorRate = math.Max(0, 1.0-adaptiveEffectiveSuccessRateLocked(s, policy, now))
+	}
 	p95LatencyMs := p95LatencyMsLocked(s)
 
 	snap := TargetHealthSnapshot{
@@ -705,12 +787,12 @@ func (ht *HealthTracker) getTargetStatus(stateKey, displayKey string, policy *co
 		CooldownStreak:           s.cooldownStreak,
 		CooldownReason:           string(s.cooldownReason),
 		LastOutcomeKind:          string(s.lastOutcomeKind),
-		HalfOpenInFlight:         s.halfOpenInFlight && now.Sub(s.halfOpenStartedAt) < halfOpenProbeLeaseDuration,
+		HalfOpenInFlight:         (s.halfOpenInFlight && now.Sub(s.halfOpenStartedAt) < halfOpenProbeLeaseDuration) || (s.probationProbeInFlight && now.Sub(s.probationProbeStartedAt) < adaptiveColdStartLeaseWindow),
 	}
 
-	if healthLevel == HealthCooldown && !s.cooldownUntil.IsZero() {
+	if healthLevel == HealthCooldown && !effectiveCooldownUntil.IsZero() {
 		snap.Status = "cooldown"
-		cu := s.cooldownUntil.UTC().Format(time.RFC3339)
+		cu := effectiveCooldownUntil.UTC().Format(time.RFC3339)
 		snap.CooldownUntil = &cu
 	} else {
 		snap.Status = "available"
@@ -1097,4 +1179,314 @@ func (ht *HealthTracker) GetAllStatuses(policy *configstoreTables.HealthPolicy, 
 		result = append(result, ht.GetTargetStatus(k, policy, now))
 	}
 	return result
+}
+
+// AdaptiveTargetSnapshot exposes read-only reputation and latency metrics for V2 adaptive routing.
+type AdaptiveTargetSnapshot struct {
+	EffectiveSuccessRate float64
+	TotalSuccesses       int
+	P80LatencyMs         int64
+	HasLatencySample     bool
+	InShortTripwire      bool
+	InFatal              bool
+	InProbation          bool
+	ProbationProbeDue    bool
+	ProbationNextProbeAt time.Time
+	ColdStartBusy        bool
+}
+
+// MarkAttemptInFlightForRule marks an in-flight real request on a target so cold-start
+// channels (<2 successes) only take 1 concurrent verification call at a time.
+func (ht *HealthTracker) MarkAttemptInFlightForRule(ruleID, targetKey string, now time.Time) {
+	stateKey := scopedTargetKey(ruleID, targetKey)
+	if stateKey == "" {
+		return
+	}
+	s := ht.getOrCreate(stateKey)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.inFlightCount > 0 && !s.inFlightStartedAt.IsZero() && now.Sub(s.inFlightStartedAt) >= adaptiveColdStartLeaseWindow {
+		s.inFlightCount = 0
+	}
+	s.inFlightCount++
+	s.inFlightStartedAt = now
+}
+
+// InspectAdaptiveTargetForRule returns the current V2 reputation snapshot without mutating probe leases.
+func (ht *HealthTracker) InspectAdaptiveTargetForRule(ruleID, targetKey string, policy *configstoreTables.HealthPolicy, now time.Time) AdaptiveTargetSnapshot {
+	policy = ApplyHealthPolicyDefaults(policy)
+	stateKey := scopedTargetKey(ruleID, targetKey)
+	ht.mu.RLock()
+	s, ok := ht.targets[stateKey]
+	ht.mu.RUnlock()
+	if !ok {
+		return AdaptiveTargetSnapshot{
+			EffectiveSuccessRate: adaptivePriorSuccess / (adaptivePriorSuccess + adaptivePriorFail),
+		}
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	effRate := adaptiveEffectiveSuccessRateLocked(s, policy, now)
+	p80Ms, hasLat := adaptiveP80LatencyMsLocked(s, policy, now)
+	inFatal := !s.fatalUntil.IsZero() && now.Before(s.fatalUntil)
+	inTripwire := !s.shortTripwireUntil.IsZero() && now.Before(s.shortTripwireUntil)
+	inProbation := inFatal || effRate <= policy.MinQualifiedSuccessRate || !s.probationNextProbeAt.IsZero()
+
+	probeLeaseBusy := s.probationProbeInFlight && !s.probationProbeStartedAt.IsZero() && now.Sub(s.probationProbeStartedAt) < adaptiveColdStartLeaseWindow
+	probeDue := false
+	if inProbation && !inFatal && !probeLeaseBusy {
+		if s.probationNextProbeAt.IsZero() || !now.Before(s.probationNextProbeAt) {
+			probeDue = true
+		}
+	}
+
+	coldStartBusy := s.totalSuccesses < 2 && s.inFlightCount > 0 && !s.inFlightStartedAt.IsZero() && now.Sub(s.inFlightStartedAt) < adaptiveColdStartLeaseWindow
+
+	return AdaptiveTargetSnapshot{
+		EffectiveSuccessRate: effRate,
+		TotalSuccesses:       s.totalSuccesses,
+		P80LatencyMs:         p80Ms,
+		HasLatencySample:     hasLat,
+		InShortTripwire:      inTripwire,
+		InFatal:              inFatal,
+		InProbation:          inProbation,
+		ProbationProbeDue:    probeDue,
+		ProbationNextProbeAt: s.probationNextProbeAt,
+		ColdStartBusy:        coldStartBusy,
+	}
+}
+
+// TryClaimProbationProbeForRule atomically claims the single-concurrency real-request probe slot
+// for a probation target whose periodic check interval has elapsed.
+func (ht *HealthTracker) TryClaimProbationProbeForRule(ruleID, targetKey string, policy *configstoreTables.HealthPolicy, now time.Time) bool {
+	policy = ApplyHealthPolicyDefaults(policy)
+	stateKey := scopedTargetKey(ruleID, targetKey)
+	if stateKey == "" {
+		return false
+	}
+	s := ht.getOrCreate(stateKey)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if !s.fatalUntil.IsZero() && now.Before(s.fatalUntil) {
+		return false
+	}
+	if s.probationProbeInFlight && !s.probationProbeStartedAt.IsZero() && now.Sub(s.probationProbeStartedAt) < adaptiveColdStartLeaseWindow {
+		return false
+	}
+	if !s.probationNextProbeAt.IsZero() && now.Before(s.probationNextProbeAt) {
+		return false
+	}
+	s.probationProbeInFlight = true
+	s.probationProbeStartedAt = now
+	return true
+}
+
+func releaseAdaptiveInFlightLocked(s *TargetHealthState) {
+	if s.inFlightCount > 0 {
+		s.inFlightCount--
+		if s.inFlightCount == 0 {
+			s.inFlightStartedAt = time.Time{}
+		}
+	}
+	s.probationProbeInFlight = false
+	s.probationProbeStartedAt = time.Time{}
+}
+
+func decayAdaptiveWeightsLocked(s *TargetHealthState, policy *configstoreTables.HealthPolicy, now time.Time) {
+	if s.repUpdatedAt.IsZero() {
+		s.repUpdatedAt = now
+		return
+	}
+	dt := now.Sub(s.repUpdatedAt).Seconds()
+	if dt <= 0 {
+		return
+	}
+	tau := float64(policy.ReputationWindowSeconds)
+	if tau <= 0 {
+		tau = 5400
+	}
+	factor := math.Exp(-dt / tau)
+	s.repWeightedSuccess *= factor
+	s.repWeightedFail *= factor
+	s.repUpdatedAt = now
+}
+
+func adaptiveEffectiveSuccessRateLocked(s *TargetHealthState, policy *configstoreTables.HealthPolicy, now time.Time) float64 {
+	decayAdaptiveWeightsLocked(s, policy, now)
+	num := s.repWeightedSuccess + adaptivePriorSuccess
+	den := s.repWeightedSuccess + s.repWeightedFail + adaptivePriorSuccess + adaptivePriorFail
+	if den <= 0 {
+		return 0.85
+	}
+	return num / den
+}
+
+func isTimeoutFailureMsg(msg string) bool {
+	if msg == "" {
+		return false
+	}
+	lower := strings.ToLower(msg)
+	return strings.Contains(lower, "timeout") ||
+		strings.Contains(lower, "timed out") ||
+		strings.Contains(lower, "deadline")
+}
+
+func scheduleProbationProbeLocked(s *TargetHealthState, policy *configstoreTables.HealthPolicy, now time.Time) {
+	s.probationFailStreak++
+	base := float64(policy.ProbationProbeBaseSeconds)
+	if base <= 0 {
+		base = 300
+	}
+	maxSec := float64(policy.ProbationProbeMaxSeconds)
+	if maxSec < base {
+		maxSec = base
+	}
+	sec := base * math.Pow(1.5, float64(max(0, s.probationFailStreak-1)))
+	if sec > maxSec {
+		sec = maxSec
+	}
+	s.probationNextProbeAt = now.Add(time.Duration(sec * float64(time.Second)))
+}
+
+func appendSuccessLatencyLocked(s *TargetHealthState, sample latencySample, policy *configstoreTables.HealthPolicy, now time.Time) {
+	if sample.latency <= 0 {
+		return
+	}
+	cutoff := now.Add(-time.Duration(policy.ReputationWindowSeconds) * time.Second)
+	kept := s.successLatencies[:0]
+	for _, item := range s.successLatencies {
+		if item.at.After(cutoff) {
+			kept = append(kept, item)
+		}
+	}
+	kept = append(kept, sample)
+	if len(kept) > 24 {
+		kept = kept[len(kept)-24:]
+	}
+	s.successLatencies = kept
+}
+
+func adaptiveP80LatencyMsLocked(s *TargetHealthState, policy *configstoreTables.HealthPolicy, now time.Time) (int64, bool) {
+	if len(s.successLatencies) == 0 {
+		return 0, false
+	}
+	cutoff := now.Add(-time.Duration(policy.ReputationWindowSeconds) * time.Second)
+	vals := make([]int64, 0, len(s.successLatencies))
+	for _, item := range s.successLatencies {
+		if item.latency > 0 && (cutoff.IsZero() || item.at.After(cutoff)) {
+			vals = append(vals, item.latency.Milliseconds())
+		}
+	}
+	if len(vals) == 0 {
+		return 0, false
+	}
+	sort.Slice(vals, func(i, j int) bool { return vals[i] < vals[j] })
+	idx := int(math.Ceil(float64(len(vals))*0.80)) - 1
+	if idx < 0 {
+		idx = 0
+	}
+	if idx >= len(vals) {
+		idx = len(vals) - 1
+	}
+	return vals[idx], true
+}
+
+func updateAdaptiveReputationLocked(s *TargetHealthState, kind OutcomeKind, latency time.Duration, failureMsg string, policy *configstoreTables.HealthPolicy, now time.Time) {
+	prevRate := adaptiveEffectiveSuccessRateLocked(s, policy, now)
+	wasProbation := (!s.fatalUntil.IsZero() && now.Before(s.fatalUntil)) ||
+		prevRate <= policy.MinQualifiedSuccessRate ||
+		!s.probationNextProbeAt.IsZero()
+
+	switch kind {
+	case OutcomeSuccess:
+		s.totalSuccesses++
+		s.repWeightedSuccess += 1.0
+		s.consecutiveSlowFail = 0
+		s.shortTripwireUntil = time.Time{}
+		s.fatalUntil = time.Time{}
+		appendSuccessLatencyLocked(s, latencySample{at: now, latency: latency, kind: kind}, policy, now)
+
+		if wasProbation {
+			s.probationConsecSuccess++
+			s.probationFailStreak = 0
+			if s.probationConsecSuccess >= policy.ProbationRecoverSuccesses {
+				s.probationNextProbeAt = time.Time{}
+				s.probationConsecSuccess = 0
+				targetRate := math.Max(policy.MinQualifiedSuccessRate+0.12, 0.82)
+				if targetRate > 0.92 {
+					targetRate = 0.92
+				}
+				// Cap historical weighted failures so the recovered channel cleanly re-enters active pool.
+				maxAllowedFail := ((s.repWeightedSuccess + adaptivePriorSuccess) * (1.0 - targetRate) / targetRate) - adaptivePriorFail
+				if maxAllowedFail < 0 {
+					maxAllowedFail = 0
+				}
+				if s.repWeightedFail > maxAllowedFail {
+					s.repWeightedFail = maxAllowedFail
+				}
+			} else {
+				// First verification probe succeeded — schedule quick follow-up check in 60s.
+				s.probationNextProbeAt = now.Add(60 * time.Second)
+			}
+		} else {
+			s.probationNextProbeAt = time.Time{}
+			s.probationConsecSuccess = 0
+			s.probationFailStreak = 0
+		}
+
+	case OutcomeSlow:
+		s.totalSuccesses++
+		s.repWeightedSuccess += 0.5
+		s.repWeightedFail += 1.0
+		s.probationConsecSuccess = 0
+		appendSuccessLatencyLocked(s, latencySample{at: now, latency: latency, kind: kind}, policy, now)
+		if adaptiveEffectiveSuccessRateLocked(s, policy, now) <= policy.MinQualifiedSuccessRate {
+			scheduleProbationProbeLocked(s, policy, now)
+		}
+
+	case OutcomeFatalChannel:
+		s.repWeightedFail += 6.0
+		s.probationConsecSuccess = 0
+		s.probationFailStreak++
+		fatalSec := max(policy.FatalCooldownSeconds, policy.ProbationProbeMaxSeconds)
+		s.fatalUntil = now.Add(time.Duration(fatalSec) * time.Second)
+		s.probationNextProbeAt = s.fatalUntil
+
+	case OutcomeSoftFail, OutcomeHardFail:
+		nextConsec := s.consecutiveFailures + 1
+		isFastTransient := kind == OutcomeSoftFail && latency < 3*time.Second && !isTimeoutFailureMsg(failureMsg)
+		if isFastTransient {
+			s.repWeightedFail += 0.35
+			if nextConsec >= 5 {
+				s.shortTripwireUntil = now.Add(60 * time.Second)
+			}
+		} else {
+			s.repWeightedFail += 2.0
+			s.consecutiveSlowFail++
+			if s.consecutiveSlowFail >= 2 || nextConsec >= 4 {
+				s.shortTripwireUntil = now.Add(60 * time.Second)
+			}
+		}
+		s.probationConsecSuccess = 0
+		if wasProbation || adaptiveEffectiveSuccessRateLocked(s, policy, now) <= policy.MinQualifiedSuccessRate {
+			scheduleProbationProbeLocked(s, policy, now)
+		}
+	}
+}
+
+func evaluateAdaptiveHealthLevelLocked(s *TargetHealthState, policy *configstoreTables.HealthPolicy, now time.Time) HealthLevel {
+	if !s.fatalUntil.IsZero() && now.Before(s.fatalUntil) {
+		return HealthCooldown
+	}
+	effRate := adaptiveEffectiveSuccessRateLocked(s, policy, now)
+	if effRate <= policy.MinQualifiedSuccessRate || !s.probationNextProbeAt.IsZero() {
+		return HealthCooldown
+	}
+	if !s.shortTripwireUntil.IsZero() && now.Before(s.shortTripwireUntil) {
+		return HealthDegraded
+	}
+	return HealthHealthy
 }

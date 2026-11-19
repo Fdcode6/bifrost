@@ -159,6 +159,18 @@ type HealthPolicyRequest struct {
 	HalfOpenProbe            *bool    `json:"half_open_probe,omitempty"`
 	EnableUpstreamDiversity  *bool    `json:"enable_upstream_diversity,omitempty"`
 	ActiveProbeWakeup        *bool    `json:"active_probe_wakeup,omitempty"`
+
+	AdaptiveRankingEnabled    *bool    `json:"adaptive_ranking_enabled,omitempty"`
+	ReputationWindowSeconds   *int     `json:"reputation_window_seconds,omitempty"`
+	MinQualifiedSuccessRate   *float64 `json:"min_qualified_success_rate,omitempty"`
+	MinActiveTargets          *int     `json:"min_active_targets,omitempty"`
+	PrimaryAttemptTimeoutMs   *int     `json:"primary_attempt_timeout_ms,omitempty"`
+	FastRescueElapsedMs       *int     `json:"fast_rescue_elapsed_ms,omitempty"`
+	FastChannelThresholdMs    *int     `json:"fast_channel_threshold_ms,omitempty"`
+	RescueAttemptTimeoutMs    *int     `json:"rescue_attempt_timeout_ms,omitempty"`
+	ProbationProbeBaseSeconds *int     `json:"probation_probe_base_seconds,omitempty"`
+	ProbationProbeMaxSeconds  *int     `json:"probation_probe_max_seconds,omitempty"`
+	ProbationRecoverSuccesses *int     `json:"probation_recover_successes,omitempty"`
 }
 
 // RouteGroupRequest represents a route group in a create/update request
@@ -167,6 +179,7 @@ type RouteGroupRequest struct {
 	RetryLimit   int             `json:"retry_limit"`
 	Targets      []RoutingTarget `json:"targets"` // grouped targets must explicitly set provider and model
 	FallbackOnly bool            `json:"fallback_only,omitempty"`
+	LastResort   bool            `json:"last_resort,omitempty"`
 }
 
 // CreateRoutingRuleRequest represents the request body for creating a routing rule
@@ -3555,6 +3568,36 @@ func validateHealthPolicy(hp *HealthPolicyRequest) error {
 	if hp.CooldownMaxSeconds != nil && *hp.CooldownMaxSeconds < 1 {
 		return fmt.Errorf("health_policy.cooldown_max_seconds must be >= 1")
 	}
+	if hp.ReputationWindowSeconds != nil && *hp.ReputationWindowSeconds < 1 {
+		return fmt.Errorf("health_policy.reputation_window_seconds must be >= 1")
+	}
+	if hp.MinQualifiedSuccessRate != nil && (*hp.MinQualifiedSuccessRate < 0 || *hp.MinQualifiedSuccessRate > 1) {
+		return fmt.Errorf("health_policy.min_qualified_success_rate must be between 0 and 1")
+	}
+	if hp.MinActiveTargets != nil && *hp.MinActiveTargets < 1 {
+		return fmt.Errorf("health_policy.min_active_targets must be >= 1")
+	}
+	if hp.PrimaryAttemptTimeoutMs != nil && *hp.PrimaryAttemptTimeoutMs < 1 {
+		return fmt.Errorf("health_policy.primary_attempt_timeout_ms must be >= 1")
+	}
+	if hp.FastRescueElapsedMs != nil && *hp.FastRescueElapsedMs < 0 {
+		return fmt.Errorf("health_policy.fast_rescue_elapsed_ms must be >= 0")
+	}
+	if hp.FastChannelThresholdMs != nil && *hp.FastChannelThresholdMs < 1 {
+		return fmt.Errorf("health_policy.fast_channel_threshold_ms must be >= 1")
+	}
+	if hp.RescueAttemptTimeoutMs != nil && *hp.RescueAttemptTimeoutMs < 1 {
+		return fmt.Errorf("health_policy.rescue_attempt_timeout_ms must be >= 1")
+	}
+	if hp.ProbationProbeBaseSeconds != nil && *hp.ProbationProbeBaseSeconds < 1 {
+		return fmt.Errorf("health_policy.probation_probe_base_seconds must be >= 1")
+	}
+	if hp.ProbationProbeMaxSeconds != nil && *hp.ProbationProbeMaxSeconds < 1 {
+		return fmt.Errorf("health_policy.probation_probe_max_seconds must be >= 1")
+	}
+	if hp.ProbationRecoverSuccesses != nil && *hp.ProbationRecoverSuccesses < 1 {
+		return fmt.Errorf("health_policy.probation_recover_successes must be >= 1")
+	}
 	return nil
 }
 
@@ -3627,6 +3670,39 @@ func buildHealthPolicy(hp *HealthPolicyRequest) *configstoreTables.HealthPolicy 
 	if hp.ActiveProbeWakeup != nil {
 		result.ActiveProbeWakeup = hp.ActiveProbeWakeup
 	}
+	if hp.AdaptiveRankingEnabled != nil {
+		result.AdaptiveRankingEnabled = hp.AdaptiveRankingEnabled
+	}
+	if hp.ReputationWindowSeconds != nil {
+		result.ReputationWindowSeconds = *hp.ReputationWindowSeconds
+	}
+	if hp.MinQualifiedSuccessRate != nil {
+		result.MinQualifiedSuccessRate = *hp.MinQualifiedSuccessRate
+	}
+	if hp.MinActiveTargets != nil {
+		result.MinActiveTargets = *hp.MinActiveTargets
+	}
+	if hp.PrimaryAttemptTimeoutMs != nil {
+		result.PrimaryAttemptTimeoutMs = *hp.PrimaryAttemptTimeoutMs
+	}
+	if hp.FastRescueElapsedMs != nil {
+		result.FastRescueElapsedMs = *hp.FastRescueElapsedMs
+	}
+	if hp.FastChannelThresholdMs != nil {
+		result.FastChannelThresholdMs = *hp.FastChannelThresholdMs
+	}
+	if hp.RescueAttemptTimeoutMs != nil {
+		result.RescueAttemptTimeoutMs = *hp.RescueAttemptTimeoutMs
+	}
+	if hp.ProbationProbeBaseSeconds != nil {
+		result.ProbationProbeBaseSeconds = *hp.ProbationProbeBaseSeconds
+	}
+	if hp.ProbationProbeMaxSeconds != nil {
+		result.ProbationProbeMaxSeconds = *hp.ProbationProbeMaxSeconds
+	}
+	if hp.ProbationRecoverSuccesses != nil {
+		result.ProbationRecoverSuccesses = *hp.ProbationRecoverSuccesses
+	}
 	return governance.ApplyHealthPolicyDefaults(result)
 }
 
@@ -3647,7 +3723,8 @@ func buildRouteGroups(groups []RouteGroupRequest) []configstoreTables.RouteGroup
 			Name:         g.Name,
 			RetryLimit:   g.RetryLimit,
 			Targets:      targets,
-			FallbackOnly: g.FallbackOnly,
+			FallbackOnly: g.FallbackOnly || g.LastResort,
+			LastResort:   g.LastResort,
 		})
 	}
 	return result

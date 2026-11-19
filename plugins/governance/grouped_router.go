@@ -80,6 +80,9 @@ func effectiveMaxFallbackAttempts(policy *configstoreTables.HealthPolicy, routin
 }
 
 func effectiveFallbackBudgetMs(policy *configstoreTables.HealthPolicy, routingCtx *RoutingContext) int {
+	if isAdaptivePolicy(policy) {
+		return effectiveAdaptiveBudgetMs(policy, routingCtx)
+	}
 	if policy != nil && policy.RequestDeadlineMs > 0 {
 		return policy.RequestDeadlineMs
 	}
@@ -113,6 +116,9 @@ func buildGroupedRoutingDecision(
 	policy := ApplyHealthPolicyDefaults(rule.ParsedHealthPolicy)
 
 	now := time.Now()
+	if isAdaptivePolicy(policy) {
+		return buildAdaptiveGroupedRoutingDecision(ctx, rule, routingCtx, healthTracker, policy, now)
+	}
 	ctx.AppendRoutingEngineLog(routingGroupEngine,
 		fmt.Sprintf("Building grouped routing chain for rule '%s', %d groups", rule.Name, len(rule.ParsedRouteGroups)))
 

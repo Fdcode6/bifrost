@@ -34,6 +34,19 @@ type HealthPolicy struct {
 	HalfOpenProbe           *bool   `json:"half_open_probe,omitempty"`           // nil = default true
 	EnableUpstreamDiversity *bool   `json:"enable_upstream_diversity,omitempty"` // nil = default true; diversify fallback chain across distinct upstream hosts
 	ActiveProbeWakeup       *bool   `json:"active_probe_wakeup,omitempty"`       // nil = default false; true lets successful active probe unlock an immediate in-place half-open probe
+
+	// Adaptive Reputation & Dynamic Fast-Rescue Routing (V2, all optional)
+	AdaptiveRankingEnabled    *bool   `json:"adaptive_ranking_enabled,omitempty"`     // true = enable 90m decaying reputation + 4-zone profit ranking + dynamic fast-channel rescue
+	ReputationWindowSeconds   int     `json:"reputation_window_seconds,omitempty"`    // exponential decay window in seconds (default: 5400 = 90m)
+	MinQualifiedSuccessRate   float64 `json:"min_qualified_success_rate,omitempty"`   // minimum effective success rate for active profit pool (default: 0.70)
+	MinActiveTargets          int     `json:"min_active_targets,omitempty"`           // guaranteed minimum active discount targets even during global degradation (default: 3)
+	PrimaryAttemptTimeoutMs   int     `json:"primary_attempt_timeout_ms,omitempty"`   // per-attempt timeout cap for slow-tolerant cheap hops in ms (default: 38000)
+	FastRescueElapsedMs       int     `json:"fast_rescue_elapsed_ms,omitempty"`       // elapsed ms threshold to trigger fast-rescue mode on fallbacks (default: 15000)
+	FastChannelThresholdMs    int     `json:"fast_channel_threshold_ms,omitempty"`    // P80 latency ms threshold defining a proven fast rescue channel (default: 16000)
+	RescueAttemptTimeoutMs    int     `json:"rescue_attempt_timeout_ms,omitempty"`    // per-attempt timeout cap once in fast-rescue mode in ms (default: 20000)
+	ProbationProbeBaseSeconds int     `json:"probation_probe_base_seconds,omitempty"` // initial real-request probe interval for demoted cheap channels (default: 300 = 5m)
+	ProbationProbeMaxSeconds  int     `json:"probation_probe_max_seconds,omitempty"`  // max real-request probe interval for repeatedly failing cheap channels (default: 900 = 15m)
+	ProbationRecoverSuccesses int     `json:"probation_recover_successes,omitempty"`  // consecutive real successes required in probation to return to active pool (default: 2)
 }
 
 // RouteGroupTarget is a single weighted target inside a route group.
@@ -51,6 +64,7 @@ type RouteGroup struct {
 	RetryLimit   int                `json:"retry_limit"` // extra attempts after the first attempt; regular groups use other targets, fallback-only groups may repeat targets
 	Targets      []RouteGroupTarget `json:"targets"`
 	FallbackOnly bool               `json:"fallback_only,omitempty"` // appended after regular groups as request fallback; primary only when regular groups are unavailable; skipped by active probing
+	LastResort   bool               `json:"last_resort,omitempty"`   // reserved strictly for the final emergency attempt (e.g. 100% full-price channels)
 }
 
 // TableRoutingRule represents a routing rule in the database

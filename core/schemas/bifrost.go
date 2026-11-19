@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"time"
 )
 
 const (
@@ -184,6 +185,8 @@ const (
 	BifrostContextKeyFallbackIndex                       BifrostContextKey = "bifrost-fallback-index"               // int (to store the fallback index (set by bifrost - DO NOT SET THIS MANUALLY)) 0 for primary, 1 for first fallback, etc.
 	BifrostContextKeyFallbackKeyIDs                      BifrostContextKey = "bifrost-fallback-key-ids"             // []string (key_id plan for each fallback attempt, aligned with fallback index; set by grouped routing before core fallback execution)
 	BifrostContextKeyFallbackDeadline                    BifrostContextKey = "bifrost-fallback-deadline"            // time.Time (stop starting new fallback attempts once wall clock reaches this deadline; set by grouped routing)
+	BifrostContextKeyAttemptDeadline                     BifrostContextKey = "bifrost-attempt-deadline"             // time.Time (per-attempt deadline for the current hop without cancelling parent request context; set by bifrost)
+	BifrostContextKeyAdaptiveFallbackPolicy              BifrostContextKey = "bifrost-adaptive-fallback-policy"     // *AdaptiveFallbackRuntimePolicy (dynamic fast-rescue & last-resort hints; set by grouped routing)
 	BifrostContextKeyProviderMaxRetries                  BifrostContextKey = "bifrost-provider-max-retries"         // int (effective max provider retries for the current attempt chain - set by bifrost)
 	BifrostContextKeyStreamEndIndicator                  BifrostContextKey = "bifrost-stream-end-indicator"         // bool (set by bifrost - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyStreamEffectiveOutputSeen           BifrostContextKey = "bifrost-stream-effective-output-seen" // bool (tracks whether current streaming attempt has emitted real output)
@@ -982,4 +985,25 @@ type BifrostErrorExtraFields struct {
 	RawResponse    interface{}   `json:"raw_response,omitempty"`
 	LiteLLMCompat  bool          `json:"litellm_compat,omitempty"`
 	KeyStatuses    []KeyStatus   `json:"key_statuses,omitempty"`
+}
+
+// FallbackAttemptHint carries per-candidate execution hints prepared by adaptive grouped routing
+// so the core fallback loop can apply per-hop timeouts, dynamic fast-channel rescue when elapsed
+// time exceeds the slow budget, and strict last-resort isolation for 100% full-price channels.
+type FallbackAttemptHint struct {
+	AttemptTimeoutMs int  `json:"attempt_timeout_ms,omitempty"`
+	IsFastRescue     bool `json:"is_fast_rescue,omitempty"`
+	IsLastResort     bool `json:"is_last_resort,omitempty"`
+	IsProbationProbe bool `json:"is_probation_probe,omitempty"`
+}
+
+// AdaptiveFallbackRuntimePolicy coordinates per-hop timeout budgets, elapsed-time-triggered
+// fast-channel rescue, and final-attempt-only last-resort channels across a single request.
+type AdaptiveFallbackRuntimePolicy struct {
+	RequestStartTime       time.Time             `json:"request_start_time"`
+	FastRescueElapsedMs    int                   `json:"fast_rescue_elapsed_ms,omitempty"`
+	RescueAttemptTimeoutMs int                   `json:"rescue_attempt_timeout_ms,omitempty"`
+	MaxTotalAttempts       int                   `json:"max_total_attempts,omitempty"`
+	PrimaryHint            FallbackAttemptHint   `json:"primary_hint"`
+	FallbackHints          []FallbackAttemptHint `json:"fallback_hints,omitempty"`
 }

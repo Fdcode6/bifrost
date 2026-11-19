@@ -879,6 +879,9 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 			if budgetMs := effectiveFallbackBudgetMs(effectivePolicy, routingCtx); budgetMs > 0 {
 				ctx.SetValue(schemas.BifrostContextKeyFallbackDeadline, time.Now().Add(time.Duration(budgetMs)*time.Millisecond))
 			}
+			if decision.AdaptivePolicy != nil {
+				ctx.SetValue(schemas.BifrostContextKeyAdaptiveFallbackPolicy, decision.AdaptivePolicy)
+			}
 			if len(decision.FallbackKeyIDs) > 0 {
 				ctx.SetValue(schemas.BifrostContextKeyFallbackKeyIDs, decision.FallbackKeyIDs)
 			}
@@ -1180,6 +1183,26 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 		return req, &schemas.LLMPluginShortCircuit{
 			Error: bifrostError,
 		}, nil
+	}
+
+	if isGrouped, _ := ctx.Value(groupedRoutingActiveContextKey).(bool); isGrouped && p.healthTracker != nil {
+		ruleID, _ := ctx.Value(groupedRoutingRuleIDContextKey).(string)
+		currentLayer, _ := ctx.Value(groupedRoutingCurrentLayerContextKey).(RoutingLayerPlan)
+		pinnedKeyID, _ := ctx.Value(groupedRoutingPinnedKeyIDContextKey).(string)
+		if currentLayer.KeyID != "" || pinnedKeyID == "" {
+			pinnedKeyID = currentLayer.KeyID
+		}
+		trackedProvider := currentLayer.Provider
+		if trackedProvider == "" {
+			trackedProvider = string(provider)
+		}
+		trackedModel := currentLayer.Model
+		if trackedModel == "" {
+			trackedModel = model
+		}
+		if ruleID != "" && trackedProvider != "" && trackedModel != "" {
+			p.healthTracker.MarkAttemptInFlightForRule(ruleID, TargetKey(trackedProvider, trackedModel, pinnedKeyID), time.Now())
+		}
 	}
 
 	return req, nil, nil

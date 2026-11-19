@@ -98,6 +98,9 @@ func ClassifyOutcome(err *schemas.BifrostError, latency time.Duration, slowThres
 			return OutcomeFatalChannel
 		case 408, 429, 502, 503, 504:
 			return OutcomeSoftFail
+		case 451:
+			// Upstream reverse-proxy protocol crash (e.g. "Protocol generation failed")
+			return OutcomeHardFail
 		}
 	}
 
@@ -105,6 +108,14 @@ func ClassifyOutcome(err *schemas.BifrostError, latency time.Duration, slowThres
 		if strings.Contains(text, keyword) {
 			return OutcomeSoftFail
 		}
+	}
+
+	if strings.Contains(text, "protocol generation") ||
+		strings.Contains(text, "generation failed") ||
+		strings.Contains(text, "empty response") ||
+		strings.Contains(text, "empty_response") ||
+		strings.Contains(text, "upstream error") {
+		return OutcomeHardFail
 	}
 
 	if err.StatusCode != nil {

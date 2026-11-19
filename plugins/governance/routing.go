@@ -58,6 +58,7 @@ type RoutingDecision struct {
 	MatchedRuleName   string             // Name of the rule that matched
 	IsGroupedRouting  bool               // True when this decision was built by grouped health routing
 	HealthPolicy      *configstoreTables.HealthPolicy
+	AdaptivePolicy    *schemas.AdaptiveFallbackRuntimePolicy
 }
 
 // RoutingContext holds all data needed for routing rule evaluation

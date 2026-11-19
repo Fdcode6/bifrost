@@ -141,9 +141,14 @@ func buildActiveProbePlans(
 			continue
 		}
 		policy := ApplyHealthPolicyDefaults(rule.ParsedHealthPolicy)
+		// Adaptive V2 rules rely exclusively on real-context traffic and periodic real-request
+		// probation probes; short "ping" probes have zero signal value and are disabled.
+		if isAdaptivePolicy(policy) {
+			continue
+		}
 		ruleHasRecentTraffic := RuleHasRecentRealAccess(rule, tracker, now, idlePause)
 		for _, group := range rule.ParsedRouteGroups {
-			if group.FallbackOnly {
+			if group.FallbackOnly || group.LastResort {
 				continue
 			}
 			for _, target := range group.Targets {
