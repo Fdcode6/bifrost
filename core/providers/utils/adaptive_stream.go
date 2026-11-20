@@ -26,17 +26,18 @@ var adaptiveHostSlots sync.Map // upstreamQuota -> chan struct{}
 // StreamAttempt owns its transport socket until the provider has finished reading.
 // Interrupt the socket, never close a fasthttp response concurrently with its parser.
 type StreamAttempt struct {
-	ctx        *schemas.BifrostContext
-	deadline   time.Time
-	started    time.Time
-	timer      *time.Timer
-	stopParent func() bool
-	mu         sync.Mutex
-	conn       net.Conn
-	slot       chan struct{}
-	err        error
-	committed  atomic.Bool
-	done       chan struct{}
+	ctx         *schemas.BifrostContext
+	deadline    time.Time
+	started     time.Time
+	timer       *time.Timer
+	stopParent  func() bool
+	mu          sync.Mutex
+	conn        net.Conn
+	slot        chan struct{}
+	err         error
+	committed   atomic.Bool
+	done        chan struct{}
+	onInterrupt func(*schemas.BifrostError, time.Duration)
 }
 
 func NewStreamAttempt(ctx *schemas.BifrostContext, deadline time.Time) *StreamAttempt {
@@ -89,6 +90,30 @@ func (a *StreamAttempt) Err() error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.err
+}
+
+// SetOnInterrupt registers a callback invoked at most once if a committed stream
+// receives an upstream error before normal completion (while caller is still active).
+func (a *StreamAttempt) SetOnInterrupt(fn func(*schemas.BifrostError, time.Duration)) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	a.onInterrupt = fn
+	a.mu.Unlock()
+}
+
+func (a *StreamAttempt) notifyInterrupt(err *schemas.BifrostError) {
+	if a == nil || err == nil {
+		return
+	}
+	a.mu.Lock()
+	fn := a.onInterrupt
+	a.onInterrupt = nil
+	a.mu.Unlock()
+	if fn != nil {
+		fn(err, time.Since(a.started))
+	}
 }
 func (a *StreamAttempt) commit() error {
 	a.mu.Lock()

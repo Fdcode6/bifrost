@@ -33,6 +33,27 @@ type adaptiveCandidate struct {
 	originalOrder    int
 }
 
+func adaptiveProbationProbeTimeoutMs(policy *configstoreTables.HealthPolicy, targetLimitMs int) int {
+	primaryMs := policy.PrimaryAttemptTimeoutMs
+	if primaryMs <= 0 {
+		primaryMs = 38000
+	}
+	probeMs := primaryMs - 3000
+	if probeMs < 10000 {
+		probeMs = primaryMs
+	}
+	if !policy.AdaptiveV22Enabled && probeMs > 35000 {
+		probeMs = 35000
+	}
+	if policy.AdaptiveV22Enabled && policy.RescueAttemptTimeoutMs > 0 && policy.RescueAttemptTimeoutMs < probeMs {
+		probeMs = policy.RescueAttemptTimeoutMs
+	}
+	if targetLimitMs > 0 && targetLimitMs < probeMs {
+		probeMs = targetLimitMs
+	}
+	return probeMs
+}
+
 func effectiveAdaptiveBudgetMs(policy *configstoreTables.HealthPolicy, routingCtx *RoutingContext) int {
 	if policy != nil && policy.RequestDeadlineMs > 0 {
 		return policy.RequestDeadlineMs
@@ -500,18 +521,10 @@ func buildAdaptiveGroupedRoutingDecision(
 			}
 		}
 	}
-	probeTimeoutMs := policy.PrimaryAttemptTimeoutMs - 3000
-	if probeTimeoutMs > 35000 {
-		probeTimeoutMs = 35000
-	}
-	if probeTimeoutMs < 10000 {
-		probeTimeoutMs = policy.PrimaryAttemptTimeoutMs
-	}
-
 	buildHint := func(c adaptiveCandidate, isPrimary bool) schemas.FallbackAttemptHint {
 		timeoutMs := policy.PrimaryAttemptTimeoutMs
 		if isPrimary && c.isProbation {
-			timeoutMs = probeTimeoutMs
+			timeoutMs = adaptiveProbationProbeTimeoutMs(policy, 0)
 		} else if c.isLastResort && policy.RescueAttemptTimeoutMs > 0 {
 			timeoutMs = policy.RescueAttemptTimeoutMs
 		}
@@ -520,7 +533,7 @@ func buildAdaptiveGroupedRoutingDecision(
 				timeoutMs = c.primaryLimit
 			}
 			if c.isProbation {
-				timeoutMs = min(timeoutMs, probeTimeoutMs, 22000)
+				timeoutMs = adaptiveProbationProbeTimeoutMs(policy, c.primaryLimit)
 			}
 		}
 		hint := schemas.FallbackAttemptHint{

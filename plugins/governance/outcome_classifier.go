@@ -86,6 +86,12 @@ func ClassifyOutcome(err *schemas.BifrostError, latency time.Duration, slowThres
 		return OutcomeIgnore
 	}
 
+	// Local gateway governance rejections (missing/invalid virtual key, policy blocks,
+	// local rate/budget limits) are never upstream channel failures.
+	if isLocalGovernanceError(err) {
+		return OutcomeIgnore
+	}
+
 	// Account/channel fatal keywords take precedence over generic 400/503 status codes.
 	for _, keyword := range fatalChannelKeywords {
 		if strings.Contains(text, keyword) {
@@ -149,6 +155,26 @@ func isClientCancelledError(err *schemas.BifrostError, loweredText string) bool 
 		return true
 	}
 	return strings.Contains(loweredText, "context canceled") || strings.Contains(loweredText, "client disconnected")
+}
+
+func isLocalGovernanceError(err *schemas.BifrostError) bool {
+	if err == nil || err.Type == nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(*err.Type)) {
+	case "virtual_key_required",
+		string(DecisionVirtualKeyNotFound),
+		string(DecisionVirtualKeyBlocked),
+		string(DecisionModelBlocked),
+		string(DecisionProviderBlocked),
+		string(DecisionRateLimited),
+		string(DecisionTokenLimited),
+		string(DecisionRequestLimited),
+		string(DecisionBudgetExceeded):
+		return true
+	default:
+		return false
+	}
 }
 
 func classifyErrorText(err *schemas.BifrostError) string {

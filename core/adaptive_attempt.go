@@ -93,14 +93,20 @@ func (c *fallbackCursor) next(ctx *schemas.BifrostContext, count, executed int) 
 	return best, budget
 }
 
-func (b *Bifrost) recordAdaptiveAttempt(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, index, hop int, stream bool, start time.Time, err *schemas.BifrostError) {
-	p := adaptiveV22(ctx)
-	if p == nil || index > len(p.FallbackHints) {
-		return
+func adaptiveAttemptHint(p *schemas.AdaptiveFallbackRuntimePolicy, index int) *schemas.FallbackAttemptHint {
+	if p == nil || index < 0 || index > len(p.FallbackHints) {
+		return nil
 	}
-	hint := p.PrimaryHint
-	if index > 0 {
-		hint = p.FallbackHints[index-1]
+	if index == 0 {
+		return &p.PrimaryHint
+	}
+	return &p.FallbackHints[index-1]
+}
+
+func (b *Bifrost) recordAdaptiveAttempt(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, index, hop int, stream bool, start time.Time, err *schemas.BifrostError) {
+	hint := adaptiveAttemptHint(adaptiveV22(ctx), index)
+	if hint == nil {
+		return
 	}
 	elapsed := time.Since(start)
 	if hint.Observe != nil {
@@ -204,6 +210,12 @@ func (b *Bifrost) tryBudgetedStream(ctx *schemas.BifrostContext, req *schemas.Bi
 	start := time.Now()
 	attempt := providerUtils.NewStreamAttempt(ctx, deadline)
 	defer attempt.Detach()
+	if hint := adaptiveAttemptHint(adaptiveV22(ctx), index); hint != nil && hint.Observe != nil {
+		observe := hint.Observe
+		attempt.SetOnInterrupt(func(interruptErr *schemas.BifrostError, elapsed time.Duration) {
+			observe(ctx, true, elapsed, interruptErr)
+		})
+	}
 	provider, model, _ := req.GetRequestFields()
 	ctx.AppendRoutingEngineLog("adaptive-v22", fmt.Sprintf("hop=%d target=%s/%s establish_ms=%d", hop, provider, model, time.Until(deadline).Milliseconds()))
 	stream, err := b.tryStreamRequest(ctx, req)

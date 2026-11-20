@@ -336,3 +336,90 @@ func TestV22BufferedStaleConnectionRetry(t *testing.T) {
 	require.Equal(t, "ok-2", body2)
 	require.EqualValues(t, 2, connections.Load())
 }
+
+func TestV22StreamInterruptNotifiesOnceOnlyOnUpstreamError(t *testing.T) {
+	t.Run("upstream error after commit invokes callback once", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		a := NewStreamAttempt(ctx, time.Now().Add(time.Minute))
+		defer a.Detach()
+
+		var calls atomic.Int32
+		var gotMsg string
+		a.SetOnInterrupt(func(err *schemas.BifrostError, elapsed time.Duration) {
+			calls.Add(1)
+			if err != nil && err.Error != nil {
+				gotMsg = err.Error.Message
+			}
+			require.GreaterOrEqual(t, elapsed, time.Duration(0))
+		})
+
+		src := make(chan *schemas.BifrostStreamChunk, 3)
+		src <- newChatChunk(&schemas.ChatStreamResponseChoiceDelta{Content: schemas.Ptr("hello")}, nil)
+		src <- &schemas.BifrostStreamChunk{
+			BifrostError: &schemas.BifrostError{
+				Error: &schemas.ErrorField{Message: "The upstream stream ended before the response was complete."},
+			},
+		}
+		src <- &schemas.BifrostStreamChunk{
+			BifrostError: &schemas.BifrostError{
+				Error: &schemas.ErrorField{Message: "second error must not double-notify"},
+			},
+		}
+		close(src)
+
+		out, done, err := CheckStreamPrelude(src, a)
+		require.Nil(t, err)
+		require.NotNil(t, out)
+		for range out {
+		}
+		<-done
+		require.EqualValues(t, 1, calls.Load())
+		require.Contains(t, gotMsg, "ended before the response was complete")
+	})
+
+	t.Run("normal completion never invokes callback", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		a := NewStreamAttempt(ctx, time.Now().Add(time.Minute))
+		defer a.Detach()
+
+		var calls atomic.Int32
+		a.SetOnInterrupt(func(*schemas.BifrostError, time.Duration) { calls.Add(1) })
+
+		src := make(chan *schemas.BifrostStreamChunk, 2)
+		src <- newChatChunk(&schemas.ChatStreamResponseChoiceDelta{Content: schemas.Ptr("ok")}, nil)
+		close(src)
+
+		out, done, err := CheckStreamPrelude(src, a)
+		require.Nil(t, err)
+		for range out {
+		}
+		<-done
+		require.EqualValues(t, 0, calls.Load())
+	})
+
+	t.Run("caller cancellation suppresses interrupt callback", func(t *testing.T) {
+		ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+		a := NewStreamAttempt(ctx, time.Now().Add(time.Minute))
+		defer a.Detach()
+
+		var calls atomic.Int32
+		a.SetOnInterrupt(func(*schemas.BifrostError, time.Duration) { calls.Add(1) })
+
+		src := make(chan *schemas.BifrostStreamChunk, 2)
+		src <- newChatChunk(&schemas.ChatStreamResponseChoiceDelta{Content: schemas.Ptr("ok")}, nil)
+		out, done, err := CheckStreamPrelude(src, a)
+		require.Nil(t, err)
+		<-out
+		cancel()
+		src <- &schemas.BifrostStreamChunk{
+			BifrostError: &schemas.BifrostError{
+				Error: &schemas.ErrorField{Message: "context canceled"},
+			},
+		}
+		close(src)
+		for range out {
+		}
+		<-done
+		require.EqualValues(t, 0, calls.Load())
+	})
+}

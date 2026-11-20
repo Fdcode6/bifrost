@@ -106,6 +106,62 @@ func TestClassifyOutcome_Transient503OverloadStaysSoftFail(t *testing.T) {
 	assert.Equal(t, OutcomeSoftFail, ClassifyOutcome(err, 0, 45*time.Second))
 }
 
+func TestClassifyOutcome_LocalGovernanceErrorsIgnored(t *testing.T) {
+	cases := []struct {
+		name string
+		err  *schemas.BifrostError
+	}{
+		{
+			name: "missing virtual key 401",
+			err: &schemas.BifrostError{
+				Type:       bifrost.Ptr("virtual_key_required"),
+				StatusCode: bifrost.Ptr(401),
+				Error:      &schemas.ErrorField{Message: "virtual key is required. Provide a virtual key via the x-bf-vk header."},
+			},
+		},
+		{
+			name: "unknown virtual key 403",
+			err: &schemas.BifrostError{
+				Type:       bifrost.Ptr(string(DecisionVirtualKeyNotFound)),
+				StatusCode: bifrost.Ptr(403),
+				Error:      &schemas.ErrorField{Message: "Virtual key not found"},
+			},
+		},
+		{
+			name: "budget exceeded 402",
+			err: &schemas.BifrostError{
+				Type:       bifrost.Ptr(string(DecisionBudgetExceeded)),
+				StatusCode: bifrost.Ptr(402),
+				Error:      &schemas.ErrorField{Message: "Budget exceeded"},
+			},
+		},
+		{
+			name: "rate limited 429",
+			err: &schemas.BifrostError{
+				Type:       bifrost.Ptr(string(DecisionRateLimited)),
+				StatusCode: bifrost.Ptr(429),
+				Error:      &schemas.ErrorField{Message: "Rate limit exceeded"},
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, OutcomeIgnore, ClassifyOutcome(tc.err, 0, 45*time.Second))
+		})
+	}
+}
+
+func TestClassifyOutcome_MidStreamTruncationIsHardFail(t *testing.T) {
+	err := &schemas.BifrostError{
+		Error: &schemas.ErrorField{
+			Type:    bifrost.Ptr("new_api_error"),
+			Message: "The upstream stream ended before the response was complete.",
+		},
+	}
+	assert.Equal(t, OutcomeHardFail, ClassifyOutcome(err, 50*time.Second, 65*time.Second))
+}
+
 func testBifrostError(status int, message string) *schemas.BifrostError {
 	return &schemas.BifrostError{
 		StatusCode: bifrost.Ptr(status),

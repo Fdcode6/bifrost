@@ -154,6 +154,7 @@ func forwardAdaptiveStream(attempt *StreamAttempt, prefix []*schemas.BifrostStre
 			if !interrupted && c != nil && c.BifrostError != nil && attempt.ctx.Err() == nil {
 				interrupted = true
 				attempt.ctx.AppendRoutingEngineLog("adaptive-v22", "stream interrupted after commit")
+				attempt.notifyInterrupt(c.BifrostError)
 			}
 			select {
 			case out <- c:

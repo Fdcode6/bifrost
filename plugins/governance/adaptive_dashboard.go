@@ -787,10 +787,7 @@ func InspectAdaptiveRuleDashboard(
 		}
 	}
 	if dueProbe != nil {
-		probeTimeout := min(policy.PrimaryAttemptTimeoutMs, 22000)
-		if dueProbe.primaryLimit > 0 {
-			probeTimeout = min(dueProbe.primaryLimit, probeTimeout)
-		}
+		probeTimeout := adaptiveProbationProbeTimeoutMs(policy, dueProbe.primaryLimit)
 		hop := makeHopPreview(*dueProbe, probeTimeout, true)
 		preview.ProbationProbePending = &hop
 	}

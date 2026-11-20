@@ -6,14 +6,18 @@
 
 ## V2.2 发布、超时调优与回退
 
-`gemini-auto` 与 `gemini-auto-bif` 共用一条分组规则。V2.2 已于 2026-11-19 上线启用（`adaptive_v22_enabled = true`），并于 **2026-11-20** 结合早盘真实流量完成了超时配比热调优：
+V2.2 已于 2026-11-19 上线启用（`adaptive_v22_enabled = true`），并于 **2026-11-20** 完成超时调优以及**按业务画像拆分独立规则**（原合并规则已拆为 `gemini-auto` 与 `gemini-auto-bif` 两条独立规则，各自维护健康度与快通道信誉，互不污染）：
 
-- **当前线上超时配比（2026-11-20 生效）**：
+- **`gemini-auto`（企微助手专用，`model == "gemini-auto"`，2026-11-20 生效）**：
   - 总预算 `request_deadline_ms = 62000`（`62s`，对齐企微助手 `70s` 外层超时留足 `8s` 缓冲）；
   - 默认首跳超时 `primary_attempt_timeout_ms = 24000`（`24s`；仅 `storeapi-aistudio` 单独设 `22000`，`openlux-aistudio-3` 走默认 `24000`）；
-  - 快救单跳上限 `rescue_attempt_timeout_ms = 22000`（`22s`）、末跳预留 `14s`、最多 `5` 跳；
+  - 快救单跳上限 `rescue_attempt_timeout_ms = 22000`（`22s`）、慢阈值 `35s`、快通道 `16s`、末跳预留 `14s`、最多 `5` 跳；
   - 实际三跳分配：**首跳 `24s` → 二跳满血快救 `22s` → 末跳一整块兜底 `16s`**（既根治旧版 `35s` 首跳把第 2 跳挤压成 `9s` 的问题，又让前两跳超时后余量 `16s < 17s` 不再触发 `4s + 14s` 废跳拆分）。
-- **热回退方式**：通过管理接口将 `health_policy.adaptive_v22_enabled` 改为 `false` 即可秒退回 V2.1；已开始的请求继续使用原快照。
+- **`gemini-auto-bif`（问小白 Open WebUI 专用，`model == "gemini-auto-bif"`，2026-11-20 拆分生效）**：
+  - 面向网页端 `stream = true`、多图（最高 5~8 MB）+ 深度思考长首字场景，复用相同的 20 个 L1/L2/L3 目标池（移除 `storeapi-aistudio` 单点 `22s` 限制），并同步规则独立售价（`$2.4 / $13.2` per 1M USD）；
+  - 总预算 `request_deadline_ms = 180000`（`180s`）、首跳 `primary_attempt_timeout_ms = 65000`（`65s`）、快救 `rescue_attempt_timeout_ms = 55000`（`55s`）、慢阈值 `65s`、快通道 `35s`、快错阈值 `15s`、最多 `6` 跳；
+  - 对应全部 20 个上游 Provider 底层 `network_config.default_request_timeout_in_seconds` 已由 `42s` 统一放宽至 **`90s`**（不改变企微 `24s/22s/16s` 硬控，仅解除对 `gemini-auto-bif` 65s/55s 单跳的底层截断）。
+- **热回退方式**：通过管理接口将目标规则的 `health_policy.adaptive_v22_enabled` 改为 `false` 即可秒退回 V2.1；已开始的请求继续使用原快照。
 
 按本规则的 15 秒阈值，首跳快速失败且预算充足时，优先顺延到健康主力，沿用目标的单跳时限。达到阈值、探针失败或已只够最后一跳时，按救援排名选当前可用目标。多跳时为末跳预留 14 秒；剩余 3 至不足 17 秒时，把余量给排名最高的合格候选。整轮受 62 秒和五次尝试限制。
 
@@ -67,12 +71,12 @@
 仅在管理台新建 Provider 不够，**漏掉第 2 步会导致线上请求直接鉴权拒绝或跳过该渠道**：
 1. **建 Provider 与单价覆盖**：
    - 模型 ID 务必核对准确：**B.AI 必须是 `gemini-3.1-pro`**，**StoreAPI / OpenLux / PoloAPI 必须是 `gemini-3.1-pro-preview`**；
-   - `network_config.max_retries` 设为 **`0`**（重试交给 Bifrost 分流引擎跨上游处理，不要在单个坏节点上原地重试）；Provider 静态兜底超时统一设为 `42s / 42s`（实际单跳由自适应引擎动态裁剪）；
+   - `network_config.max_retries` 设为 **`0`**（重试交给 Bifrost 分流引擎跨上游处理，不要在单个坏节点上原地重试）；Provider 静态兜底超时统一设为 **`90s`**（2026-11-20 由 `42s` 放宽至 `90s`，确保不会提前截断 `gemini-auto-bif` 的 `65s/55s` 流式建流；企微 `gemini-auto` 实际单跳仍由 V2.2 引擎按 `24s/22s/16s` 硬控）；
    - `pricing_overrides` **必须同时填写** `input_cost_per_token`、`output_cost_per_token`、`above_128k`、`above_200k` 和 `cache_read_input_token_cost`（防止长上下文或命中缓存时回退到官方目录原价导致成本统计虚高）。特别注意 **StoreAPI 缓存读是官方的 `4.41%`（输入/输出是 `2.21%`）**，不可直接按同一比例套用。
 2. **同步加入虚拟密钥白名单（极易遗漏！）**：
    - 线上虚拟密钥 `bif` 配置了显式 `provider_configs` 白名单。每新增一个 Provider，必须把它和允许的 `allowed_models`、`key_ids` 一起更新进 `bif` 的 `provider_configs`，否则路由选到它时会被虚拟密钥拦截。
-3. **加入 `gemini-auto` 路由规则并保证每组权重之和为 `1.0`**：
-   - Admin API 校验每个 `route_group` 内所有 `targets` 的 `weight` 之和必须等于 `1.0`（哪怕 `retry_limit: 0` 按价格排序，提交时也必须归一化权重）。自适应规则下无需开启短 `"ping"` 主动健康探测（保持 `detection_enabled: false`）。
+3. **同步加入 `gemini-auto` 与 `gemini-auto-bif` 两条路由规则，并保证每组权重之和为 `1.0`**：
+   - Admin API 校验每个 `route_group` 内所有 `targets` 的 `weight` 之和必须等于 `1.0`（哪怕 `retry_limit: 0` 按价格排序，提交时也必须归一化权重）。自适应规则下无需开启短 `"ping"` 主动健康探测（保持 `detection_enabled: false`）。两条规则均需同步维护 `pricing` 与目标池。
 
 ### 2. 账单核对与中转站暗调价防范
 - 当前各通道单价是按平台报价页与固定汇率 `6.8` 换算的理论单价，**建议上线运行 1~3 天后，抽查四家中转站后台的真实扣费流水**，核对是否存在：
@@ -88,13 +92,15 @@
 
 ### 4. 备份与紧急回滚方式
 - 线上保留的关键镜像标签：
-  - 当前线上最新镜像：`bifrost:profit-fix-20261120`（含 V2.2 + 新版自适应经营看板 + Profit 缺失成本与对账自愈修复）
-  - 上一版镜像：`bifrost:adaptive-dashboard-20261119`、`bifrost:smart-routing-v2.2-20261119`、`bifrost:rollback-20261119`
+  - 当前线上最新镜像：`bifrost:v22-stream-fix-20261120`（含 V2.2 观察席探针动态超时、本地治理 401 零污染隔离、流式提交后中断扣分回写 + 新版自适应经营看板 + Profit 对账修复）
+  - 上一版镜像：`bifrost:profit-fix-20261120`、`bifrost:adaptive-dashboard-20261119`、`bifrost:smart-routing-v2.2-20261119`、`bifrost:rollback-20261119`
 - 线上保留的配置备份目录：
   - `/root/bifrost-deploy/backups/pre-smart-routing-20261119/`
   - `/root/bifrost-deploy/backups/pre-v22-20261119/`
   - `/root/bifrost-deploy/backups/before-remove-bai10pct-20261120/`
   - `/root/bifrost-deploy/backups/before-timeout-tune-20261120/`
+  - `/root/bifrost-deploy/backups/before-split-gemini-auto-bif-20261120/`
+  - `/root/bifrost-deploy/backups/before-provider-timeout-90s-20261120/`
 - **若需仅回滚路由（保留新版引擎）**：通过 Admin API 将对应备份目录中的 `gemini-auto` 规则写回即可热生效。
 - **若需整包回滚旧版镜像**：在服务器执行 `docker tag <目标镜像标签> crpi-1nlet4g61989v2tx.cn-shenzhen.personal.cr.aliyuncs.com/fdcode/bifrost:latest && cd /root/bifrost-deploy && docker compose up -d --force-recreate bifrost`。
 
@@ -116,3 +122,7 @@
 3. **渠道与超时参数调优（2026-11-20 线上热更新）**
    - 删除 `bai-10pct`（累计 `0/30` 持续报 `503` 且偶发 32s 超时），`gemini-auto` 精简为 **20 个在用分组**；
    - 发现原 `58s` 预算 + `35s` 首跳 + `14s` 末跳预留会把第 2 跳压缩至 `9s` 误杀正常快枪手，先热更新为 `62s / 24s / 20s` 后又进一步发现余量 `18s ≥ 17s` 会拆出 `4s` 废跳，最终调优为 **`request_deadline_ms = 62000`、`primary_attempt_timeout_ms = 24000`、`rescue_attempt_timeout_ms = 22000`**（形成零浪费的 `24s + 22s + 16s` 满血三跳窗口）。
+4. **拆分问小白 `gemini-auto-bif` 规则、解除 Provider `42s` 上限与 V2.2 流式修复（2026-11-20）**
+   - **根因排查**：问小白 Open WebUI（`stream=true`，多图 5~8 MB + 深度思考首字 20~50s）原与企微短请求共用 `gemini-auto` 的 `24s/22s/16s` 策略，且 20 个 Provider 底层 `default_request_timeout_in_seconds = 42s` 同样会提前掐断多图长思考，频繁触发 `stream establishment deadline exceeded`；
+   - **线上配置调整**：零中断拆出独立规则 **`gemini-auto-bif`**（`180s / 65s / 55s`，`slow_threshold_ms=65000`，`fast_channel_threshold_ms=35000`，`max_fallback_attempts=6`，同步规则独立售价 `$2.4 / $13.2`），并将 20 个 Provider 底层超时统一热更新至 **`90s`**；同时配合在问小白 Open WebUI 后台开启全局图片压缩上限 `1024 × 1024`（18 图请求体从 `7.41 MiB` 压降至 `3.75 MiB`，详见 `open-webui` 仓库对应运维记录）；
+   - **代码修复并上线（`bifrost:v22-stream-fix-20261120`）**：① 观察席探针超时改为随规则首跳/快救预算自适应（不再硬编码 `22s`）；② 本地网关鉴权/策略拒绝（如 `401 virtual_key_required`）置拒绝标记、禁 fallback 并在 `ClassifyOutcome` 中归为 `OutcomeIgnore`，避免误把健康上游打入 `fatal_channel`；③ V2.2 流式提交后若上游中途断流（`interrupted=true` 且非客户端取消），自动回调 `hint.Observe` 记入 `hard_fail` 扣减渠道信誉。线上重放 18 图（7.79 MB）原始异常请求 `117bed68` 已完整生成 4,869 字（`finish=stop`）。

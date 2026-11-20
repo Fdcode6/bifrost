@@ -422,3 +422,38 @@ func TestAdaptiveRouter_Flaky72PctCheapNeverUsedAsFastRescue(t *testing.T) {
 	assert.False(t, dec.AdaptivePolicy.PrimaryHint.IsFastRescue, "71%-reliable cheap channel must NEVER be marked IsFastRescue")
 	assert.True(t, dec.AdaptivePolicy.FallbackHints[0].IsFastRescue, "95%+-reliable 11s channel must be IsFastRescue")
 }
+
+func TestAdaptiveProbationProbeTimeoutMs_ScalesWithRuleBudget(t *testing.T) {
+	// Short-budget V2.2 rule (e.g. gemini-auto: 24s primary / 22s rescue) stays tight at 21s.
+	shortV22 := &configstoreTables.HealthPolicy{
+		AdaptiveV22Enabled:      true,
+		PrimaryAttemptTimeoutMs: 24000,
+		RescueAttemptTimeoutMs:  22000,
+	}
+	assert.Equal(t, 21000, adaptiveProbationProbeTimeoutMs(shortV22, 0))
+	assert.Equal(t, 20000, adaptiveProbationProbeTimeoutMs(shortV22, 20000))
+
+	// Long-budget streaming V2.2 rule (e.g. gemini-auto-bif: 65s primary / 55s rescue)
+	// must NOT be artificially clamped to 22s.
+	longV22 := &configstoreTables.HealthPolicy{
+		AdaptiveV22Enabled:      true,
+		PrimaryAttemptTimeoutMs: 65000,
+		RescueAttemptTimeoutMs:  55000,
+	}
+	assert.Equal(t, 55000, adaptiveProbationProbeTimeoutMs(longV22, 0))
+	assert.Equal(t, 45000, adaptiveProbationProbeTimeoutMs(longV22, 45000))
+
+	// Long-budget V2.2 rule without smaller rescue falls back to primary - 3s.
+	longNoRescue := &configstoreTables.HealthPolicy{
+		AdaptiveV22Enabled:      true,
+		PrimaryAttemptTimeoutMs: 65000,
+	}
+	assert.Equal(t, 62000, adaptiveProbationProbeTimeoutMs(longNoRescue, 0))
+
+	// Legacy non-V2.2 keeps 35s cap.
+	legacy := &configstoreTables.HealthPolicy{
+		AdaptiveV22Enabled:      false,
+		PrimaryAttemptTimeoutMs: 65000,
+	}
+	assert.Equal(t, 35000, adaptiveProbationProbeTimeoutMs(legacy, 0))
+}

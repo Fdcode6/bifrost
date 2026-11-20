@@ -1123,9 +1123,15 @@ func (p *GovernancePlugin) evaluateGovernanceRequest(ctx *schemas.BifrostContext
 			message = "authentication is required. Provide a virtual key (x-bf-vk), API key, or user token."
 		}
 		p.cfgMutex.RUnlock()
+		if ctx != nil {
+			if _, ok := ctx.Value(governanceRejectedContextKey).(bool); !ok {
+				ctx.SetValue(governanceRejectedContextKey, true)
+			}
+		}
 		return nil, &schemas.BifrostError{
-			Type:       bifrost.Ptr("virtual_key_required"),
-			StatusCode: bifrost.Ptr(401),
+			Type:           bifrost.Ptr("virtual_key_required"),
+			StatusCode:     bifrost.Ptr(401),
+			AllowFallbacks: bifrost.Ptr(false),
 			Error: &schemas.ErrorField{
 				Message: message,
 			},
