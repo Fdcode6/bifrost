@@ -48,7 +48,7 @@ func (c *fallbackCursor) next(ctx *schemas.BifrostContext, count, executed int) 
 	if caller, ok := ctx.Deadline(); ok && (deadline.IsZero() || caller.Before(deadline)) {
 		deadline = caller
 	}
-	best, regular, eligible := -1, -1, 0
+	best, regular, lastResort, eligible := -1, -1, -1, 0
 	for i, h := range p.FallbackHints[:count] {
 		if c.tried[i] || h.Available != nil && !h.Available() {
 			continue
@@ -60,19 +60,29 @@ func (c *fallbackCursor) next(ctx *schemas.BifrostContext, count, executed int) 
 		if h.ContinuationRank > 0 && (regular < 0 || h.ContinuationRank < p.FallbackHints[regular].ContinuationRank) {
 			regular = i
 		}
+		if h.IsLastResort && h.IsFastRescue && lastResort < 0 {
+			lastResort = i
+		}
 	}
 	if best < 0 {
 		return -1, 0
 	}
-	const minHopMs, finalReserveMs = 3000, 14000
+	const minFinalHopMs, defaultMinSplitHopMs, finalReserveMs = 3000, 12000, 14000
+	minSplitHopMs := defaultMinSplitHopMs
+	if p.RescueAttemptTimeoutMs > 0 && p.RescueAttemptTimeoutMs < minSplitHopMs {
+		minSplitHopMs = p.RescueAttemptTimeoutMs
+	}
+	if minSplitHopMs < minFinalHopMs {
+		minSplitHopMs = minFinalHopMs
+	}
 	final := eligible == 1 || p.MaxTotalAttempts == executed+1
 	left := 0
 	if !deadline.IsZero() {
 		left = int(time.Until(deadline).Milliseconds())
-		if left < minHopMs {
+		if left < minFinalHopMs {
 			return -1, 0
 		}
-		final = final || left < finalReserveMs+minHopMs
+		final = final || left < finalReserveMs+minSplitHopMs
 	}
 	continuation := !final && regular >= 0 && !p.PrimaryHint.IsProbationProbe &&
 		time.Since(p.RequestStartTime) < time.Duration(p.FastRescueElapsedMs)*time.Millisecond
@@ -80,6 +90,8 @@ func (c *fallbackCursor) next(ctx *schemas.BifrostContext, count, executed int) 
 	if continuation {
 		best = regular
 		budget = p.FallbackHints[best].AttemptTimeoutMs
+	} else if final && !p.FallbackHints[best].IsFastRescue && lastResort >= 0 {
+		best = lastResort
 	}
 	if left > 0 {
 		if final {
@@ -89,7 +101,7 @@ func (c *fallbackCursor) next(ctx *schemas.BifrostContext, count, executed int) 
 		}
 	}
 	c.tried[best] = true
-	ctx.AppendRoutingEngineLog("adaptive-v22", fmt.Sprintf("fallback=%d continuation=%t eligible=%d budget_ms=%d", best+1, continuation, eligible, budget))
+	ctx.AppendRoutingEngineLog("adaptive-v22", fmt.Sprintf("fallback=%d continuation=%t final=%t eligible=%d budget_ms=%d", best+1, continuation, final, eligible, budget))
 	return best, budget
 }
 

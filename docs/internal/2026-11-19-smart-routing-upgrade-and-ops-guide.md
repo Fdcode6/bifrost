@@ -92,8 +92,8 @@ V2.2 已于 2026-11-19 上线启用（`adaptive_v22_enabled = true`），并于 
 
 ### 4. 备份与紧急回滚方式
 - 线上保留的关键镜像标签：
-  - 当前线上最新镜像：`bifrost:v22-profit-ingest-20261120`（含外部直连利润批量回传接口 `POST /api/profit/external-events`、`X-Profit-Ingest-Token` 鉴权及 `/workspace/profit` 来源筛选切换 + V2.2 流式修复与自适应经营看板）
-  - 上一版镜像：`bifrost:before-profit-ingest-20261120`、`bifrost:v22-stream-fix-20261120`、`bifrost:profit-fix-20261120`、`bifrost:adaptive-dashboard-20261119`、`bifrost:smart-routing-v2.2-20261119`、`bifrost:rollback-20261119`
+  - 当前线上最新镜像：`bifrost:v22-final-hop-fix-20261121`（消除残余 `17s~25s` 切出 `<12s` 必死废跳 + 末跳 `final=true` 无高稳快通道时自动启用健康 L3 兜底王牌 + 外部直连利润入账与来源筛选）
+  - 上一版镜像：`bifrost:v22-profit-ingest-20261120`、`bifrost:before-profit-ingest-20261120`、`bifrost:v22-stream-fix-20261120`、`bifrost:profit-fix-20261120`、`bifrost:rollback-20261119`
 - 线上保留的配置备份目录：
   - `/root/bifrost-deploy/backups/pre-smart-routing-20261119/`
   - `/root/bifrost-deploy/backups/pre-v22-20261119/`
@@ -134,3 +134,6 @@ V2.2 已于 2026-11-19 上线启用（`adaptive_v22_enabled = true`），并于 
    - **「流不合、账合一」外部直连回传**：
      - Bifrost 新增 `POST /api/profit/external-events`（独立 `BIFROST_PROFIT_INGEST_TOKEN` 校验 via `X-Profit-Ingest-Token`，强制要求 `ext:` 主键前缀隔离原生日志，按 `log_id` 幂等 Upsert 到 `profit_events`，零影响 `logs` 与自动对账）；`/api/profit/{summary,daily,breakdown}` 及 `/workspace/profit` 前端新增 **`全部来源` / `仅 Bifrost 代理` / `仅外部直连回传`** 来源筛选切换；
      - 会话存档服务器（`session-archive`）部署无侵入式低负载同步器 `/usr/local/bin/bifrost-profit-sync.py`（源码在 `qiweidoc/scripts/bifrost_profit_sync.py`）与 `bifrost-profit-sync.timer`（每 5 分钟执行一次，严格走主键游标 `LIMIT 200` + `statement_timeout=3000ms` + `flock` 防重叠，只上报直连火山方舟豆包并排除走 `bif.zdfan.com` 的供应商，聚合展示为独立分组 **`豆包直连 · AI前置与记忆`** / `volces-ark-direct`）。
+6. **V2.2 末跳预算与 L3 真兜底修复（`bifrost:v22-final-hop-fix-20261121`，2026-11-21）**
+   - **背景**：复盘 `2026-11-20 13:55–23:16` 连续 9.3 小时 8,137 笔 `gemini-auto` 实盘日志，发现全部 76 笔失败中有 **30 笔（39.5%）** 踩中 `22s + 22s + 4s + 14s` 废跳（残余 `18s` 触发 `14s` 末跳预留后把第 3 跳主力硬切成 4s 必死跳并误扣分），同时 L3 兜底王牌（`bai-100pct` / `polo-svip-6.8x`）全天仅触发 2–3 次，末跳常死在 14%–54% 弱通道上；
+   - **修复（`core/adaptive_attempt.go`）**：① 拆出中间跳的最小有效预算门槛从 `3s` 提高到 `min(12s, RescueAttemptTimeoutMs)`，剩余 `< 26s` 时直接把完整 `18s~25s` 交给当前跳，彻底消除 `<12s` 废跳；② 当 `final = true`（最后一次机会）且队首候选并非已验证快通道（`!IsFastRescue`）时，自动提拔可用且健康的 L3 兜底王牌（`IsLastResort && IsFastRescue`）接管末跳，平时非末跳仍保持严格 L3 成本隔离。

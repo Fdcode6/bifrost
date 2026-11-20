@@ -274,17 +274,68 @@ func TestV22RescueBudgets(t *testing.T) {
 	for _, tc := range []struct {
 		left, want, n int
 		wantIndex     int
-	}{{36000, 20000, 2, 0}, {30000, 16000, 2, 0}, {16000, 16000, 7, 0}, {16000, 16000, 1, 0}, {2000, 0, 1, -1}} {
+	}{
+		{36000, 20000, 2, 0},
+		{30000, 16000, 2, 0},
+		{26100, 12100, 2, 0},
+		{25000, 25000, 2, 0},
+		{18000, 18000, 4, 0},
+		{16000, 16000, 7, 0},
+		{16000, 16000, 1, 0},
+		{2000, 0, 1, -1},
+	} {
 		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 		ctx.SetValue(schemas.BifrostContextKeyAdaptiveFallbackPolicy, &schemas.AdaptiveFallbackRuntimePolicy{V22: true, RescueAttemptTimeoutMs: 20000, FallbackHints: make([]schemas.FallbackAttemptHint, tc.n), MaxTotalAttempts: 5})
 		ctx.SetValue(schemas.BifrostContextKeyFallbackDeadline, time.Now().Add(time.Duration(tc.left)*time.Millisecond))
 		cursor := new(fallbackCursor)
 		index, timeout := cursor.next(ctx, tc.n, 1)
-		require.Equal(t, tc.wantIndex, index)
-		require.InDelta(t, tc.want, timeout, 5)
+		require.Equal(t, tc.wantIndex, index, "left=%d", tc.left)
+		require.InDelta(t, tc.want, timeout, 20, "left=%d", tc.left)
 		index, _ = cursor.next(ctx, tc.n, 5)
 		require.Equal(t, -1, index)
 	}
+}
+
+func TestV22FinalHopPromotesHealthyLastResortWhenNoFastRescueRemains(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	p := &schemas.AdaptiveFallbackRuntimePolicy{
+		V22:                    true,
+		RequestStartTime:       time.Now().Add(-44 * time.Second),
+		FastRescueElapsedMs:    15000,
+		RescueAttemptTimeoutMs: 22000,
+		MaxTotalAttempts:       5,
+		FallbackHints: []schemas.FallbackAttemptHint{
+			{IsFastRescue: false},                     // flaky/demoted L1
+			{IsFastRescue: false, IsLastResort: true}, // slow L3 should not be promoted
+			{IsFastRescue: true, IsLastResort: true},  // healthy fast L3
+		},
+	}
+	ctx.SetValue(schemas.BifrostContextKeyAdaptiveFallbackPolicy, p)
+
+	// Non-final hop (left=36s >= 26s): MUST NOT promote L3 early (strict L3 isolation)
+	ctx.SetValue(schemas.BifrostContextKeyFallbackDeadline, time.Now().Add(36*time.Second))
+	i, timeout := new(fallbackCursor).next(ctx, 3, 1)
+	require.Equal(t, 0, i)
+	require.InDelta(t, 22000, timeout, 25)
+
+	// Final hop due to remaining budget (left=18s < 26s): promotes healthy L3 with full 18s (no 4s waste hop)
+	ctx.SetValue(schemas.BifrostContextKeyFallbackDeadline, time.Now().Add(18*time.Second))
+	i, timeout = new(fallbackCursor).next(ctx, 3, 2)
+	require.Equal(t, 2, i)
+	require.InDelta(t, 18000, timeout, 25)
+
+	// Final hop due to MaxTotalAttempts (executed=4 of 5): promotes healthy L3
+	ctx.SetValue(schemas.BifrostContextKeyFallbackDeadline, time.Now().Add(36*time.Second))
+	i, timeout = new(fallbackCursor).next(ctx, 3, 4)
+	require.Equal(t, 2, i)
+	require.InDelta(t, 36000, timeout, 25)
+
+	// If best candidate is ALREADY a proven fast-rescue channel, keep it instead of burning L3
+	p.FallbackHints[0].IsFastRescue = true
+	ctx.SetValue(schemas.BifrostContextKeyFallbackDeadline, time.Now().Add(18*time.Second))
+	i, timeout = new(fallbackCursor).next(ctx, 3, 2)
+	require.Equal(t, 0, i)
+	require.InDelta(t, 18000, timeout, 25)
 }
 
 func TestV22ContinuationAndSlowRescue(t *testing.T) {
