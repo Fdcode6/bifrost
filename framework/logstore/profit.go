@@ -401,7 +401,7 @@ func profitEventFromLog(entry *Log, settings *ProfitSettings) (*ProfitEvent, err
 	}
 	businessDay := entry.Timestamp.In(loc).Format("2006-01-02")
 	cost := 0.0
-	missingCost := entry.Cost == nil
+	missingCost := entry.Status == "success" && entry.Cost == nil
 	if entry.Cost != nil {
 		cost = *entry.Cost
 	}
@@ -474,8 +474,8 @@ func (s *RDBLogStore) GetProfitSummary(ctx context.Context, query ProfitQuery) (
 			COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
 			COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
 			COALESCE(SUM(total_tokens), 0) AS total_tokens,
-			COALESCE(SUM(CASE WHEN missing_cost THEN 1 ELSE 0 END), 0) AS missing_cost_count,
-			COALESCE(SUM(CASE WHEN missing_tokens THEN 1 ELSE 0 END), 0) AS missing_tokens_count`)
+			COALESCE(SUM(CASE WHEN status = 'success' AND missing_cost THEN 1 ELSE 0 END), 0) AS missing_cost_count,
+			COALESCE(SUM(CASE WHEN status = 'success' AND missing_tokens THEN 1 ELSE 0 END), 0) AS missing_tokens_count`)
 	if err := applyProfitQuery(db, query).Scan(&row).Error; err != nil {
 		return nil, err
 	}
@@ -513,8 +513,8 @@ func (s *RDBLogStore) GetProfitDaily(ctx context.Context, query ProfitQuery) ([]
 			COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
 			COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
 			COALESCE(SUM(total_tokens), 0) AS total_tokens,
-			COALESCE(SUM(CASE WHEN missing_cost THEN 1 ELSE 0 END), 0) AS missing_cost_count,
-			COALESCE(SUM(CASE WHEN missing_tokens THEN 1 ELSE 0 END), 0) AS missing_tokens_count`).
+			COALESCE(SUM(CASE WHEN status = 'success' AND missing_cost THEN 1 ELSE 0 END), 0) AS missing_cost_count,
+			COALESCE(SUM(CASE WHEN status = 'success' AND missing_tokens THEN 1 ELSE 0 END), 0) AS missing_tokens_count`).
 		Group("business_day").
 		Order("business_day DESC")
 	if err := applyProfitQuery(db, query).Scan(&rows).Error; err != nil {
@@ -546,8 +546,8 @@ func (s *RDBLogStore) GetProfitBreakdown(ctx context.Context, query ProfitQuery)
 			COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
 			COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
 			COALESCE(SUM(total_tokens), 0) AS total_tokens,
-			COALESCE(SUM(CASE WHEN missing_cost THEN 1 ELSE 0 END), 0) AS missing_cost_count,
-			COALESCE(SUM(CASE WHEN missing_tokens THEN 1 ELSE 0 END), 0) AS missing_tokens_count`).
+			COALESCE(SUM(CASE WHEN status = 'success' AND missing_cost THEN 1 ELSE 0 END), 0) AS missing_cost_count,
+			COALESCE(SUM(CASE WHEN status = 'success' AND missing_tokens THEN 1 ELSE 0 END), 0) AS missing_tokens_count`).
 		Group("routing_rule_id, routing_rule_name, provider, model").
 		Order("revenue_usd DESC")
 	if err := applyProfitQuery(db, query).Scan(&rows).Error; err != nil {
@@ -562,16 +562,28 @@ func (s *RDBLogStore) GetProfitBreakdown(ctx context.Context, query ProfitQuery)
 	return rows, nil
 }
 
+func (s *RDBLogStore) staleOrMissingProfitLogsQuery(ctx context.Context) *gorm.DB {
+	return s.db.WithContext(ctx).Model(&Log{}).
+		Joins("LEFT JOIN profit_events ON profit_events.log_id = logs.id").
+		Where(
+			`logs.status <> ? AND (
+				profit_events.log_id IS NULL
+				OR profit_events.status <> logs.status
+				OR (logs.status = ? AND logs.cost IS NOT NULL AND profit_events.missing_cost = ?)
+				OR (logs.status = ? AND (logs.prompt_tokens > 0 OR logs.completion_tokens > 0) AND profit_events.missing_tokens = ?)
+			)`,
+			"processing", "success", true, "success", true,
+		)
+}
+
 func (s *RDBLogStore) BackfillProfitEvents(ctx context.Context, limit int) (*ProfitBackfillResult, error) {
 	if limit <= 0 {
 		limit = defaultProfitBackfillPageSize
 	}
 	var logs []Log
-	if err := s.db.WithContext(ctx).Model(&Log{}).
+	if err := s.staleOrMissingProfitLogsQuery(ctx).
 		Select("logs.*").
-		Joins("LEFT JOIN profit_events ON profit_events.log_id = logs.id").
-		Where("logs.status <> ? AND profit_events.log_id IS NULL", "processing").
-		Order("logs.timestamp ASC").
+		Order("CASE WHEN profit_events.log_id IS NULL THEN 0 ELSE 1 END ASC, logs.timestamp ASC").
 		Limit(limit).
 		Find(&logs).Error; err != nil {
 		return nil, err
@@ -605,10 +617,7 @@ func (s *RDBLogStore) BackfillProfitEvents(ctx context.Context, limit int) (*Pro
 
 func (s *RDBLogStore) CountMissingProfitEvents(ctx context.Context) (int64, error) {
 	var count int64
-	if err := s.db.WithContext(ctx).Model(&Log{}).
-		Joins("LEFT JOIN profit_events ON profit_events.log_id = logs.id").
-		Where("logs.status <> ? AND profit_events.log_id IS NULL", "processing").
-		Count(&count).Error; err != nil {
+	if err := s.staleOrMissingProfitLogsQuery(ctx).Count(&count).Error; err != nil {
 		return 0, err
 	}
 	return count, nil

@@ -388,7 +388,7 @@ export default function ProfitPage() {
 	const handleBackfill = async () => {
 		try {
 			const result = await backfillProfitEvents({ limit: 5000 }).unwrap();
-			toast.success(`回填完成：新增 ${result.created} 条，处理 ${result.processed} 条。`);
+			toast.success(`校对完成：新增 ${result.created} 条，修复 ${result.updated} 条，处理 ${result.processed} 条。`);
 			void refetchReconciliationStatus();
 		} catch (error) {
 			toast.error(getErrorMessage(error));
@@ -406,8 +406,16 @@ export default function ProfitPage() {
 				<div className="flex flex-wrap items-center gap-2">
 					<Badge variant="outline">时区：{settings?.timezone ?? "Asia/Shanghai"}</Badge>
 					<Badge variant="outline">
-						展示售价：{money(settings?.sell_input_per_1m_usd)} / {money(settings?.sell_output_per_1m_usd)}
+						默认售价：{money(settings?.sell_input_per_1m_usd)} / {money(settings?.sell_output_per_1m_usd)}
 					</Badge>
+					{routingRulePriceByID.size > 0 ? (
+						<Badge
+							variant="outline"
+							className="border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300"
+						>
+							规则独立定价：{routingRulePriceByID.size} 条
+						</Badge>
+					) : null}
 					<Badge variant="outline">汇率：1 USD = ¥{USD_TO_CNY_RATE}</Badge>
 					<div className="bg-background flex items-center rounded-md border p-0.5" aria-label="利润展示单位">
 						{DISPLAY_CURRENCIES.map((currency) => (
@@ -445,74 +453,51 @@ export default function ProfitPage() {
 				))}
 			</div>
 
-			<Card className="rounded-lg">
-				<CardContent className="grid gap-4 p-5 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,2fr)_auto] lg:items-center">
-					<div className="flex items-center gap-3">
-						<span
-							className={cn(
-								"rounded-md border p-2",
-								isProfitLedgerComplete
-									? "border-emerald-200 bg-emerald-50 text-emerald-700"
-									: "border-amber-200 bg-amber-50 text-amber-700",
-							)}
-						>
-							{isProfitLedgerComplete ? <CheckCircle2 className="h-4 w-4" /> : <AlertCircle className="h-4 w-4" />}
+			{/* Compact Ledger Sync Status Bar */}
+			<div
+				className={cn(
+					"flex flex-col gap-3 rounded-lg border px-4 py-2.5 text-xs lg:flex-row lg:items-center lg:justify-between",
+					reconciliationStatus?.last_error
+						? "border-destructive/30 bg-destructive/5"
+						: isProfitLedgerComplete
+							? "border-border bg-card"
+							: "border-amber-300/60 bg-amber-50/50 dark:border-amber-500/30 dark:bg-amber-500/10",
+				)}
+			>
+				<div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
+					<div className="flex items-center gap-2 font-medium">
+						{reconciliationStatus?.last_error ? (
+							<AlertCircle className="text-destructive h-4 w-4 shrink-0" />
+						) : isProfitLedgerComplete ? (
+							<CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+						) : (
+							<AlertCircle className="h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
+						)}
+						<span>
+							{reconciliationStatus?.last_error
+								? `上次自动校对失败：${reconciliationStatus.last_error}`
+								: isProfitLedgerComplete
+									? "自动入账正常 · 当前留存日志与利润账本已对齐"
+									: `检测到 ${formatCompactNumber(missingProfitEvents)} 条待补齐/修复的日志记录`}
 						</span>
-						<div>
-							<CardTitle className="text-base">利润账本完整性</CardTitle>
-							<CardDescription>
-								{isProfitLedgerComplete
-									? "当前 logs 与利润事件已对齐。"
-									: `当前还有 ${formatCompactNumber(missingProfitEvents)} 条日志未入账。`}
-							</CardDescription>
-						</div>
 					</div>
-					<div className="grid gap-3 text-sm sm:grid-cols-3">
-						<div>
-							<p className="text-muted-foreground text-xs font-medium">上次自动校对</p>
-							<p className="mt-1 tabular-nums">{formatStatusDateTime(reconciliationStatus?.last_run_at)}</p>
-						</div>
-						<div>
-							<p className="text-muted-foreground text-xs font-medium">下次自动校对</p>
-							<p className="mt-1 flex items-center gap-1 tabular-nums">
-								<Clock3 className="text-muted-foreground h-3.5 w-3.5" />
-								{formatNextRun(reconciliationStatus?.next_run_at)}
-							</p>
-						</div>
-						<div>
-							<p className="text-muted-foreground text-xs font-medium">上次结果</p>
-							<p className="mt-1 tabular-nums">
-								{reconciliationStatus?.last_error
-									? "上次失败"
-									: reconciliationStatus?.last_result
-										? `新增 ${formatCompactNumber(reconciliationStatus.last_result.created)} / 处理 ${formatCompactNumber(reconciliationStatus.last_result.processed)}`
-										: `每 ${formatDuration(reconciliationStatus?.interval_seconds ?? 600)}校对，单批 ${formatCompactNumber(reconciliationStatus?.batch_limit ?? 1000)}`}
-							</p>
-						</div>
-					</div>
-					<div className="flex gap-2 lg:justify-end">
-						<Button
-							variant="outline"
-							size="sm"
-							onClick={() => void refetchReconciliationStatus()}
-							disabled={isReconciliationStatusFetching}
-							className="gap-2"
-						>
-							<RefreshCw className={cn("h-4 w-4", isReconciliationStatusFetching ? "animate-spin" : "")} />
-							刷新状态
-						</Button>
-						<Button size="sm" onClick={handleBackfill} disabled={isBackfilling || isProfitLedgerComplete} className="gap-2">
-							{isBackfilling ? <Loader2 className="h-4 w-4 animate-spin" /> : <RotateCw className="h-4 w-4" />}
-							补齐缺口
+					<span className="text-muted-foreground tabular-nums">
+						上次校对：{formatStatusDateTime(reconciliationStatus?.last_run_at)}
+					</span>
+					<span className="text-muted-foreground inline-flex items-center gap-1 tabular-nums">
+						<Clock3 className="h-3.5 w-3.5" />
+						下次：{formatNextRun(reconciliationStatus?.next_run_at)}
+					</span>
+				</div>
+				{!isProfitLedgerComplete || reconciliationStatus?.last_error ? (
+					<div className="flex items-center gap-2">
+						<Button size="sm" onClick={handleBackfill} disabled={isBackfilling} className="h-7 gap-1.5 text-xs">
+							{isBackfilling ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCw className="h-3.5 w-3.5" />}
+							立即补齐
 						</Button>
 					</div>
-					{reconciliationStatus?.last_error ? (
-						<div className="border-destructive/30 bg-destructive/10 text-destructive rounded-md border px-3 py-2 text-sm lg:col-span-3">
-							上次校对失败：{reconciliationStatus.last_error}
-						</div>
-					) : null}
-				</CardContent>
-			</Card>
+				) : null}
+			</div>
 
 			<div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
 				<MetricCard
@@ -583,11 +568,11 @@ export default function ProfitPage() {
 						</div>
 						<div className="mt-4 grid gap-3 border-t pt-4 sm:grid-cols-2">
 							<div>
-								<p className="text-muted-foreground text-xs font-medium">缺失成本</p>
+								<p className="text-muted-foreground text-xs font-medium">成功单缺失成本</p>
 								<p className="mt-1 text-xl font-semibold tabular-nums">{formatCompactNumber(summary.missing_cost_count)}</p>
 							</div>
 							<div>
-								<p className="text-muted-foreground text-xs font-medium">缺失 token</p>
+								<p className="text-muted-foreground text-xs font-medium">成功单缺失 token</p>
 								<p className="mt-1 text-xl font-semibold tabular-nums">{formatCompactNumber(summary.missing_tokens_count)}</p>
 							</div>
 						</div>
@@ -641,13 +626,6 @@ export default function ProfitPage() {
 								历史利润已经按当时售价固化，保存新售价不会重算旧数据。
 							</div>
 						</form>
-						<div className="mt-5 border-t pt-5">
-							<Button variant="outline" onClick={handleBackfill} disabled={isBackfilling} className="w-full gap-2">
-								{isBackfilling ? <Loader2 className="h-4 w-4 animate-spin" /> : <RotateCw className="h-4 w-4" />}
-								从现有日志回填利润
-							</Button>
-							<p className="text-muted-foreground mt-2 text-xs">只回填当前还存在的 logs；清空过的日志无法补回。</p>
-						</div>
 					</CardContent>
 				</Card>
 			</div>
@@ -776,7 +754,7 @@ export default function ProfitPage() {
 									<TableHead>成本</TableHead>
 									<TableHead>利润</TableHead>
 									<TableHead>毛利率</TableHead>
-									<TableHead>缺失成本</TableHead>
+									<TableHead>成功单缺失成本</TableHead>
 								</TableRow>
 							</TableHeader>
 							<TableBody>

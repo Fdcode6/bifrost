@@ -30,6 +30,14 @@ func (p *LoggerPlugin) syncProfitEventForLogID(ctx context.Context, id string) e
 	if err != nil {
 		return err
 	}
+	if entry != nil && entry.Status == "success" && entry.Cost == nil && p.pricingManager != nil {
+		if cost, calcErr := p.calculateCostForLog(entry); calcErr == nil && cost > 0 {
+			entry.Cost = &cost
+			if updErr := p.store.Update(ctx, id, map[string]interface{}{"cost": cost}); updErr != nil {
+				p.logger.Warn("failed to update calculated cost for log %s: %v", id, updErr)
+			}
+		}
+	}
 	_, err = p.store.UpsertProfitEventFromLog(ctx, entry)
 	return err
 }
@@ -135,8 +143,8 @@ func (p *LoggerPlugin) runProfitReconciliation() {
 		p.logger.Warn("failed to reconcile missing profit events: %v", err)
 		return
 	}
-	if result != nil && result.Created > 0 {
-		p.logger.Info("reconciled %d missing profit events", result.Created)
+	if result != nil && (result.Created > 0 || result.Updated > 0) {
+		p.logger.Info("reconciled profit events: created=%d updated=%d", result.Created, result.Updated)
 	}
 }
 

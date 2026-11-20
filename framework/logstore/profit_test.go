@@ -769,3 +769,178 @@ func TestGetProfitBreakdownSeparatesRoutingRulesForSameProviderModel(t *testing.
 		t.Fatalf("auto rule revenue mismatch: got %.6f want 14.000000", rows[1].RevenueUSD)
 	}
 }
+
+func TestProfitMissingCostExcludesErrorLogsAndLegacyErrorRows(t *testing.T) {
+	store := newTestSQLiteStore(t)
+	ctx := context.Background()
+
+	// 1. New error log without cost must have MissingCost=false
+	errEvent, err := store.UpsertProfitEventFromLog(ctx, &Log{
+		ID:        "err-no-cost",
+		Timestamp: time.Date(2026, 5, 5, 4, 0, 0, 0, time.UTC),
+		Object:    "chat_completion",
+		Provider:  "polo-g3-3x",
+		Model:     "gemini-3.1-pro-preview",
+		Status:    "error",
+	})
+	if err != nil {
+		t.Fatalf("UpsertProfitEventFromLog(error) error = %v", err)
+	}
+	if errEvent.MissingCost {
+		t.Fatalf("error log should not set MissingCost=true")
+	}
+
+	// 2. Simulate legacy historical error row in DB with missing_cost=true
+	if err := store.db.WithContext(ctx).Model(&ProfitEvent{}).
+		Where("log_id = ?", "err-no-cost").
+		Update("missing_cost", true).Error; err != nil {
+		t.Fatalf("failed to seed legacy missing_cost flag: %v", err)
+	}
+
+	// 3. One success log WITH missing cost and one WITH valid cost
+	validCost := 0.25
+	for _, entry := range []*Log{
+		{
+			ID:               "ok-missing-cost",
+			Timestamp:        time.Date(2026, 5, 5, 4, 1, 0, 0, time.UTC),
+			Object:           "chat_completion",
+			Provider:         "polo-g3-3x",
+			Model:            "gemini-3.1-pro-preview",
+			Status:           "success",
+			PromptTokens:     1000,
+			CompletionTokens: 500,
+			TotalTokens:      1500,
+		},
+		{
+			ID:               "ok-with-cost",
+			Timestamp:        time.Date(2026, 5, 5, 4, 2, 0, 0, time.UTC),
+			Object:           "chat_completion",
+			Provider:         "polo-g3-3x",
+			Model:            "gemini-3.1-pro-preview",
+			Status:           "success",
+			PromptTokens:     1000,
+			CompletionTokens: 500,
+			TotalTokens:      1500,
+			Cost:             &validCost,
+		},
+	} {
+		if _, err := store.UpsertProfitEventFromLog(ctx, entry); err != nil {
+			t.Fatalf("UpsertProfitEventFromLog(%s) error = %v", entry.ID, err)
+		}
+	}
+
+	query := ProfitQuery{StartDay: "2026-05-05", EndDay: "2026-05-05"}
+	summary, err := store.GetProfitSummary(ctx, query)
+	if err != nil {
+		t.Fatalf("GetProfitSummary() error = %v", err)
+	}
+	if summary.MissingCostCount != 1 {
+		t.Fatalf("expected MissingCostCount=1 (success only), got %d", summary.MissingCostCount)
+	}
+
+	daily, err := store.GetProfitDaily(ctx, query)
+	if err != nil {
+		t.Fatalf("GetProfitDaily() error = %v", err)
+	}
+	if len(daily) != 1 || daily[0].MissingCostCount != 1 {
+		t.Fatalf("expected daily MissingCostCount=1, got %+v", daily)
+	}
+
+	breakdown, err := store.GetProfitBreakdown(ctx, query)
+	if err != nil {
+		t.Fatalf("GetProfitBreakdown() error = %v", err)
+	}
+	if len(breakdown) != 1 || breakdown[0].MissingCostCount != 1 {
+		t.Fatalf("expected breakdown MissingCostCount=1, got %+v", breakdown)
+	}
+}
+
+func TestBackfillProfitEventsRepairsStaleMissingCostAndTokensWhileFreezingPrice(t *testing.T) {
+	store := newTestSQLiteStore(t)
+	ctx := context.Background()
+
+	if _, err := store.SaveProfitSettings(ctx, &ProfitSettings{
+		SellInputPer1MUSD:  2,
+		SellOutputPer1MUSD: 12,
+		Timezone:           "Asia/Shanghai",
+	}); err != nil {
+		t.Fatalf("SaveProfitSettings(initial) error = %v", err)
+	}
+
+	entry := &Log{
+		ID:        "stale-profit-log",
+		Timestamp: time.Date(2026, 5, 6, 4, 0, 0, 0, time.UTC),
+		Object:    "chat_completion",
+		Provider:  "storeapi-aistudio",
+		Model:     "gemini-3.1-pro-preview",
+		Status:    "success",
+	}
+	requireCreateLog(t, store, entry)
+	if _, err := store.UpsertProfitEventFromLog(ctx, entry); err != nil {
+		t.Fatalf("UpsertProfitEventFromLog(initial) error = %v", err)
+	}
+
+	// Initially nothing to repair because log itself has no cost/tokens yet
+	missingBefore, err := store.CountMissingProfitEvents(ctx)
+	if err != nil {
+		t.Fatalf("CountMissingProfitEvents(before) error = %v", err)
+	}
+	if missingBefore != 0 {
+		t.Fatalf("expected 0 repairable rows before log update, got %d", missingBefore)
+	}
+
+	// Change selling price later (historical event must keep original $2/$12 price!)
+	if _, err := store.SaveProfitSettings(ctx, &ProfitSettings{
+		SellInputPer1MUSD:  99,
+		SellOutputPer1MUSD: 99,
+		Timezone:           "Asia/Shanghai",
+	}); err != nil {
+		t.Fatalf("SaveProfitSettings(later) error = %v", err)
+	}
+
+	// Later log receives cost & tokens
+	if err := store.Update(ctx, entry.ID, map[string]interface{}{
+		"cost":              0.5,
+		"prompt_tokens":     1_000_000,
+		"completion_tokens": 500_000,
+		"total_tokens":      1_500_000,
+	}); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	missingAfterUpdate, err := store.CountMissingProfitEvents(ctx)
+	if err != nil {
+		t.Fatalf("CountMissingProfitEvents(after) error = %v", err)
+	}
+	if missingAfterUpdate != 1 {
+		t.Fatalf("expected 1 stale row detected for repair, got %d", missingAfterUpdate)
+	}
+
+	res, err := store.BackfillProfitEvents(ctx, 10)
+	if err != nil {
+		t.Fatalf("BackfillProfitEvents() error = %v", err)
+	}
+	if res.Processed != 1 || res.Updated != 1 || res.Created != 0 {
+		t.Fatalf("unexpected backfill result: %+v", res)
+	}
+
+	repaired, err := store.FindProfitEvent(ctx, entry.ID)
+	if err != nil {
+		t.Fatalf("FindProfitEvent() error = %v", err)
+	}
+	if repaired.MissingCost || repaired.MissingTokens {
+		t.Fatalf("expected repaired event to clear missing flags: %+v", repaired)
+	}
+	// Revenue must use original frozen $2/$12 price: 1M*2 + 0.5M*12 = 8.0, cost = 0.5, profit = 7.5
+	if !almostEqualFloat(repaired.RevenueUSD, 8.0) || !almostEqualFloat(repaired.CostUSD, 0.5) || !almostEqualFloat(repaired.ProfitUSD, 7.5) {
+		t.Fatalf("expected frozen-price repaired financials (rev=8, cost=0.5, profit=7.5), got rev=%f cost=%f profit=%f", repaired.RevenueUSD, repaired.CostUSD, repaired.ProfitUSD)
+	}
+
+	missingAfterRepair, err := store.CountMissingProfitEvents(ctx)
+	if err != nil {
+		t.Fatalf("CountMissingProfitEvents(post-repair) error = %v", err)
+	}
+	if missingAfterRepair != 0 {
+		t.Fatalf("expected 0 missing/stale rows after repair, got %d", missingAfterRepair)
+	}
+}

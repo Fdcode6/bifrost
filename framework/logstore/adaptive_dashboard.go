@@ -512,8 +512,8 @@ func (s *RDBLogStore) getAdaptiveTargetProfits(ctx context.Context, ruleID strin
 			COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
 			COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
 			COALESCE(SUM(total_tokens), 0) AS total_tokens,
-			COALESCE(SUM(CASE WHEN missing_cost THEN 1 ELSE 0 END), 0) AS missing_cost_count,
-			COALESCE(SUM(CASE WHEN missing_tokens THEN 1 ELSE 0 END), 0) AS missing_tokens_count
+			COALESCE(SUM(CASE WHEN status = 'success' AND missing_cost THEN 1 ELSE 0 END), 0) AS missing_cost_count,
+			COALESCE(SUM(CASE WHEN status = 'success' AND missing_tokens THEN 1 ELSE 0 END), 0) AS missing_tokens_count
 		`).
 		Where("routing_rule_id = ? AND timestamp >= ? AND timestamp <= ?", ruleID, startUTC, endUTC).
 		Group("provider, model, COALESCE(selected_key_id, '')").
