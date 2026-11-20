@@ -13,8 +13,8 @@ V2.2 已于 2026-11-19 上线启用（`adaptive_v22_enabled = true`），并于 
   - 默认首跳超时 `primary_attempt_timeout_ms = 24000`（`24s`；仅 `storeapi-aistudio` 单独设 `22000`，`openlux-aistudio-3` 走默认 `24000`）；
   - 快救单跳上限 `rescue_attempt_timeout_ms = 22000`（`22s`）、慢阈值 `35s`、快通道 `16s`、末跳预留 `14s`、最多 `5` 跳；
   - 实际三跳分配：**首跳 `24s` → 二跳满血快救 `22s` → 末跳一整块兜底 `16s`**（既根治旧版 `35s` 首跳把第 2 跳挤压成 `9s` 的问题，又让前两跳超时后余量 `16s < 17s` 不再触发 `4s + 14s` 废跳拆分）。
-- **`gemini-auto-bif`（问小白 Open WebUI 专用，`model == "gemini-auto-bif"`，2026-11-20 拆分生效）**：
-  - 面向网页端 `stream = true`、多图（最高 5~8 MB）+ 深度思考长首字场景，复用相同的 20 个 L1/L2/L3 目标池（移除 `storeapi-aistudio` 单点 `22s` 限制），并同步规则独立售价（`$2.4 / $13.2` per 1M USD）；
+- **`gemini-auto-bif`（问小白 Open WebUI 专用，`model == "gemini-auto-bif"`，2026-11-20 拆分并精简生效）**：
+  - 面向网页端 `stream = true`、多图（最高 5~8 MB）+ 深度思考长首字场景，L1 精简为经过大盘实测验证的 **5 个高稳主力**（`openlux-vertex-2` 29.4%、`openlux-aistudio-3` 43.2%、`polo-pool-3x` 44.1%、`polo-g3-3x` 44.1%、`bai-60pct` 60.0%，均权 `0.2`，移除 9 个实测成功率 0%~15.8% 的不稳低价节点，避免低流量冷启动白等 65s），保留 L2（4 个）+ L3（2 个）共 **11 个目标**，并同步规则独立售价（`$2.4 / $13.2` per 1M USD）；
   - 总预算 `request_deadline_ms = 180000`（`180s`）、首跳 `primary_attempt_timeout_ms = 65000`（`65s`）、快救 `rescue_attempt_timeout_ms = 55000`（`55s`）、慢阈值 `65s`、快通道 `35s`、快错阈值 `15s`、最多 `6` 跳；
   - 对应全部 20 个上游 Provider 底层 `network_config.default_request_timeout_in_seconds` 已由 `42s` 统一放宽至 **`90s`**（不改变企微 `24s/22s/16s` 硬控，仅解除对 `gemini-auto-bif` 65s/55s 单跳的底层截断）。
 - **热回退方式**：通过管理接口将目标规则的 `health_policy.adaptive_v22_enabled` 改为 `false` 即可秒退回 V2.1；已开始的请求继续使用原快照。
@@ -101,6 +101,7 @@ V2.2 已于 2026-11-19 上线启用（`adaptive_v22_enabled = true`），并于 
   - `/root/bifrost-deploy/backups/before-timeout-tune-20261120/`
   - `/root/bifrost-deploy/backups/before-split-gemini-auto-bif-20261120/`
   - `/root/bifrost-deploy/backups/before-provider-timeout-90s-20261120/`
+  - `/root/bifrost-deploy/backups/before-trim-gemini-auto-bif-20261120/`
 - **若需仅回滚路由（保留新版引擎）**：通过 Admin API 将对应备份目录中的 `gemini-auto` 规则写回即可热生效。
 - **若需整包回滚旧版镜像**：在服务器执行 `docker tag <目标镜像标签> crpi-1nlet4g61989v2tx.cn-shenzhen.personal.cr.aliyuncs.com/fdcode/bifrost:latest && cd /root/bifrost-deploy && docker compose up -d --force-recreate bifrost`。
 
@@ -124,5 +125,5 @@ V2.2 已于 2026-11-19 上线启用（`adaptive_v22_enabled = true`），并于 
    - 发现原 `58s` 预算 + `35s` 首跳 + `14s` 末跳预留会把第 2 跳压缩至 `9s` 误杀正常快枪手，先热更新为 `62s / 24s / 20s` 后又进一步发现余量 `18s ≥ 17s` 会拆出 `4s` 废跳，最终调优为 **`request_deadline_ms = 62000`、`primary_attempt_timeout_ms = 24000`、`rescue_attempt_timeout_ms = 22000`**（形成零浪费的 `24s + 22s + 16s` 满血三跳窗口）。
 4. **拆分问小白 `gemini-auto-bif` 规则、解除 Provider `42s` 上限与 V2.2 流式修复（2026-11-20）**
    - **根因排查**：问小白 Open WebUI（`stream=true`，多图 5~8 MB + 深度思考首字 20~50s）原与企微短请求共用 `gemini-auto` 的 `24s/22s/16s` 策略，且 20 个 Provider 底层 `default_request_timeout_in_seconds = 42s` 同样会提前掐断多图长思考，频繁触发 `stream establishment deadline exceeded`；
-   - **线上配置调整**：零中断拆出独立规则 **`gemini-auto-bif`**（`180s / 65s / 55s`，`slow_threshold_ms=65000`，`fast_channel_threshold_ms=35000`，`max_fallback_attempts=6`，同步规则独立售价 `$2.4 / $13.2`），并将 20 个 Provider 底层超时统一热更新至 **`90s`**；同时配合在问小白 Open WebUI 后台开启全局图片压缩上限 `1024 × 1024`（18 图请求体从 `7.41 MiB` 压降至 `3.75 MiB`，详见 `open-webui` 仓库对应运维记录）；
+   - **线上配置调整**：零中断拆出独立规则 **`gemini-auto-bif`**（`180s / 65s / 55s`，`slow_threshold_ms=65000`，`fast_channel_threshold_ms=35000`，`max_fallback_attempts=6`，同步规则独立售价 `$2.4 / $13.2`），随后按当日 2,260+ 次真实单跳统计将 `gemini-auto-bif` 的 L1 精简为 **5 个高稳主力**（`openlux-vertex-2` / `openlux-aistudio-3` / `polo-pool-3x` / `polo-g3-3x` / `bai-60pct`，连同 L2/L3 共 11 个目标，消除低流量冷启动 65s 试错等待；企微 `gemini-auto` 20 个全量目标保持不变），并将 20 个 Provider 底层超时统一热更新至 **`90s`**；同时配合在问小白 Open WebUI 后台开启全局图片压缩上限 `1024 × 1024`（18 图请求体从 `7.41 MiB` 压降至 `3.75 MiB`，详见 `open-webui` 仓库 `docs/2026-11-20-ask-xiaobai-image-compression-and-stream-timeout-runbook.md`）；
    - **代码修复并上线（`bifrost:v22-stream-fix-20261120`）**：① 观察席探针超时改为随规则首跳/快救预算自适应（不再硬编码 `22s`）；② 本地网关鉴权/策略拒绝（如 `401 virtual_key_required`）置拒绝标记、禁 fallback 并在 `ClassifyOutcome` 中归为 `OutcomeIgnore`，避免误把健康上游打入 `fatal_channel`；③ V2.2 流式提交后若上游中途断流（`interrupted=true` 且非客户端取消），自动回调 `hint.Observe` 记入 `hard_fail` 扣减渠道信誉。线上重放 18 图（7.79 MB）原始异常请求 `117bed68` 已完整生成 4,869 字（`finish=stop`）。
