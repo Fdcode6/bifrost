@@ -4,13 +4,18 @@
 
 ---
 
-## V2.2 发布和回退
+## V2.2 发布、超时调优与回退
 
-`gemini-auto` 与 `gemini-auto-bif` 共用一条分组规则。V2.2 在本地实现，旧规则缺省关闭。发布时先备份规则，核实分组路由和自适应排名已启用，再为 StoreAPI AI Studio 与 OpenLux Aistudio-3 分别设置目标字段 `primary_attempt_timeout_ms=22000` 与 `28000`。保留规则的 35 秒首跳、20 秒救援上限、58 秒总预算及最多五跳。
+`gemini-auto` 与 `gemini-auto-bif` 共用一条分组规则。V2.2 已于 2026-11-19 上线启用（`adaptive_v22_enabled = true`），并于 **2026-11-20** 结合早盘真实流量完成了超时配比热调优：
 
-通过管理接口将完整 `health_policy` 中的 `adaptive_v22_enabled` 更新为 `true`，两个别名的新根请求即使用新策略。恢复时在同一规则把该字段改为 `false`，回读配置并核对各实例下一笔请求。已开始的请求继续使用原快照。
+- **当前线上超时配比（2026-11-20 生效）**：
+  - 总预算 `request_deadline_ms = 62000`（`62s`，对齐企微助手 `70s` 外层超时留足 `8s` 缓冲）；
+  - 默认首跳超时 `primary_attempt_timeout_ms = 24000`（`24s`；仅 `storeapi-aistudio` 单独设 `22000`，`openlux-aistudio-3` 走默认 `24000`）；
+  - 快救单跳上限 `rescue_attempt_timeout_ms = 20000`（`20s`）、末跳预留 `14s`、最多 `5` 跳；
+  - 实际三跳分配：**首跳 `24s` → 二跳满血快救 `20s` → 末跳充裕兜底 `18s`**（根治旧版 `35s` 首跳把第 2 跳挤压成 `9s` 导致健康快枪手被提前掐死的问题）。
+- **热回退方式**：通过管理接口将 `health_policy.adaptive_v22_enabled` 改为 `false` 即可秒退回 V2.1；已开始的请求继续使用原快照。
 
-按本规则的 15 秒阈值，首跳快速失败且预算充足时，优先顺延到健康主力，沿用目标的单跳时限。达到阈值、探针失败或已只够最后一跳时，按救援排名选当前可用目标。多跳时为末跳预留 14 秒；剩余 3 至不足 17 秒时，把余量给排名最高的合格候选。整轮仍受 58 秒和五次尝试限制。
+按本规则的 15 秒阈值，首跳快速失败且预算充足时，优先顺延到健康主力，沿用目标的单跳时限。达到阈值、探针失败或已只够最后一跳时，按救援排名选当前可用目标。多跳时为末跳预留 14 秒；剩余 3 至不足 17 秒时，把余量给排名最高的合格候选。整轮受 62 秒和五次尝试限制。
 
 日志按 `adaptive-v22` 和根请求 ID 关联每跳。网关派发前排队到期记作 `local_queue_timeout`，耗时计入总预算，上游健康统计排除该次。普通缓冲响应复用 Provider 的连接池，取消时关闭本次占用的连接。流式另有 `stream_end`，记录首个有效输出和提交后的中断。生产验收按业务记录核对按时成功、第二轮挽回、最终成功及真实扣费。
 
@@ -41,13 +46,15 @@
 1. **核心原则：一个价格分组 = 一个独立单分组 Provider + 独立 Key**
    - 彻底告别过去“一个中转站 Key 混绑多个分组（实际落到高价组却按低价记账）”的黑盒问题。
    - 所有新 Key 均关闭中转站侧的 `auto` / 智能路由，仅绑定单一目标分组，把选路权和真实单价统计完全收归 Bifrost。
-2. **线上 `gemini-auto` 路由规则（4 家平台、21 个已验证支持裸 3.1 Pro 的单分组档位）**
+2. **线上 `gemini-auto` 路由规则（4 家平台、20 个在用单分组档位，2026-11-20 已移除 `bai-10pct`）**
    - 统一换算口径：官方基准 `gemini-3.1-pro` / `gemini-3.1-pro-preview` 为 `$2.00 / $12.00` per 1M（缓存读 `$0.20 / 1M`），人民币充值平台按固定汇率 `6.8` 折算。
-   - **Tier 1 · 极低价冲锋（2% ~ 15%）**：`storeapi-aistudio` (2.21%)、`bai-10pct` (10.0%)、`polo-g1-1x` (14.71%)、`polo-anti-1x` (14.71%)
-   - **Tier 2 · 中低价性价比（19% ~ 30%）**：`openlux-vertex-1` (19.6%)、`openlux-aistudio-2` (25.94%)、`openlux-vertex-2` (29.4%)、`polo-g2-2x` (29.41%)、`polo-relay-2x` (29.41%)
-   - **Tier 3 · 中高价主力（40% ~ 50%）**：`bai-40pct` (40.0%)、`openlux-aistudio-3` (43.24%)、`polo-g3-3x` (44.12%)、`polo-vertex-3x` (44.12%)、`polo-pool-3x` (44.12%)
-   - **Tier 4 · 高稳保底（60% ~ 100%）**：`bai-60pct` (60.0%)、`bai-70pct` (70.0%)、`polo-svip-5.5x` (80.88%)、`openlux-vertex-3` (88.2%)、`openlux-aistudio-4` (93.68%)、`bai-100pct` (100.0%)、`polo-svip-6.8x` (100.0%)
-   - 已停用并移出 `NightRouter`；OpenLux 不含 `3.1-pro` 的 6 个非 Pro 分组令牌及 PoloAPI 无可用渠道的 3 个分组令牌均已在对应后台清理，仅保留 StoreAPI `Gemini反重力渠道` 在本地台账备后续复测。
+   - **L1 赚钱主力池（14 个，占官价 `2.21% ~ 60.0%`）**：
+     - 极低价档（`2.2% ~ 15%`）：`storeapi-aistudio` (2.21%, 限 `22s`)、`polo-g1-1x` (14.71%)、`polo-anti-1x` (14.71%)
+     - 中低价档（`19% ~ 30%`）：`openlux-vertex-1` (19.6%)、`openlux-aistudio-2` (25.94%)、`openlux-vertex-2` (29.4%)、`polo-g2-2x` (29.41%)、`polo-relay-2x` (29.41%)
+     - 中高价主力档（`40% ~ 60%`）：`bai-40pct` (40.0%)、`openlux-aistudio-3` (43.24%)、`polo-g3-3x` (44.12%)、`polo-vertex-3x` (44.12%)、`polo-pool-3x` (44.12%)、`bai-60pct` (60.0%)
+   - **L2 薄利后备池（4 个，占官价 `70.0% ~ 93.68%`，`fallback_only = true`）**：`bai-70pct` (70.0%)、`polo-svip-5.5x` (80.88%)、`openlux-vertex-3` (88.2%)、`openlux-aistudio-4` (93.68%)
+   - **L3 终极救命底牌（2 个，占官价 `100.0%`，`last_resort = true`）**：`bai-100pct` (100.0%)、`polo-svip-6.8x` (100.0%)
+   - 已停用并移出 `NightRouter` 与 `bai-10pct`（2026-11-20 因 0/30 持续 503 彻底删除）；OpenLux 非 Pro 分组（6 个）及 PoloAPI 无效分组（3 个）均已在对应后台清理，仅保留 StoreAPI `Gemini反重力渠道` 在本地台账备后续复测。
 3. **上线验证结果**
    - 容器健康检查 `200 ok`，全量停用无参考价值的 1-token 短 `"ping"` 主动探测，改为真实请求自适应信誉追踪；
    - 端到端 `gemini-auto` 实测与真实业务流量均正常通过，成本计算与 `pricing_overrides` 核对精确到小数点后 7 位。
@@ -80,13 +87,32 @@
 - **StoreAPI（保留 1 个待复测）**：仅剩 `Gemini反重力渠道` 保留在本地 git 排除的台账里；**切勿未经单条测试就直接塞进线上路由**，日后复测确认恢复支持裸模型后再按上面 3 步接入即可。
 
 ### 4. 备份与紧急回滚方式
-- 本次上线前已完整备份：
-  - 旧镜像标签：`bifrost:rollback-20261119`
-  - 全库与配置目录：`/root/bifrost-deploy/backups/pre-smart-routing-20261119/`
-  - 原有旧 Provider（`云雾API`、`poloapi`、`poloapi_vip`、`B.AI`、`B.AI-6fold`、`B.AI-7fold`、`StoreAPI`）均未删除。
-- **若需仅回滚路由（保留新版引擎）**：通过 Admin API 将 `/root/bifrost-deploy/backups/pre-smart-routing-20261119/routing_rules.json` 中 `gemini-auto` 的原 `route_groups` 写回即可热生效。
-- **若需整包回滚旧版镜像**：在服务器执行 `docker tag bifrost:rollback-20261119 crpi-1nlet4g61989v2tx.cn-shenzhen.personal.cr.aliyuncs.com/fdcode/bifrost:latest && cd /root/bifrost-deploy && docker compose up -d --force-recreate bifrost`。
+- 线上保留的关键镜像标签：
+  - 当前线上最新镜像：`bifrost:profit-fix-20261120`（含 V2.2 + 新版自适应经营看板 + Profit 缺失成本与对账自愈修复）
+  - 上一版镜像：`bifrost:adaptive-dashboard-20261119`、`bifrost:smart-routing-v2.2-20261119`、`bifrost:rollback-20261119`
+- 线上保留的配置备份目录：
+  - `/root/bifrost-deploy/backups/pre-smart-routing-20261119/`
+  - `/root/bifrost-deploy/backups/pre-v22-20261119/`
+  - `/root/bifrost-deploy/backups/before-remove-bai10pct-20261120/`
+  - `/root/bifrost-deploy/backups/before-timeout-tune-20261120/`
+- **若需仅回滚路由（保留新版引擎）**：通过 Admin API 将对应备份目录中的 `gemini-auto` 规则写回即可热生效。
+- **若需整包回滚旧版镜像**：在服务器执行 `docker tag <目标镜像标签> crpi-1nlet4g61989v2tx.cn-shenzhen.personal.cr.aliyuncs.com/fdcode/bifrost:latest && cd /root/bifrost-deploy && docker compose up -d --force-recreate bifrost`。
 
 ### 5. 镜像构建与发布提示
-- 线上 `config_store` 与 `logs_store` 均使用 PostgreSQL（不依赖 SQLite/CGO）。若远端服务器公网带宽较小导致容器内 `apk add gcc` 过慢，可在本机交叉编译静态 Linux `amd64` 二进制（含 `ui/out` 静态构建产物），再在远端基于现有运行镜像替换 `/app/main` 与 `/app/config.schema.json`，数秒即可完成镜像更新。
+- 线上 `config_store` 与 `logs_store` 均使用 PostgreSQL（不依赖 SQLite/CGO）。若远端服务器公网带宽较小导致容器内 `apk add gcc` 过慢，可在本机交叉编译静态 Linux `amd64` 二进制（含 `ui/out` 静态构建产物），再在远端基于精简基座镜像 `bifrost:rollback-20261119` 替换 `/app/main` 与 `/app/config.schema.json`，数秒即可完成镜像更新。
 - 涉及密钥、余额导出、账单明细的本地文件（如 `*-relay-keys-and-pricing.md`、`*balance*.json`、`*billing*.json`、`.scratch/`）务必保持在 `.git/info/exclude` 中，提交前必须检查 `git diff --cached`。
+
+---
+
+## 三、2026-11-20 看板升级、利润修复与线上调优记录
+
+1. **全新 Adaptive Routing「智能分流与经营看板」（`/workspace/adaptive-routing`，提交 `0d24de467`）**
+   - 彻底移除旧版短消息主动探活页面入口（后端兼容接口仍保留），整页改为纯只读实时监控 + 经营分析；
+   - 新增聚合接口 `GET /api/governance/adaptive-dashboard`（`10s` 自动轮询实时内存态 + `15s` 窗口统计缓存）；顶栏按根请求口径展示客户最终成功率与端到端分位耗时，下表按 L1 / L2 / L3 分层展示各分组单跳表现、90m 信誉、10m `≤16s` 救援窗口、下一单路由预览及与 Profit 账本 100% 同源的成本/利润/毛利率（默认固定汇率 `6.8` 人民币主显、美金副显）。
+2. **Profit 利润页修复与体验精简（`/workspace/profit`，提交 `d72ac25fe`）**
+   - 修正 `missing_cost_count` 仅统计 `status = 'success'` 的成功单，不再将失败尝试误报为缺失成本；
+   - 扩展后台定时对账自愈范围（同步修复滞后补齐的成本/token 且保持历史售价固化），流式延迟 usage 回写时自动补算成功单成本；
+   - 顶部冗余大横幅收拢为单行轻状态条，删除重复的回填按钮，顶部售价徽章明确区分「默认售价」与「规则独立定价」。
+3. **渠道与超时参数调优（2026-11-20 线上热更新）**
+   - 删除 `bai-10pct`（累计 `0/30` 持续报 `503` 且偶发 32s 超时），`gemini-auto` 精简为 **20 个在用分组**；
+   - 发现原 `58s` 预算 + `35s` 首跳 + `14s` 末跳预留会把第 2 跳压缩至 `9s` 误杀正常快枪手，已热更新为 **`request_deadline_ms = 62000`、`primary_attempt_timeout_ms = 24000`、`rescue_attempt_timeout_ms = 20000`**（形成 `24s + 20s + 18s` 满血三跳窗口）。
