@@ -50,6 +50,7 @@ type LogStore interface {
 	DeleteRoutingRuleProfitSettings(ctx context.Context, routingRuleID string) error
 	FindProfitEvent(ctx context.Context, logID string) (*ProfitEvent, error)
 	UpsertProfitEventFromLog(ctx context.Context, entry *Log) (*ProfitEvent, error)
+	UpsertExternalProfitEvents(ctx context.Context, events []ExternalProfitEventInput) (*ExternalProfitIngestResult, error)
 	GetProfitSummary(ctx context.Context, query ProfitQuery) (*ProfitSummary, error)
 	GetProfitDaily(ctx context.Context, query ProfitQuery) ([]ProfitDailyBucket, error)
 	GetProfitBreakdown(ctx context.Context, query ProfitQuery) ([]ProfitBreakdownRow, error)

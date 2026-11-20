@@ -3,9 +3,12 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
+	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/stretchr/testify/require"
@@ -23,6 +26,12 @@ type mockProfitLogManager struct {
 	summary                  *logstore.ProfitSummary
 	daily                    []logstore.ProfitDailyBucket
 	breakdown                []logstore.ProfitBreakdownRow
+	lastSummaryQuery         logstore.ProfitQuery
+	lastDailyQuery           logstore.ProfitQuery
+	lastBreakdownQuery       logstore.ProfitQuery
+	ingestedEvents           []logstore.ExternalProfitEventInput
+	ingestResult             *logstore.ExternalProfitIngestResult
+	ingestErr                error
 	backfillResult           *logstore.ProfitBackfillResult
 	status                   *logstore.ProfitReconciliationStatus
 	backfillLimit            int
@@ -58,15 +67,29 @@ func (m *mockProfitLogManager) DeleteRoutingRuleProfitSettings(_ context.Context
 }
 
 func (m *mockProfitLogManager) GetProfitSummary(_ context.Context, query logstore.ProfitQuery) (*logstore.ProfitSummary, error) {
+	m.lastSummaryQuery = query
 	return m.summary, nil
 }
 
 func (m *mockProfitLogManager) GetProfitDaily(_ context.Context, query logstore.ProfitQuery) ([]logstore.ProfitDailyBucket, error) {
+	m.lastDailyQuery = query
 	return m.daily, nil
 }
 
 func (m *mockProfitLogManager) GetProfitBreakdown(_ context.Context, query logstore.ProfitQuery) ([]logstore.ProfitBreakdownRow, error) {
+	m.lastBreakdownQuery = query
 	return m.breakdown, nil
+}
+
+func (m *mockProfitLogManager) UpsertExternalProfitEvents(_ context.Context, events []logstore.ExternalProfitEventInput) (*logstore.ExternalProfitIngestResult, error) {
+	m.ingestedEvents = append([]logstore.ExternalProfitEventInput(nil), events...)
+	if m.ingestErr != nil {
+		return nil, m.ingestErr
+	}
+	if m.ingestResult != nil {
+		return m.ingestResult, nil
+	}
+	return &logstore.ExternalProfitIngestResult{Received: len(events), Upserted: len(events)}, nil
 }
 
 func (m *mockProfitLogManager) BackfillProfitEvents(_ context.Context, limit int) (*logstore.ProfitBackfillResult, error) {
@@ -280,4 +303,111 @@ func TestProfitBackfillStopsCostRecalculationWhenRemainingDoesNotShrink(t *testi
 
 	require.Equal(t, fasthttp.StatusOK, backfillCtx.Response.StatusCode(), string(backfillCtx.Response.Body()))
 	require.Equal(t, 2, manager.recalcCalls)
+}
+
+func TestProfitSourceQueryAndExternalIngestHandlers(t *testing.T) {
+	t.Setenv(profitIngestTokenEnvVar, "secret-ingest-token")
+
+	manager := &mockProfitLogManager{
+		summary:   &logstore.ProfitSummary{RevenueUSD: 10, CostUSD: 1, ProfitUSD: 9},
+		daily:     []logstore.ProfitDailyBucket{{BusinessDay: "2026-11-20", RevenueUSD: 10, CostUSD: 1, ProfitUSD: 9}},
+		breakdown: []logstore.ProfitBreakdownRow{{Provider: "volces-ark-direct", Model: "doubao-seed-2-0-mini-260428", RevenueUSD: 10}},
+	}
+	handler := NewLoggingHandler(manager, nil, nil)
+
+	// Valid source filtering query params
+	summaryCtx := &fasthttp.RequestCtx{}
+	summaryCtx.Request.Header.SetMethod("GET")
+	summaryCtx.Request.SetRequestURI("/api/profit/summary?preset=today&source=external")
+	handler.getProfitSummary(summaryCtx)
+	require.Equal(t, fasthttp.StatusOK, summaryCtx.Response.StatusCode(), string(summaryCtx.Response.Body()))
+	require.Equal(t, logstore.ProfitSourceExternal, manager.lastSummaryQuery.Source)
+
+	dailyCtx := &fasthttp.RequestCtx{}
+	dailyCtx.Request.Header.SetMethod("GET")
+	dailyCtx.Request.SetRequestURI("/api/profit/daily?days=30&source=bifrost")
+	handler.getProfitDaily(dailyCtx)
+	require.Equal(t, fasthttp.StatusOK, dailyCtx.Response.StatusCode(), string(dailyCtx.Response.Body()))
+	require.Equal(t, logstore.ProfitSourceBifrost, manager.lastDailyQuery.Source)
+
+	badSourceCtx := &fasthttp.RequestCtx{}
+	badSourceCtx.Request.Header.SetMethod("GET")
+	badSourceCtx.Request.SetRequestURI("/api/profit/breakdown?preset=today&source=unknown")
+	handler.getProfitBreakdown(badSourceCtx)
+	require.Equal(t, fasthttp.StatusBadRequest, badSourceCtx.Response.StatusCode())
+
+	// Direct ingest handler enforces token when BIFROST_PROFIT_INGEST_TOKEN is configured
+	unauthCtx := &fasthttp.RequestCtx{}
+	unauthCtx.Request.Header.SetMethod("POST")
+	unauthCtx.Request.SetRequestURI(profitExternalEventsRoute)
+	unauthCtx.Request.SetBodyString(`{"events":[]}`)
+	handler.ingestExternalProfitEvents(unauthCtx)
+	require.Equal(t, fasthttp.StatusUnauthorized, unauthCtx.Response.StatusCode())
+
+	okCtx := &fasthttp.RequestCtx{}
+	okCtx.Request.Header.SetMethod("POST")
+	okCtx.Request.SetRequestURI(profitExternalEventsRoute)
+	okCtx.Request.Header.Set(profitIngestTokenHeader, "secret-ingest-token")
+	okCtx.Request.SetBodyString(`{"events":[{"event_id":"ext:qiwei:reply:1:0","timestamp":"2026-11-20T10:00:00+08:00","provider":"volces-ark-direct","model":"doubao-seed-2-0-mini-260428","prompt_tokens":1000,"completion_tokens":200,"cost_usd":0.001,"revenue_usd":0.02}]}`)
+	handler.ingestExternalProfitEvents(okCtx)
+	require.Equal(t, fasthttp.StatusOK, okCtx.Response.StatusCode(), string(okCtx.Response.Body()))
+	require.Len(t, manager.ingestedEvents, 1)
+	require.Equal(t, "ext:qiwei:reply:1:0", manager.ingestedEvents[0].EventID)
+
+	// Validation errors map to 400 Bad Request
+	manager.ingestErr = fmt.Errorf("%w: missing ext prefix", logstore.ErrInvalidExternalProfitEvent)
+	badEventCtx := &fasthttp.RequestCtx{}
+	badEventCtx.Request.Header.SetMethod("POST")
+	badEventCtx.Request.SetRequestURI(profitExternalEventsRoute)
+	badEventCtx.Request.Header.Set(profitIngestTokenHeader, "secret-ingest-token")
+	badEventCtx.Request.SetBodyString(`{"events":[{"event_id":"bad-id"}]}`)
+	handler.ingestExternalProfitEvents(badEventCtx)
+	require.Equal(t, fasthttp.StatusBadRequest, badEventCtx.Response.StatusCode())
+}
+
+func TestAuthMiddlewareAllowsProfitIngestTokenOnlyOnExternalEventsRoute(t *testing.T) {
+	t.Setenv(profitIngestTokenEnvVar, "secret-ingest-token")
+
+	am := &AuthMiddleware{}
+	am.authConfig.Store(&configstore.AuthConfig{
+		IsEnabled:     true,
+		AdminUserName: schemas.NewEnvVar("admin"),
+		AdminPassword: schemas.NewEnvVar("hash"),
+	})
+	mw := am.APIMiddleware()
+
+	called := false
+	next := mw(func(ctx *fasthttp.RequestCtx) {
+		called = true
+		ctx.SetStatusCode(fasthttp.StatusOK)
+	})
+
+	// Valid token succeeds on /api/profit/external-events
+	ingestCtx := &fasthttp.RequestCtx{}
+	ingestCtx.Request.Header.SetMethod("POST")
+	ingestCtx.Request.SetRequestURI(profitExternalEventsRoute)
+	ingestCtx.Request.Header.Set(profitIngestTokenHeader, "secret-ingest-token")
+	next(ingestCtx)
+	require.True(t, called)
+	require.Equal(t, fasthttp.StatusOK, ingestCtx.Response.StatusCode())
+
+	// Wrong token is rejected on /api/profit/external-events
+	called = false
+	wrongCtx := &fasthttp.RequestCtx{}
+	wrongCtx.Request.Header.SetMethod("POST")
+	wrongCtx.Request.SetRequestURI(profitExternalEventsRoute)
+	wrongCtx.Request.Header.Set(profitIngestTokenHeader, "wrong-token")
+	next(wrongCtx)
+	require.False(t, called)
+	require.Equal(t, fasthttp.StatusUnauthorized, wrongCtx.Response.StatusCode())
+
+	// Valid ingest token MUST NOT authorize other admin routes
+	called = false
+	otherCtx := &fasthttp.RequestCtx{}
+	otherCtx.Request.Header.SetMethod("GET")
+	otherCtx.Request.SetRequestURI("/api/profit/settings")
+	otherCtx.Request.Header.Set(profitIngestTokenHeader, "secret-ingest-token")
+	next(otherCtx)
+	require.False(t, called)
+	require.Equal(t, fasthttp.StatusUnauthorized, otherCtx.Response.StatusCode())
 }

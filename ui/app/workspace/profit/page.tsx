@@ -38,7 +38,7 @@ import {
 	useUpdateRoutingRuleProfitSettingsMutation,
 	useUpdateProfitSettingsMutation,
 } from "@/lib/store";
-import type { ProfitDailyBucket, ProfitPreset, ProfitSummary } from "@/lib/types/profit";
+import type { ProfitDailyBucket, ProfitPreset, ProfitSource, ProfitSummary } from "@/lib/types/profit";
 import { cn } from "@/lib/utils";
 
 import {
@@ -49,9 +49,11 @@ import {
 	formatMoney,
 	getDisplayCurrencyLabel,
 	getProfitPresetLabel,
+	getProfitSourceLabel,
 } from "./profitFormatting";
 
 const PRESETS: ProfitPreset[] = ["today", "yesterday", "7d", "all"];
+const SOURCES: ProfitSource[] = ["all", "bifrost", "external"];
 const DISPLAY_CURRENCIES: DisplayCurrency[] = ["CNY", "USD"];
 
 const emptySummary: ProfitSummary = {
@@ -187,6 +189,7 @@ function formatNextRun(value?: string | null) {
 
 export default function ProfitPage() {
 	const [preset, setPreset] = useState<ProfitPreset>("today");
+	const [source, setSource] = useState<ProfitSource>("all");
 	const [displayCurrency, setDisplayCurrency] = useState<DisplayCurrency>("CNY");
 	const [inputPrice, setInputPrice] = useState("2");
 	const [outputPrice, setOutputPrice] = useState("12");
@@ -207,21 +210,21 @@ export default function ProfitPage() {
 		isLoading: isSummaryLoading,
 		isFetching: isSummaryFetching,
 		refetch: refetchSummary,
-	} = useGetProfitSummaryQuery(preset);
+	} = useGetProfitSummaryQuery({ preset, source });
 	const {
 		data: dailyResponse,
 		error: dailyError,
 		isLoading: isDailyLoading,
 		isFetching: isDailyFetching,
 		refetch: refetchDaily,
-	} = useGetProfitDailyQuery(30);
+	} = useGetProfitDailyQuery({ days: 30, source });
 	const {
 		data: breakdownResponse,
 		error: breakdownError,
 		isLoading: isBreakdownLoading,
 		isFetching: isBreakdownFetching,
 		refetch: refetchBreakdown,
-	} = useGetProfitBreakdownQuery(preset);
+	} = useGetProfitBreakdownQuery({ preset, source });
 	const {
 		data: routingRulesResponse,
 		error: routingRulesError,
@@ -445,12 +448,28 @@ export default function ProfitPage() {
 				</Alert>
 			) : null}
 
-			<div className="flex flex-wrap gap-2">
-				{PRESETS.map((item) => (
-					<Button key={item} variant={preset === item ? "default" : "outline"} size="sm" onClick={() => setPreset(item)}>
-						{getProfitPresetLabel(item)}
-					</Button>
-				))}
+			<div className="flex flex-wrap items-center justify-between gap-3">
+				<div className="flex flex-wrap gap-2">
+					{PRESETS.map((item) => (
+						<Button key={item} variant={preset === item ? "default" : "outline"} size="sm" onClick={() => setPreset(item)}>
+							{getProfitPresetLabel(item)}
+						</Button>
+					))}
+				</div>
+				<div className="bg-background flex flex-wrap items-center gap-1 rounded-md border p-0.5" aria-label="利润来源筛选">
+					{SOURCES.map((item) => (
+						<Button
+							key={item}
+							type="button"
+							variant={source === item ? "default" : "ghost"}
+							size="sm"
+							onClick={() => setSource(item)}
+							dataTestId={`profit-source-${item}`}
+						>
+							{getProfitSourceLabel(item)}
+						</Button>
+					))}
+				</div>
 			</div>
 
 			{/* Compact Ledger Sync Status Bar */}

@@ -4,6 +4,7 @@ import type {
 	ProfitDailyResponse,
 	ProfitPreset,
 	ProfitReconciliationStatus,
+	ProfitSource,
 	RoutingRuleProfitSettingsResponse,
 	ProfitSettings,
 	ProfitSummaryResponse,
@@ -50,24 +51,24 @@ export const profitApi = baseApi.injectEndpoints({
 			}),
 			invalidatesTags: ["Profit"],
 		}),
-		getProfitSummary: builder.query<ProfitSummaryResponse, ProfitPreset>({
-			query: (preset) => ({
+		getProfitSummary: builder.query<ProfitSummaryResponse, { preset: ProfitPreset; source?: ProfitSource }>({
+			query: ({ preset, source }) => ({
 				url: "/profit/summary",
-				params: { preset },
+				params: source && source !== "all" ? { preset, source } : { preset },
 			}),
 			providesTags: ["Profit"],
 		}),
-		getProfitDaily: builder.query<ProfitDailyResponse, number>({
-			query: (days) => ({
+		getProfitDaily: builder.query<ProfitDailyResponse, { days: number; source?: ProfitSource }>({
+			query: ({ days, source }) => ({
 				url: "/profit/daily",
-				params: { days },
+				params: source && source !== "all" ? { days, source } : { days },
 			}),
 			providesTags: ["Profit"],
 		}),
-		getProfitBreakdown: builder.query<ProfitBreakdownResponse, ProfitPreset>({
-			query: (preset) => ({
+		getProfitBreakdown: builder.query<ProfitBreakdownResponse, { preset: ProfitPreset; source?: ProfitSource }>({
+			query: ({ preset, source }) => ({
 				url: "/profit/breakdown",
-				params: { preset },
+				params: source && source !== "all" ? { preset, source } : { preset },
 			}),
 			providesTags: ["Profit"],
 		}),

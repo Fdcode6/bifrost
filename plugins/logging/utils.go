@@ -101,6 +101,7 @@ type LogManager interface {
 	GetProfitSummary(ctx context.Context, query logstore.ProfitQuery) (*logstore.ProfitSummary, error)
 	GetProfitDaily(ctx context.Context, query logstore.ProfitQuery) ([]logstore.ProfitDailyBucket, error)
 	GetProfitBreakdown(ctx context.Context, query logstore.ProfitQuery) ([]logstore.ProfitBreakdownRow, error)
+	UpsertExternalProfitEvents(ctx context.Context, events []logstore.ExternalProfitEventInput) (*logstore.ExternalProfitIngestResult, error)
 	BackfillProfitEvents(ctx context.Context, limit int) (*logstore.ProfitBackfillResult, error)
 	GetProfitReconciliationStatus(ctx context.Context) (*logstore.ProfitReconciliationStatus, error)
 
@@ -346,6 +347,13 @@ func (p *PluginLogManager) GetProfitBreakdown(ctx context.Context, query logstor
 		return nil, fmt.Errorf("log store not initialized")
 	}
 	return p.plugin.store.GetProfitBreakdown(ctx, query)
+}
+
+func (p *PluginLogManager) UpsertExternalProfitEvents(ctx context.Context, events []logstore.ExternalProfitEventInput) (*logstore.ExternalProfitIngestResult, error) {
+	if p.plugin == nil || p.plugin.store == nil {
+		return nil, fmt.Errorf("log store not initialized")
+	}
+	return p.plugin.store.UpsertExternalProfitEvents(ctx, events)
 }
 
 func (p *PluginLogManager) BackfillProfitEvents(ctx context.Context, limit int) (*logstore.ProfitBackfillResult, error) {

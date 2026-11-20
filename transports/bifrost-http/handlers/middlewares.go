@@ -3,10 +3,12 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"crypto/subtle"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"runtime/debug"
 	"slices"
 	"strings"
@@ -621,6 +623,24 @@ func (m *AuthMiddleware) APIMiddleware() schemas.BifrostHTTPMiddleware {
 	})
 }
 
+const (
+	profitExternalEventsRoute            = "/api/profit/external-events"
+	profitIngestTokenHeader              = "X-Profit-Ingest-Token"
+	profitIngestTokenEnvVar              = "BIFROST_PROFIT_INGEST_TOKEN"
+	profitExternalAuthorizedContextKey   = "bifrost_profit_external_authorized"
+)
+
+func validateProfitIngestToken(ctx *fasthttp.RequestCtx) (configured bool, provided bool, valid bool) {
+	expected := strings.TrimSpace(os.Getenv(profitIngestTokenEnvVar))
+	configured = expected != ""
+	providedToken := strings.TrimSpace(string(ctx.Request.Header.Peek(profitIngestTokenHeader)))
+	provided = providedToken != ""
+	if configured && provided && subtle.ConstantTimeCompare([]byte(providedToken), []byte(expected)) == 1 {
+		valid = true
+	}
+	return configured, provided, valid
+}
+
 // middleware is the core authentication middleware that checks if the request should be authenticated or not.
 func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, string) bool) schemas.BifrostHTTPMiddleware {
 	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
@@ -637,6 +657,18 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 			if shouldSkip(authConfig, url) {
 				next(ctx)
 				return
+			}
+			if string(ctx.Path()) == profitExternalEventsRoute {
+				_, provided, valid := validateProfitIngestToken(ctx)
+				if valid {
+					ctx.SetUserValue(profitExternalAuthorizedContextKey, true)
+					next(ctx)
+					return
+				}
+				if provided {
+					SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized")
+					return
+				}
 			}
 			// If inference is disabled, we skip authorization
 			// Get the authorization header
@@ -689,6 +721,7 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 				cookieToken := string(ctx.Request.Header.Cookie("token"))
 				if cookieToken != "" && validateSession(ctx, m.store, cookieToken) {
 					ctx.SetUserValue(schemas.BifrostContextKeySessionToken, cookieToken)
+					ctx.SetUserValue(profitExternalAuthorizedContextKey, true)
 					next(ctx)
 					return
 				}
@@ -734,6 +767,7 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 					return
 				}
 				// Continue with the next handler
+				ctx.SetUserValue(profitExternalAuthorizedContextKey, true)
 				next(ctx)
 				return
 			}
@@ -772,11 +806,13 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 						return
 					}
 					// Continue with the next handler
+					ctx.SetUserValue(profitExternalAuthorizedContextKey, true)
 					next(ctx)
 					return
 				}
 				// setting up session in the request
 				ctx.SetUserValue(schemas.BifrostContextKeySessionToken, token)
+				ctx.SetUserValue(profitExternalAuthorizedContextKey, true)
 				// Continue with the next handler
 				next(ctx)
 				return

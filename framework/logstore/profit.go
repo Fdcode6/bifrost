@@ -2,13 +2,18 @@ package logstore
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
+
+// ErrInvalidExternalProfitEvent indicates a client-side validation failure when ingesting external profit events.
+var ErrInvalidExternalProfitEvent = errors.New("invalid external profit event")
 
 const (
 	defaultProfitSettingsID           = "default"
@@ -17,6 +22,11 @@ const (
 	defaultSellInputPer1MUSD          = 2
 	defaultSellOutputPer1MUSD         = 12
 	defaultProfitBackfillPageSize     = 500
+	ExternalProfitLogIDPrefix         = "ext:"
+	maxExternalProfitEventsBatch      = 1000
+	ProfitSourceAll                   = "all"
+	ProfitSourceBifrost               = "bifrost"
+	ProfitSourceExternal              = "external"
 )
 
 // ProfitSettings stores the current selling price used for future profit events.
@@ -69,10 +79,55 @@ type ProfitEvent struct {
 	UpdatedAt          time.Time `gorm:"not null" json:"updated_at"`
 }
 
-// ProfitQuery defines an inclusive business-day range.
+// ProfitQuery defines an inclusive business-day range and optional source filter.
 type ProfitQuery struct {
 	StartDay string `json:"start_day,omitempty"`
 	EndDay   string `json:"end_day,omitempty"`
+	Source   string `json:"source,omitempty"`
+}
+
+// ExternalProfitEventInput represents one externally reported profit ledger entry.
+// EventID must start with ExternalProfitLogIDPrefix ("ext:") to remain strictly isolated from native Bifrost logs.
+type ExternalProfitEventInput struct {
+	EventID            string    `json:"event_id"`
+	Timestamp          time.Time `json:"timestamp"`
+	Provider           string    `json:"provider"`
+	Model              string    `json:"model"`
+	SelectedKeyID      string    `json:"selected_key_id,omitempty"`
+	SelectedKeyName    string    `json:"selected_key_name,omitempty"`
+	VirtualKeyID       *string   `json:"virtual_key_id,omitempty"`
+	VirtualKeyName     *string   `json:"virtual_key_name,omitempty"`
+	RoutingRuleID      *string   `json:"routing_rule_id,omitempty"`
+	RoutingRuleName    *string   `json:"routing_rule_name,omitempty"`
+	Status             string    `json:"status,omitempty"`
+	PromptTokens       int       `json:"prompt_tokens"`
+	CompletionTokens   int       `json:"completion_tokens"`
+	TotalTokens        int       `json:"total_tokens,omitempty"`
+	CachedReadTokens   int       `json:"cached_read_tokens,omitempty"`
+	CostUSD            float64   `json:"cost_usd"`
+	RevenueUSD         float64   `json:"revenue_usd"`
+	SellInputPer1MUSD  float64   `json:"sell_input_per_1m_usd,omitempty"`
+	SellOutputPer1MUSD float64   `json:"sell_output_per_1m_usd,omitempty"`
+}
+
+// ExternalProfitIngestResult reports the outcome of one external profit batch upsert.
+type ExternalProfitIngestResult struct {
+	Received int `json:"received"`
+	Upserted int `json:"upserted"`
+}
+
+// NormalizeProfitSource validates and normalizes a profit source filter.
+func NormalizeProfitSource(source string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(source)) {
+	case "", ProfitSourceAll:
+		return ProfitSourceAll, nil
+	case ProfitSourceBifrost:
+		return ProfitSourceBifrost, nil
+	case ProfitSourceExternal:
+		return ProfitSourceExternal, nil
+	default:
+		return "", fmt.Errorf("invalid profit source %q: must be all, bifrost, or external", source)
+	}
 }
 
 // ProfitSummary is the aggregate result for a profit query.
@@ -439,12 +494,177 @@ func profitEventFromLog(entry *Log, settings *ProfitSettings) (*ProfitEvent, err
 	}, nil
 }
 
+func trimOptionalStringPtr(value *string) *string {
+	if value == nil {
+		return nil
+	}
+	trimmed := strings.TrimSpace(*value)
+	if trimmed == "" {
+		return nil
+	}
+	return &trimmed
+}
+
+func validateNonNegativeFiniteFloat(name string, value float64) error {
+	if math.IsNaN(value) || math.IsInf(value, 0) || value < 0 {
+		return fmt.Errorf("%w: %s must be a non-negative finite number", ErrInvalidExternalProfitEvent, name)
+	}
+	return nil
+}
+
+// UpsertExternalProfitEvents validates and idempotently upserts externally reported profit events.
+func (s *RDBLogStore) UpsertExternalProfitEvents(ctx context.Context, inputs []ExternalProfitEventInput) (*ExternalProfitIngestResult, error) {
+	if len(inputs) == 0 {
+		return &ExternalProfitIngestResult{Received: 0, Upserted: 0}, nil
+	}
+	if len(inputs) > maxExternalProfitEventsBatch {
+		return nil, fmt.Errorf("%w: external profit batch size %d exceeds maximum %d", ErrInvalidExternalProfitEvent, len(inputs), maxExternalProfitEventsBatch)
+	}
+
+	timezone := defaultProfitTimezone
+	if settings, err := s.GetProfitSettings(ctx); err == nil && settings != nil && strings.TrimSpace(settings.Timezone) != "" {
+		timezone = settings.Timezone
+	}
+	loc, err := time.LoadLocation(timezone)
+	if err != nil {
+		return nil, fmt.Errorf("invalid profit timezone %q: %w", timezone, err)
+	}
+
+	dedupIndex := make(map[string]int, len(inputs))
+	events := make([]ProfitEvent, 0, len(inputs))
+
+	for i, input := range inputs {
+		eventID := strings.TrimSpace(input.EventID)
+		if !strings.HasPrefix(eventID, ExternalProfitLogIDPrefix) || len(eventID) <= len(ExternalProfitLogIDPrefix) {
+			return nil, fmt.Errorf("%w: events[%d].event_id must start with %q and include a non-empty suffix", ErrInvalidExternalProfitEvent, i, ExternalProfitLogIDPrefix)
+		}
+		if len(eventID) > 255 || strings.ContainsAny(eventID, " \t\r\n") {
+			return nil, fmt.Errorf("%w: events[%d].event_id must be at most 255 characters with no whitespace", ErrInvalidExternalProfitEvent, i)
+		}
+		if input.Timestamp.IsZero() {
+			return nil, fmt.Errorf("%w: events[%d].timestamp is required", ErrInvalidExternalProfitEvent, i)
+		}
+		provider := strings.TrimSpace(input.Provider)
+		if provider == "" {
+			return nil, fmt.Errorf("%w: events[%d].provider is required", ErrInvalidExternalProfitEvent, i)
+		}
+		model := strings.TrimSpace(input.Model)
+		if model == "" {
+			return nil, fmt.Errorf("%w: events[%d].model is required", ErrInvalidExternalProfitEvent, i)
+		}
+		status := strings.ToLower(strings.TrimSpace(input.Status))
+		if status == "" {
+			status = "success"
+		}
+		if status != "success" && status != "error" {
+			return nil, fmt.Errorf("%w: events[%d].status must be success or error", ErrInvalidExternalProfitEvent, i)
+		}
+		if input.PromptTokens < 0 || input.CompletionTokens < 0 || input.TotalTokens < 0 || input.CachedReadTokens < 0 {
+			return nil, fmt.Errorf("%w: events[%d] token counts cannot be negative", ErrInvalidExternalProfitEvent, i)
+		}
+		if err := validateNonNegativeFiniteFloat(fmt.Sprintf("events[%d].cost_usd", i), input.CostUSD); err != nil {
+			return nil, err
+		}
+		if err := validateNonNegativeFiniteFloat(fmt.Sprintf("events[%d].revenue_usd", i), input.RevenueUSD); err != nil {
+			return nil, err
+		}
+		if err := validateNonNegativeFiniteFloat(fmt.Sprintf("events[%d].sell_input_per_1m_usd", i), input.SellInputPer1MUSD); err != nil {
+			return nil, err
+		}
+		if err := validateNonNegativeFiniteFloat(fmt.Sprintf("events[%d].sell_output_per_1m_usd", i), input.SellOutputPer1MUSD); err != nil {
+			return nil, err
+		}
+
+		totalTokens := input.TotalTokens
+		if totalTokens == 0 {
+			totalTokens = input.PromptTokens + input.CompletionTokens
+		}
+		missingTokens := status == "success" && input.PromptTokens == 0 && input.CompletionTokens == 0 && totalTokens == 0
+
+		event := ProfitEvent{
+			LogID:              eventID,
+			Timestamp:          input.Timestamp,
+			BusinessDay:        input.Timestamp.In(loc).Format("2006-01-02"),
+			Provider:           provider,
+			Model:              model,
+			SelectedKeyID:      strings.TrimSpace(input.SelectedKeyID),
+			SelectedKeyName:    strings.TrimSpace(input.SelectedKeyName),
+			VirtualKeyID:       trimOptionalStringPtr(input.VirtualKeyID),
+			VirtualKeyName:     trimOptionalStringPtr(input.VirtualKeyName),
+			RoutingRuleID:      trimOptionalStringPtr(input.RoutingRuleID),
+			RoutingRuleName:    trimOptionalStringPtr(input.RoutingRuleName),
+			Status:             status,
+			PromptTokens:       input.PromptTokens,
+			CompletionTokens:   input.CompletionTokens,
+			TotalTokens:        totalTokens,
+			CachedReadTokens:   input.CachedReadTokens,
+			CostUSD:            input.CostUSD,
+			RevenueUSD:         input.RevenueUSD,
+			ProfitUSD:          input.RevenueUSD - input.CostUSD,
+			SellInputPer1MUSD:  input.SellInputPer1MUSD,
+			SellOutputPer1MUSD: input.SellOutputPer1MUSD,
+			MissingCost:        false,
+			MissingTokens:      missingTokens,
+		}
+
+		if idx, exists := dedupIndex[eventID]; exists {
+			events[idx] = event
+		} else {
+			dedupIndex[eventID] = len(events)
+			events = append(events, event)
+		}
+	}
+
+	err = s.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "log_id"}},
+		DoUpdates: clause.AssignmentColumns([]string{
+			"timestamp",
+			"business_day",
+			"provider",
+			"model",
+			"selected_key_id",
+			"selected_key_name",
+			"virtual_key_id",
+			"virtual_key_name",
+			"routing_rule_id",
+			"routing_rule_name",
+			"status",
+			"prompt_tokens",
+			"completion_tokens",
+			"total_tokens",
+			"cached_read_tokens",
+			"cost_usd",
+			"revenue_usd",
+			"profit_usd",
+			"sell_input_per_1m_usd",
+			"sell_output_per_1m_usd",
+			"missing_cost",
+			"missing_tokens",
+			"updated_at",
+		}),
+	}).CreateInBatches(&events, 200).Error
+	if err != nil {
+		return nil, err
+	}
+
+	return &ExternalProfitIngestResult{
+		Received: len(inputs),
+		Upserted: len(events),
+	}, nil
+}
+
 func applyProfitQuery(db *gorm.DB, query ProfitQuery) *gorm.DB {
 	if query.StartDay != "" {
 		db = db.Where("business_day >= ?", query.StartDay)
 	}
 	if query.EndDay != "" {
 		db = db.Where("business_day <= ?", query.EndDay)
+	}
+	switch strings.ToLower(strings.TrimSpace(query.Source)) {
+	case ProfitSourceExternal:
+		db = db.Where("log_id LIKE ?", ExternalProfitLogIDPrefix+"%")
+	case ProfitSourceBifrost:
+		db = db.Where("log_id NOT LIKE ?", ExternalProfitLogIDPrefix+"%")
 	}
 	return db
 }

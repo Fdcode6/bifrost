@@ -2,6 +2,7 @@ package logstore
 
 import (
 	"context"
+	"errors"
 	"math"
 	"testing"
 	"time"
@@ -942,5 +943,187 @@ func TestBackfillProfitEventsRepairsStaleMissingCostAndTokensWhileFreezingPrice(
 	}
 	if missingAfterRepair != 0 {
 		t.Fatalf("expected 0 missing/stale rows after repair, got %d", missingAfterRepair)
+	}
+}
+
+func TestUpsertExternalProfitEventsIdempotentAndSourceFiltering(t *testing.T) {
+	store := newTestSQLiteStore(t)
+	ctx := context.Background()
+
+	if _, err := store.SaveProfitSettings(ctx, &ProfitSettings{
+		SellInputPer1MUSD:  2,
+		SellOutputPer1MUSD: 12,
+		Timezone:           "Asia/Shanghai",
+	}); err != nil {
+		t.Fatalf("SaveProfitSettings() error = %v", err)
+	}
+
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatalf("LoadLocation() error = %v", err)
+	}
+	ts := time.Date(2026, 11, 20, 10, 30, 0, 0, loc)
+	nativeCost := 1.0
+	nativeRuleID := "rule-gemini"
+	nativeRuleName := "gemini-auto"
+	nativeLog := &Log{
+		ID:               "native-log-1",
+		Timestamp:        ts,
+		Provider:         "openlux-vertex-2",
+		Model:            "gemini-3.1-pro-preview",
+		RoutingRuleID:    &nativeRuleID,
+		RoutingRuleName:  &nativeRuleName,
+		Status:           "success",
+		PromptTokens:     1_000_000,
+		CompletionTokens: 0,
+		TotalTokens:      1_000_000,
+		Cost:             &nativeCost,
+	}
+	if err := store.Create(ctx, nativeLog); err != nil {
+		t.Fatalf("Create(native) error = %v", err)
+	}
+	if _, err := store.UpsertProfitEventFromLog(ctx, nativeLog); err != nil {
+		t.Fatalf("UpsertProfitEventFromLog(native) error = %v", err)
+	}
+
+	extRuleID := "ext:qiwei-doubao"
+	extRuleName := "豆包直连 · AI前置与记忆"
+	res, err := store.UpsertExternalProfitEvents(ctx, []ExternalProfitEventInput{
+		{
+			EventID:            "ext:qiwei:reply:100:0",
+			Timestamp:          ts,
+			Provider:           "volces-ark-direct",
+			Model:              "doubao-seed-2-0-mini-260428",
+			RoutingRuleID:      &extRuleID,
+			RoutingRuleName:    &extRuleName,
+			Status:             "success",
+			PromptTokens:       500_000,
+			CompletionTokens:   100_000,
+			CostUSD:            0.05,
+			RevenueUSD:         1.00,
+			SellInputPer1MUSD:  1.0,
+			SellOutputPer1MUSD: 5.147059,
+		},
+		// Duplicate event_id in same batch: latest value must win without conflict error
+		{
+			EventID:            "ext:qiwei:reply:100:0",
+			Timestamp:          ts,
+			Provider:           "volces-ark-direct",
+			Model:              "doubao-seed-2-0-mini-260428",
+			RoutingRuleID:      &extRuleID,
+			RoutingRuleName:    &extRuleName,
+			Status:             "success",
+			PromptTokens:       500_000,
+			CompletionTokens:   100_000,
+			CostUSD:            0.10,
+			RevenueUSD:         1.50,
+			SellInputPer1MUSD:  1.0,
+			SellOutputPer1MUSD: 5.147059,
+		},
+		{
+			EventID:            "ext:qiwei:sop:200",
+			Timestamp:          ts,
+			Provider:           "volces-ark-direct",
+			Model:              "doubao-seed-2-0-mini-260428",
+			RoutingRuleID:      &extRuleID,
+			RoutingRuleName:    &extRuleName,
+			Status:             "success",
+			PromptTokens:       100_000,
+			CompletionTokens:   50_000,
+			CostUSD:            0.02,
+			RevenueUSD:         0.50,
+			SellInputPer1MUSD:  1.0,
+			SellOutputPer1MUSD: 5.147059,
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpsertExternalProfitEvents() error = %v", err)
+	}
+	if res.Received != 3 || res.Upserted != 2 {
+		t.Fatalf("expected received=3 upserted=2, got %+v", res)
+	}
+
+	// Re-upserting same event_id must overwrite cleanly without duplicating totals
+	if _, err := store.UpsertExternalProfitEvents(ctx, []ExternalProfitEventInput{
+		{
+			EventID:          "ext:qiwei:sop:200",
+			Timestamp:        ts,
+			Provider:         "volces-ark-direct",
+			Model:            "doubao-seed-2-0-mini-260428",
+			RoutingRuleID:    &extRuleID,
+			RoutingRuleName:  &extRuleName,
+			Status:           "success",
+			PromptTokens:     100_000,
+			CompletionTokens: 50_000,
+			CostUSD:          0.02,
+			RevenueUSD:       0.50,
+		},
+	}); err != nil {
+		t.Fatalf("UpsertExternalProfitEvents(replay) error = %v", err)
+	}
+
+	// Verify all / bifrost / external source filtering across Summary, Daily, Breakdown
+	allSummary, err := store.GetProfitSummary(ctx, ProfitQuery{StartDay: "2026-11-20", EndDay: "2026-11-20", Source: ProfitSourceAll})
+	if err != nil {
+		t.Fatalf("GetProfitSummary(all) error = %v", err)
+	}
+	if allSummary.RequestCount != 3 || !almostEqualFloat(allSummary.RevenueUSD, 4.0) || !almostEqualFloat(allSummary.CostUSD, 1.12) || !almostEqualFloat(allSummary.ProfitUSD, 2.88) {
+		t.Fatalf("unexpected all summary: %+v", allSummary)
+	}
+
+	bifrostSummary, err := store.GetProfitSummary(ctx, ProfitQuery{StartDay: "2026-11-20", EndDay: "2026-11-20", Source: ProfitSourceBifrost})
+	if err != nil {
+		t.Fatalf("GetProfitSummary(bifrost) error = %v", err)
+	}
+	if bifrostSummary.RequestCount != 1 || !almostEqualFloat(bifrostSummary.RevenueUSD, 2.0) || !almostEqualFloat(bifrostSummary.CostUSD, 1.0) {
+		t.Fatalf("unexpected bifrost summary: %+v", bifrostSummary)
+	}
+
+	extSummary, err := store.GetProfitSummary(ctx, ProfitQuery{StartDay: "2026-11-20", EndDay: "2026-11-20", Source: ProfitSourceExternal})
+	if err != nil {
+		t.Fatalf("GetProfitSummary(external) error = %v", err)
+	}
+	if extSummary.RequestCount != 2 || !almostEqualFloat(extSummary.RevenueUSD, 2.0) || !almostEqualFloat(extSummary.CostUSD, 0.12) || !almostEqualFloat(extSummary.ProfitUSD, 1.88) {
+		t.Fatalf("unexpected external summary: %+v", extSummary)
+	}
+
+	extDaily, err := store.GetProfitDaily(ctx, ProfitQuery{StartDay: "2026-11-20", EndDay: "2026-11-20", Source: ProfitSourceExternal})
+	if err != nil {
+		t.Fatalf("GetProfitDaily(external) error = %v", err)
+	}
+	if len(extDaily) != 1 || extDaily[0].BusinessDay != "2026-11-20" || !almostEqualFloat(extDaily[0].ProfitUSD, 1.88) {
+		t.Fatalf("unexpected external daily: %+v", extDaily)
+	}
+
+	extBreakdown, err := store.GetProfitBreakdown(ctx, ProfitQuery{StartDay: "2026-11-20", EndDay: "2026-11-20", Source: ProfitSourceExternal})
+	if err != nil {
+		t.Fatalf("GetProfitBreakdown(external) error = %v", err)
+	}
+	if len(extBreakdown) != 1 || extBreakdown[0].Provider != "volces-ark-direct" || extBreakdown[0].RoutingRuleName == nil || *extBreakdown[0].RoutingRuleName != extRuleName {
+		t.Fatalf("unexpected external breakdown: %+v", extBreakdown)
+	}
+
+	// Reconciliation must remain clean (external rows do not interfere with logs backfill)
+	missing, err := store.CountMissingProfitEvents(ctx)
+	if err != nil {
+		t.Fatalf("CountMissingProfitEvents() error = %v", err)
+	}
+	if missing != 0 {
+		t.Fatalf("expected 0 missing profit events with external rows present, got %d", missing)
+	}
+
+	// Reject event_id without ext: prefix so native logs can never be overwritten
+	_, err = store.UpsertExternalProfitEvents(ctx, []ExternalProfitEventInput{
+		{
+			EventID:    "native-log-1",
+			Timestamp:  ts,
+			Provider:   "volces-ark-direct",
+			Model:      "doubao-seed-2-0-mini-260428",
+			CostUSD:    0.1,
+			RevenueUSD: 1.0,
+		},
+	})
+	if !errors.Is(err, ErrInvalidExternalProfitEvent) {
+		t.Fatalf("expected ErrInvalidExternalProfitEvent for non-ext prefix, got %v", err)
 	}
 }

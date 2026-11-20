@@ -92,8 +92,8 @@ V2.2 已于 2026-11-19 上线启用（`adaptive_v22_enabled = true`），并于 
 
 ### 4. 备份与紧急回滚方式
 - 线上保留的关键镜像标签：
-  - 当前线上最新镜像：`bifrost:v22-stream-fix-20261120`（含 V2.2 观察席探针动态超时、本地治理 401 零污染隔离、流式提交后中断扣分回写 + 新版自适应经营看板 + Profit 对账修复）
-  - 上一版镜像：`bifrost:profit-fix-20261120`、`bifrost:adaptive-dashboard-20261119`、`bifrost:smart-routing-v2.2-20261119`、`bifrost:rollback-20261119`
+  - 当前线上最新镜像：`bifrost:v22-profit-ingest-20261120`（含外部直连利润批量回传接口 `POST /api/profit/external-events`、`X-Profit-Ingest-Token` 鉴权及 `/workspace/profit` 来源筛选切换 + V2.2 流式修复与自适应经营看板）
+  - 上一版镜像：`bifrost:before-profit-ingest-20261120`、`bifrost:v22-stream-fix-20261120`、`bifrost:profit-fix-20261120`、`bifrost:adaptive-dashboard-20261119`、`bifrost:smart-routing-v2.2-20261119`、`bifrost:rollback-20261119`
 - 线上保留的配置备份目录：
   - `/root/bifrost-deploy/backups/pre-smart-routing-20261119/`
   - `/root/bifrost-deploy/backups/pre-v22-20261119/`
@@ -102,6 +102,8 @@ V2.2 已于 2026-11-19 上线启用（`adaptive_v22_enabled = true`），并于 
   - `/root/bifrost-deploy/backups/before-split-gemini-auto-bif-20261120/`
   - `/root/bifrost-deploy/backups/before-provider-timeout-90s-20261120/`
   - `/root/bifrost-deploy/backups/before-trim-gemini-auto-bif-20261120/`
+  - `/root/bifrost-deploy/backups/before-align-bif-price-20261120/`
+  - `/root/bifrost-deploy/backups/before-profit-ingest-20261120/`
 - **若需仅回滚路由（保留新版引擎）**：通过 Admin API 将对应备份目录中的 `gemini-auto` 规则写回即可热生效。
 - **若需整包回滚旧版镜像**：在服务器执行 `docker tag <目标镜像标签> crpi-1nlet4g61989v2tx.cn-shenzhen.personal.cr.aliyuncs.com/fdcode/bifrost:latest && cd /root/bifrost-deploy && docker compose up -d --force-recreate bifrost`。
 
@@ -127,3 +129,8 @@ V2.2 已于 2026-11-19 上线启用（`adaptive_v22_enabled = true`），并于 
    - **根因排查**：问小白 Open WebUI（`stream=true`，多图 5~8 MB + 深度思考首字 20~50s）原与企微短请求共用 `gemini-auto` 的 `24s/22s/16s` 策略，且 20 个 Provider 底层 `default_request_timeout_in_seconds = 42s` 同样会提前掐断多图长思考，频繁触发 `stream establishment deadline exceeded`；
    - **线上配置调整**：零中断拆出独立规则 **`gemini-auto-bif`**（`180s / 65s / 55s`，`slow_threshold_ms=65000`，`fast_channel_threshold_ms=35000`，`max_fallback_attempts=6`，同步规则独立售价 `$2.4 / $13.2`），随后按当日 2,260+ 次真实单跳统计将 `gemini-auto-bif` 的 L1 精简为 **5 个高稳主力**（`openlux-vertex-2` / `openlux-aistudio-3` / `polo-pool-3x` / `polo-g3-3x` / `bai-60pct`，连同 L2/L3 共 11 个目标，消除低流量冷启动 65s 试错等待；企微 `gemini-auto` 20 个全量目标保持不变），并将 20 个 Provider 底层超时统一热更新至 **`90s`**；同时配合在问小白 Open WebUI 后台开启全局图片压缩上限 `1024 × 1024`（18 图请求体从 `7.41 MiB` 压降至 `3.75 MiB`，详见 `open-webui` 仓库 `docs/2026-11-20-ask-xiaobai-image-compression-and-stream-timeout-runbook.md`）；
    - **代码修复并上线（`bifrost:v22-stream-fix-20261120`）**：① 观察席探针超时改为随规则首跳/快救预算自适应（不再硬编码 `22s`）；② 本地网关鉴权/策略拒绝（如 `401 virtual_key_required`）置拒绝标记、禁 fallback 并在 `ClassifyOutcome` 中归为 `OutcomeIgnore`，避免误把健康上游打入 `fatal_channel`；③ V2.2 流式提交后若上游中途断流（`interrupted=true` 且非客户端取消），自动回调 `hint.Observe` 记入 `hard_fail` 扣减渠道信誉。线上重放 18 图（7.79 MB）原始异常请求 `117bed68` 已完整生成 4,869 字（`finish=stop`）。
+5. **对齐问小白售价 & 外部直连豆包利润统一入账（`bifrost:v22-profit-ingest-20261120`，2026-11-20）**
+   - **对齐 `gemini-auto-bif` 售价**：通过 `PUT /api/profit/routing-rule-prices/3150fa10-7a26-411e-9163-7ef0bb22cf67` 将问小白规则售价调整为 **`$2.058824 / $12.352941`**（对应人民币 `¥14.00 / ¥84.00` @ 6.8），与问小白 `billing_transaction` 实际扣费完全对齐；
+   - **「流不合、账合一」外部直连回传**：
+     - Bifrost 新增 `POST /api/profit/external-events`（独立 `BIFROST_PROFIT_INGEST_TOKEN` 校验 via `X-Profit-Ingest-Token`，强制要求 `ext:` 主键前缀隔离原生日志，按 `log_id` 幂等 Upsert 到 `profit_events`，零影响 `logs` 与自动对账）；`/api/profit/{summary,daily,breakdown}` 及 `/workspace/profit` 前端新增 **`全部来源` / `仅 Bifrost 代理` / `仅外部直连回传`** 来源筛选切换；
+     - 会话存档服务器（`session-archive`）部署无侵入式低负载同步器 `/usr/local/bin/bifrost-profit-sync.py`（源码在 `qiweidoc/scripts/bifrost_profit_sync.py`）与 `bifrost-profit-sync.timer`（每 5 分钟执行一次，严格走主键游标 `LIMIT 200` + `statement_timeout=3000ms` + `flock` 防重叠，只上报直连火山方舟豆包并排除走 `bif.zdfan.com` 的供应商，聚合展示为独立分组 **`豆包直连 · AI前置与记忆`** / `volces-ark-direct`）。

@@ -1,4 +1,4 @@
-import type { ProfitPreset } from "@/lib/types/profit";
+import type { ProfitPreset, ProfitSource } from "@/lib/types/profit";
 
 export type DisplayCurrency = "CNY" | "USD";
 
@@ -46,6 +46,15 @@ export function getProfitPresetLabel(preset: ProfitPreset): string {
 		all: "全部累计",
 	};
 	return labels[preset];
+}
+
+export function getProfitSourceLabel(source: ProfitSource): string {
+	const labels: Record<ProfitSource, string> = {
+		all: "全部来源",
+		bifrost: "仅 Bifrost 代理",
+		external: "仅外部直连回传",
+	};
+	return labels[source];
 }
 
 export function getDisplayCurrencyLabel(currency: DisplayCurrency): string {

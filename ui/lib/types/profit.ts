@@ -1,4 +1,5 @@
 export type ProfitPreset = "today" | "yesterday" | "7d" | "all";
+export type ProfitSource = "all" | "bifrost" | "external";
 
 export interface ProfitSettings {
 	id?: string;
@@ -20,6 +21,7 @@ export interface RoutingRuleProfitSettingsResponse {
 export interface ProfitQuery {
 	start_day?: string;
 	end_day?: string;
+	source?: ProfitSource;
 }
 
 export interface ProfitSummary {

@@ -82,6 +82,7 @@ func (h *LoggingHandler) RegisterRoutes(r *router.Router, middlewares ...schemas
 	r.GET("/api/profit/breakdown", lib.ChainMiddlewares(h.getProfitBreakdown, middlewares...))
 	r.GET("/api/profit/reconciliation-status", lib.ChainMiddlewares(h.getProfitReconciliationStatus, middlewares...))
 	r.POST("/api/profit/backfill", lib.ChainMiddlewares(h.backfillProfitEvents, middlewares...))
+	r.POST(profitExternalEventsRoute, lib.ChainMiddlewares(h.ingestExternalProfitEvents, middlewares...))
 
 	// MCP Tool Log retrieval with filtering, search, and pagination
 	r.GET("/api/mcp-logs", lib.ChainMiddlewares(h.getMCPLogs, middlewares...))
@@ -775,6 +776,10 @@ type profitBackfillRequest struct {
 	Limit int `json:"limit"`
 }
 
+type ingestExternalProfitEventsRequest struct {
+	Events []logstore.ExternalProfitEventInput `json:"events"`
+}
+
 func (h *LoggingHandler) getProfitSettings(ctx *fasthttp.RequestCtx) {
 	settings, err := h.logManager.GetProfitSettings(ctx)
 	if err != nil {
@@ -877,6 +882,12 @@ func (h *LoggingHandler) getProfitSummary(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	}
+	source, err := logstore.NormalizeProfitSource(string(ctx.QueryArgs().Peek("source")))
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+	query.Source = source
 	summary, err := h.logManager.GetProfitSummary(ctx, query)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get profit summary: %v", err))
@@ -900,6 +911,12 @@ func (h *LoggingHandler) getProfitDaily(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	}
+	source, err := logstore.NormalizeProfitSource(string(ctx.QueryArgs().Peek("source")))
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+	query.Source = source
 	buckets, err := h.logManager.GetProfitDaily(ctx, query)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get daily profit: %v", err))
@@ -915,12 +932,44 @@ func (h *LoggingHandler) getProfitBreakdown(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	}
+	source, err := logstore.NormalizeProfitSource(string(ctx.QueryArgs().Peek("source")))
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+	query.Source = source
 	rows, err := h.logManager.GetProfitBreakdown(ctx, query)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get profit breakdown: %v", err))
 		return
 	}
 	SendJSON(ctx, profitBreakdownResponse{Preset: normalizeProfitPreset(preset), Query: query, Rows: rows})
+}
+
+func (h *LoggingHandler) ingestExternalProfitEvents(ctx *fasthttp.RequestCtx) {
+	authorized, _ := ctx.UserValue(profitExternalAuthorizedContextKey).(bool)
+	if !authorized {
+		configured, provided, valid := validateProfitIngestToken(ctx)
+		if (configured && !valid) || (!configured && provided) {
+			SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized")
+			return
+		}
+	}
+	var payload ingestExternalProfitEventsRequest
+	if err := sonic.Unmarshal(ctx.PostBody(), &payload); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request body: %v", err))
+		return
+	}
+	result, err := h.logManager.UpsertExternalProfitEvents(ctx, payload.Events)
+	if err != nil {
+		if errors.Is(err, logstore.ErrInvalidExternalProfitEvent) {
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+			return
+		}
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to ingest external profit events: %v", err))
+		return
+	}
+	SendJSON(ctx, result)
 }
 
 func (h *LoggingHandler) getProfitReconciliationStatus(ctx *fasthttp.RequestCtx) {
