@@ -127,10 +127,11 @@ type BifrostHTTPServer struct {
 	Server *fasthttp.Server
 	Router *router.Router
 
-	WebSocketHandler   *handlers.WebSocketHandler
-	MCPServerHandler   *handlers.MCPServerHandler
-	devPprofHandler    *handlers.DevPprofHandler
-	IntegrationHandler *handlers.IntegrationHandler
+	WebSocketHandler    *handlers.WebSocketHandler
+	MCPServerHandler    *handlers.MCPServerHandler
+	RelayBalanceHandler *handlers.RelayBalanceHandler
+	devPprofHandler     *handlers.DevPprofHandler
+	IntegrationHandler  *handlers.IntegrationHandler
 
 	AuthMiddleware    *handlers.AuthMiddleware
 	TracingMiddleware *handlers.TracingMiddleware
@@ -1096,6 +1097,13 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	}
 	if loggingHandler != nil {
 		loggingHandler.RegisterRoutes(s.Router, middlewares...)
+	}
+	if s.Config.LogsStore != nil {
+		if s.RelayBalanceHandler == nil {
+			s.RelayBalanceHandler = handlers.NewRelayBalanceHandler(s.Config.ConfigStore, s.Config.LogsStore)
+		}
+		s.RelayBalanceHandler.RegisterRoutes(s.Router, middlewares...)
+		s.RelayBalanceHandler.Start(s.Ctx)
 	}
 	if s.WebSocketHandler != nil {
 		s.WebSocketHandler.RegisterRoutes(s.Router, middlewares...)

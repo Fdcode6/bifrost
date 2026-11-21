@@ -19,6 +19,7 @@ import {
 import { toast } from "sonner";
 
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { RelayBalanceBar } from "@/components/relayBalanceBar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -517,6 +518,9 @@ export default function ProfitPage() {
 					</div>
 				) : null}
 			</div>
+
+			{/* Compact Upstream Relay Balance Strip */}
+			<RelayBalanceBar mode="compact" />
 
 			<div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
 				<MetricCard

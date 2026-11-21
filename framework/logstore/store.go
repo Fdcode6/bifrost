@@ -56,6 +56,11 @@ type LogStore interface {
 	GetProfitBreakdown(ctx context.Context, query ProfitQuery) ([]ProfitBreakdownRow, error)
 	BackfillProfitEvents(ctx context.Context, limit int) (*ProfitBackfillResult, error)
 	CountMissingProfitEvents(ctx context.Context) (int64, error)
+	GetRelayBalanceConfig(ctx context.Context) (*RelayBalanceConfig, error)
+	SaveRelayBalanceConfig(ctx context.Context, cfg *RelayBalanceConfig) (*RelayBalanceConfig, error)
+	ListRelayBalanceStates(ctx context.Context) ([]RelayBalanceState, error)
+	SaveRelayBalanceState(ctx context.Context, state *RelayBalanceState) error
+	GetProviderCost24hUSD(ctx context.Context, since time.Time) (map[string]float64, error)
 	Flush(ctx context.Context, since time.Time) error
 	Close(ctx context.Context) error
 	DeleteLog(ctx context.Context, id string) error

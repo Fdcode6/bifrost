@@ -12,5 +12,6 @@ export * from "./pluginsApi";
 export * from "./providersApi";
 export * from "./promptsApi";
 export * from "./profitApi";
+export * from "./relayBalanceApi";
 export * from "./routingRulesApi";
 export * from "./sessionApi";

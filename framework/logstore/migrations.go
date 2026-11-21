@@ -215,6 +215,50 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationCreateProfitTables(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationCreateRelayBalanceTables(ctx, db); err != nil {
+		return err
+	}
+	return nil
+}
+
+// migrationCreateRelayBalanceTables creates the upstream relay balance settings and state tables.
+func migrationCreateRelayBalanceTables(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "logs_create_relay_balance_tables",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasTable(&RelayBalanceSettingsRow{}) {
+				if err := migrator.CreateTable(&RelayBalanceSettingsRow{}); err != nil {
+					return err
+				}
+			}
+			if !migrator.HasTable(&RelayBalanceState{}) {
+				if err := migrator.CreateTable(&RelayBalanceState{}); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasTable(&RelayBalanceState{}) {
+				if err := migrator.DropTable(&RelayBalanceState{}); err != nil {
+					return err
+				}
+			}
+			if migrator.HasTable(&RelayBalanceSettingsRow{}) {
+				if err := migrator.DropTable(&RelayBalanceSettingsRow{}); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while creating relay balance tables: %s", err.Error())
+	}
 	return nil
 }
 

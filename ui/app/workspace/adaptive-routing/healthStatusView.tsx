@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { RelayBalanceBar } from "@/components/relayBalanceBar";
 import { Button } from "@/components/ui/button";
 import {
 	Select,
@@ -262,6 +263,9 @@ export default function HealthStatusView() {
 					</Button>
 				</div>
 			</div>
+
+			{/* Upstream Relay Balance Monitor (4-site cards + Bark alert controls) */}
+			<RelayBalanceBar mode="full" />
 
 			{/* Error state */}
 			{Boolean(error) && (

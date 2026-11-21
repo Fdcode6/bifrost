@@ -161,6 +161,7 @@ export const baseApi = createApi({
 		"Versions",
 		"Sessions",
 		"Profit",
+		"RelayBalances",
 	],
 	endpoints: () => ({}),
 });

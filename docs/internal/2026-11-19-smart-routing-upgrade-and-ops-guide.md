@@ -104,6 +104,7 @@ V2.2 已于 2026-11-19 上线启用（`adaptive_v22_enabled = true`），并于 
   - `/root/bifrost-deploy/backups/before-trim-gemini-auto-bif-20261120/`
   - `/root/bifrost-deploy/backups/before-align-bif-price-20261120/`
   - `/root/bifrost-deploy/backups/before-profit-ingest-20261120/`
+  - `/root/bifrost-deploy/backups/before-relay-balance-20261121/`
 - **若需仅回滚路由（保留新版引擎）**：通过 Admin API 将对应备份目录中的 `gemini-auto` 规则写回即可热生效。
 - **若需整包回滚旧版镜像**：在服务器执行 `docker tag <目标镜像标签> crpi-1nlet4g61989v2tx.cn-shenzhen.personal.cr.aliyuncs.com/fdcode/bifrost:latest && cd /root/bifrost-deploy && docker compose up -d --force-recreate bifrost`。
 
@@ -137,3 +138,14 @@ V2.2 已于 2026-11-19 上线启用（`adaptive_v22_enabled = true`），并于 
 6. **V2.2 末跳预算与 L3 真兜底修复（`bifrost:v22-final-hop-fix-20261121`，2026-11-21）**
    - **背景**：复盘 `2026-11-20 13:55–23:16` 连续 9.3 小时 8,137 笔 `gemini-auto` 实盘日志，发现全部 76 笔失败中有 **30 笔（39.5%）** 踩中 `22s + 22s + 4s + 14s` 废跳（残余 `18s` 触发 `14s` 末跳预留后把第 3 跳主力硬切成 4s 必死跳并误扣分），同时 L3 兜底王牌（`bai-100pct` / `polo-svip-6.8x`）全天仅触发 2–3 次，末跳常死在 14%–54% 弱通道上；
    - **修复（`core/adaptive_attempt.go`）**：① 拆出中间跳的最小有效预算门槛从 `3s` 提高到 `min(12s, RescueAttemptTimeoutMs)`，剩余 `< 26s` 时直接把完整 `18s~25s` 交给当前跳，彻底消除 `<12s` 废跳；② 当 `final = true`（最后一次机会）且队首候选并非已验证快通道（`!IsFastRescue`）时，自动提拔可用且健康的 L3 兜底王牌（`IsLastResort && IsFastRescue`）接管末跳，平时非末跳仍保持严格 L3 成本隔离。
+7. **上游 4 站点余额监控 + 防刷屏 Bark 低余额预警（`bifrost:v22-relay-balance-20261121`，2026-11-21）**
+   - **4 站余额采集与真实人民币折算**：
+     - **PoloAPI**（`polo-*`）：直接自动复用 Bifrost 现有 `sk-` 密钥查询 `GET /api/usage/token`（`total_available / 500000`），折算系数 **`× 1.0`**（`¥1 = $1`）；
+     - **B.AI**（`bai-*`）：直接自动复用 Bifrost 现有 `sk-` 密钥查询 `GET /v1/balance`（`personal_balance / 1000000`，自动跳过失效 401 密钥），折算系数 **`× 6.8`**；
+     - **OpenLux（云雾）**（`openlux-*`）：使用 `BIFROST_BALANCE_OPENLUX_USER_ID` + `BIFROST_BALANCE_OPENLUX_ACCESS_TOKEN` 查询 `GET /api/user/self`（`quota / 500000`），折算系数 **`× 6.664`**（`$98 = $100`，`0.98 × 6.8`）；
+     - **StoreAPI**（`storeapi-*`）：使用 `BIFROST_BALANCE_STOREAPI_USER_ID` + `BIFROST_BALANCE_STOREAPI_ACCESS_TOKEN` 查询 `GET /api/user/self`（`quota / 500000`），折算系数 **`× 1.0`**（`¥1 = $1`）；
+     - 结合近 24h `profit_events`（排除 `ext:` 外部直连行）计算每站日均消耗与预计可撑天数；后台默认每 10 分钟定时轮询并落库 `relay_balance_states` / `relay_balance_settings`。
+   - **防刷屏 Bark 预警引擎（`BIFROST_BARK_URL`，`group=bifrost-balance`，`ttl=600`）**：
+     - 默认低于 **`¥50`** 触发常规告警（冷却 `6h`）、低于 **`¥15`** 立即破冷却升级为 `timeSensitive` 告急推送（冷却 `2h`）；短时再腰斩（`≤ 上次告警余额 50%`）按 `30m/1h` 下限允许加推；
+     - 夜间免打扰 **`23:00–08:00`（`Asia/Shanghai`）**：仅对实际到点的告警延后至次晨 `08:00` 释放，未到冷却期不误置延后；充值回升至 **`≥ 阈值 × 110%`**（`¥55`）自动解除告警并重置冷却，防止阈值抖动刷屏。
+   - **API 与前端入口**：新增 `GET /api/relay-balances`、`POST /api/relay-balances/refresh`、`GET/PUT /api/relay-balances/settings`（敏感地址/令牌严格脱敏）、`POST /api/relay-balances/test-bark`；`/workspace/adaptive-routing` 顶部展示完整 4 站卡片 + 刷新/发测试推送/告警设置弹窗，`/workspace/profit` 顶部对账条下方展示单行轻量余额条。
