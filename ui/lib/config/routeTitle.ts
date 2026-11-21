@@ -8,6 +8,7 @@ const workspaceRouteTitles: Record<string, string> = {
 	"/workspace/dashboard": "Dashboard",
 	"/workspace/logs": "LLM Logs",
 	"/workspace/profit": "Profit",
+	"/workspace/recharges": "Recharges",
 	"/workspace/mcp-logs": "MCP Logs",
 	"/workspace/observability": "Connectors",
 	"/workspace/logs/connectors": "Connectors",

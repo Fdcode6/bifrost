@@ -121,3 +121,88 @@ export interface TestRelayBalanceBarkResponse {
 	title: string;
 	body: string;
 }
+
+export type RelayRechargeSource = "api_sync" | "balance_delta" | "manual";
+export type RelayRechargeStatus = "success" | "pending_confirm";
+export type RelayRechargeSyncMode = "api_topup" | "api_log" | "balance_delta" | "unconfigured";
+
+export interface RelayRechargeRecord {
+	id: string;
+	site_id: string;
+	site_name: string;
+	source: RelayRechargeSource;
+	external_id?: string;
+	recharged_at: string;
+	site_amount_usd: number;
+	paid_amount: number;
+	paid_currency: string;
+	paid_cny: number;
+	payment_method?: string;
+	status: RelayRechargeStatus;
+	note?: string;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface RelayRechargeSiteSummary {
+	site_id: string;
+	site_name: string;
+	record_count: number;
+	pending_count: number;
+	total_site_usd: number;
+	total_paid_cny: number;
+	last_recharged_at?: string | null;
+}
+
+export interface RelayRechargeSummary {
+	total_count: number;
+	pending_count: number;
+	total_site_usd: number;
+	total_paid_cny: number;
+	by_site: RelayRechargeSiteSummary[];
+}
+
+export interface RelayRechargeSiteMeta {
+	id: string;
+	name: string;
+	kind: RelayBalanceSiteKind;
+	recharge_url?: string;
+	cny_per_site_unit: number;
+	sync_mode: RelayRechargeSyncMode;
+}
+
+export interface RelayRechargesResponse {
+	last_sync_at?: string | null;
+	summary: RelayRechargeSummary;
+	sites: RelayRechargeSiteMeta[];
+	items: RelayRechargeRecord[];
+}
+
+export interface RelayRechargeSiteSyncResult {
+	site_id: string;
+	site_name: string;
+	sync_mode: RelayRechargeSyncMode;
+	fetched: number;
+	inserted: number;
+	error?: string;
+}
+
+export interface RelayRechargeSyncResponse {
+	synced_at: string;
+	total_inserted: number;
+	results: RelayRechargeSiteSyncResult[];
+	data: RelayRechargesResponse;
+}
+
+export interface UpsertRelayRechargeRequest {
+	site_id: string;
+	recharged_at?: string;
+	site_amount_usd: number;
+	paid_amount?: number;
+	paid_currency?: string;
+	paid_cny: number;
+	payment_method?: string;
+	status?: RelayRechargeStatus;
+	external_id?: string;
+	note?: string;
+}

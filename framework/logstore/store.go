@@ -61,6 +61,11 @@ type LogStore interface {
 	ListRelayBalanceStates(ctx context.Context) ([]RelayBalanceState, error)
 	SaveRelayBalanceState(ctx context.Context, state *RelayBalanceState) error
 	GetProviderCost24hUSD(ctx context.Context, since time.Time) (map[string]float64, error)
+	UpsertRelayRechargeRecords(ctx context.Context, records []RelayRechargeRecord) (int, error)
+	GetRelayRechargeRecord(ctx context.Context, id string) (*RelayRechargeRecord, error)
+	SaveRelayRechargeRecord(ctx context.Context, record *RelayRechargeRecord) error
+	DeleteRelayRechargeRecord(ctx context.Context, id string) error
+	ListRelayRechargeRecords(ctx context.Context, query RelayRechargeQuery) ([]RelayRechargeRecord, *RelayRechargeSummary, error)
 	Flush(ctx context.Context, since time.Time) error
 	Close(ctx context.Context) error
 	DeleteLog(ctx context.Context, id string) error

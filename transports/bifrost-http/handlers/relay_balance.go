@@ -42,13 +42,15 @@ type RelayBalanceHandler struct {
 	httpClient  *http.Client
 	nowFn       func() time.Time
 
-	mu             sync.RWMutex
-	pollMu         sync.Mutex
-	lastManualPoll time.Time
-	lastPollAt     *time.Time
-	nextPollAt     *time.Time
-	started        bool
-	baseCtx        context.Context
+	mu                 sync.RWMutex
+	pollMu             sync.Mutex
+	rechargeSyncMu     sync.Mutex
+	lastManualPoll     time.Time
+	lastPollAt         *time.Time
+	nextPollAt         *time.Time
+	lastRechargeSyncAt *time.Time
+	started            bool
+	baseCtx            context.Context
 }
 
 func NewRelayBalanceHandler(configStore configstore.ConfigStore, logsStore logstore.LogStore) *RelayBalanceHandler {
@@ -68,6 +70,11 @@ func (h *RelayBalanceHandler) RegisterRoutes(r *router.Router, middlewares ...sc
 	r.GET("/api/relay-balances/settings", lib.ChainMiddlewares(h.getRelayBalanceSettings, middlewares...))
 	r.PUT("/api/relay-balances/settings", lib.ChainMiddlewares(h.updateRelayBalanceSettings, middlewares...))
 	r.POST("/api/relay-balances/test-bark", lib.ChainMiddlewares(h.testBarkNotification, middlewares...))
+	r.GET("/api/relay-recharges", lib.ChainMiddlewares(h.listRelayRecharges, middlewares...))
+	r.POST("/api/relay-recharges/sync", lib.ChainMiddlewares(h.syncRelayRecharges, middlewares...))
+	r.POST("/api/relay-recharges", lib.ChainMiddlewares(h.createRelayRecharge, middlewares...))
+	r.PUT("/api/relay-recharges/{id}", lib.ChainMiddlewares(h.updateRelayRecharge, middlewares...))
+	r.DELETE("/api/relay-recharges/{id}", lib.ChainMiddlewares(h.deleteRelayRecharge, middlewares...))
 }
 
 // Start launches the background polling goroutine tied to serverCtx.
@@ -107,6 +114,7 @@ func (h *RelayBalanceHandler) Start(serverCtx context.Context) {
 				if _, err := h.PollAll(serverCtx, true); err != nil {
 					logger.Warn("relay-balance: poll cycle completed with error: %v", err)
 				}
+				h.maybeSyncRecharges(serverCtx)
 			}
 
 			next := h.nowFn().Add(interval)
@@ -797,6 +805,11 @@ func (h *RelayBalanceHandler) PollAll(ctx context.Context, evaluateAlerts bool) 
 		}
 
 		// Successful balance query!
+		var prevSiteUSD *float64
+		if state.SiteBalanceUSD != nil {
+			v := *state.SiteBalanceUSD
+			prevSiteUSD = &v
+		}
 		siteUSD := outcome.siteBalanceUSD
 		balCNY := siteUSD * site.CNYPerSiteUnit
 		successAt := now
@@ -807,6 +820,10 @@ func (h *RelayBalanceHandler) PollAll(ctx context.Context, evaluateAlerts bool) 
 		state.LastSuccessAt = &successAt
 		state.LastError = ""
 		state.ConsecutiveErrors = 0
+
+		if site.Kind == logstore.RelayBalanceKindBAIV1Balance && prevSiteUSD != nil && siteUSD-*prevSiteUSD >= relayRechargeDeltaMinUSD {
+			h.recordBalanceDeltaRecharge(ctx, cfg, site, *prevSiteUSD, siteUSD, now, barkURL)
+		}
 
 		if state.Spend24hCNY > 0.01 && balCNY >= 0 {
 			days := balCNY / state.Spend24hCNY

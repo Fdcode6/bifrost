@@ -8,6 +8,7 @@ import {
 	BellOff,
 	CheckCircle2,
 	ExternalLink,
+	History,
 	Loader2,
 	RefreshCw,
 	Settings2,
@@ -658,6 +659,13 @@ export function RelayBalanceBar({ mode }: RelayBalanceBarProps) {
 							告警
 						</Button>
 						<Link
+							href="/workspace/recharges"
+							className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+						>
+							<History className="h-3.5 w-3.5" />
+							<span>充值记录</span>
+						</Link>
+						<Link
 							href="/workspace/adaptive-routing"
 							className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
 						>
@@ -718,6 +726,14 @@ export function RelayBalanceBar({ mode }: RelayBalanceBarProps) {
 					</div>
 
 					<div className="flex flex-wrap items-center gap-1.5">
+						<Link
+							href="/workspace/recharges"
+							className="border-input bg-background hover:bg-accent hover:text-accent-foreground inline-flex h-7 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium transition-colors"
+							data-testid="relay-balance-recharges-link"
+						>
+							<History className="h-3.5 w-3.5" />
+							充值记录
+						</Link>
 						<Button
 							type="button"
 							variant="outline"

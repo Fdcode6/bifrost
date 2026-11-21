@@ -422,6 +422,13 @@ export const buildSidebarItems = ({
 				hasAccess: hasObservabilityAccess,
 			},
 			{
+				title: "Recharges",
+				url: "/workspace/recharges",
+				icon: WalletCards,
+				description: "Upstream relay recharge history & reconciliation",
+				hasAccess: hasObservabilityAccess,
+			},
+			{
 				title: "MCP Logs",
 				url: "/workspace/mcp-logs",
 				icon: MCPIcon,

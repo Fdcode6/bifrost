@@ -218,7 +218,32 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationCreateRelayBalanceTables(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationCreateRelayRechargeRecordsTable(ctx, db); err != nil {
+		return err
+	}
 	return nil
+}
+
+// migrationCreateRelayRechargeRecordsTable creates the unified upstream relay recharge ledger table.
+func migrationCreateRelayRechargeRecordsTable(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "logs_create_relay_recharge_records_table",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasTable(&RelayRechargeRecord{}) {
+				if err := migrator.CreateTable(&RelayRechargeRecord{}); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return tx.Migrator().DropTable(&RelayRechargeRecord{})
+		},
+	}})
+	return m.Migrate()
 }
 
 // migrationCreateRelayBalanceTables creates the upstream relay balance settings and state tables.
