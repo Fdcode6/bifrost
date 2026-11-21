@@ -457,7 +457,7 @@ func (h *RelayBalanceHandler) SyncAllRecharges(ctx context.Context) (*relayRecha
 				if syncErr == nil {
 					// Also merge any earlier /api/log/self?type=1 top-up logs not covered by the newer orders table
 					// (e.g. PoloAPI pre-migration orders or redemption codes), deduplicating by timestamp+amount.
-					if logRecs, logErr := h.fetchNewAPILogTopupRecords(ctx, site, uid, tok, now); logErr == nil && len(logRecs) > 0 {
+					if logRecs, logErr := h.fetchNewAPILogTopupRecords(ctx, site, uid, tok); logErr == nil && len(logRecs) > 0 {
 						recs = mergeOrderAndLogRecharges(recs, logRecs)
 					}
 				}
@@ -705,7 +705,6 @@ func (h *RelayBalanceHandler) fetchNewAPILogTopupRecords(
 	ctx context.Context,
 	site logstore.RelayBalanceSiteConfig,
 	userID, accessToken string,
-	now time.Time,
 ) ([]logstore.RelayRechargeRecord, error) {
 	headers := map[string]string{
 		"Authorization": "Bearer " + accessToken,
@@ -714,8 +713,6 @@ func (h *RelayBalanceHandler) fetchNewAPILogTopupRecords(
 		headers["New-Api-User"] = userID
 	}
 
-	startTS := now.Add(-365 * 24 * time.Hour).Unix()
-	endTS := now.Add(time.Hour).Unix()
 	qpu := site.QuotaPerUnit
 	if qpu <= 0 {
 		qpu = 500000
@@ -724,10 +721,9 @@ func (h *RelayBalanceHandler) fetchNewAPILogTopupRecords(
 	var records []logstore.RelayRechargeRecord
 	base := strings.TrimRight(site.BaseURL, "/")
 	for page := 1; page <= relayRechargeMaxPages; page++ {
-		endpoint := fmt.Sprintf(
-			"%s/api/log/self?type=1&p=%d&page_size=%d&start_timestamp=%d&end_timestamp=%d",
-			base, page, relayRechargePageSize, startTS, endTS,
-		)
+		// Omit start_timestamp/end_timestamp because some New-API backends reject wide (>90d) explicit ranges
+		// while returning full history when unbounded.
+		endpoint := fmt.Sprintf("%s/api/log/self?type=1&p=%d&page_size=%d", base, page, relayRechargePageSize)
 		body, status, err := h.doJSONGet(ctx, endpoint, headers)
 		if err != nil {
 			return nil, err
