@@ -153,6 +153,7 @@ interface SiteFormDraft {
 	name: string;
 	kind: RelayBalanceSiteSettingsView["kind"];
 	base_url: string;
+	recharge_url: string;
 	provider_prefix: string;
 	quota_per_unit: number;
 	cny_per_site_unit: string;
@@ -206,6 +207,7 @@ function RelayBalanceSettingsDialog({
 				name: s.name,
 				kind: s.kind,
 				base_url: s.base_url,
+				recharge_url: s.recharge_url || "",
 				provider_prefix: s.provider_prefix,
 				quota_per_unit: s.quota_per_unit,
 				cny_per_site_unit: String(s.cny_per_site_unit),
@@ -237,6 +239,7 @@ function RelayBalanceSettingsDialog({
 			name: s.name,
 			kind: s.kind,
 			base_url: s.base_url,
+			recharge_url: s.recharge_url.trim(),
 			provider_prefix: s.provider_prefix,
 			quota_per_unit: s.quota_per_unit,
 			cny_per_site_unit: Number(s.cny_per_site_unit) || 1,
@@ -459,6 +462,17 @@ function RelayBalanceSettingsDialog({
 										</div>
 									</div>
 
+									<div className="space-y-1">
+										<Label className="text-[11px] text-muted-foreground">快捷充值页面地址（网页点击与 Bark 通知直达）</Label>
+										<Input
+											type="url"
+											value={site.recharge_url}
+											onChange={(e) => updateSiteField(idx, "recharge_url", e.target.value)}
+											placeholder="https://..."
+											className="h-8 text-xs font-mono"
+										/>
+									</div>
+
 									{site.kind === "new_api_user_self" && (
 										<div className="grid gap-2.5 border-t pt-2.5 sm:grid-cols-3">
 											<div className="space-y-1">
@@ -573,7 +587,38 @@ export function RelayBalanceBar({ mode }: RelayBalanceBarProps) {
 									site.estimated_days_left !== null && site.estimated_days_left !== undefined
 										? ` · 约 ${site.estimated_days_left.toFixed(1)} 天`
 										: "";
-								const tooltip = `${site.name}：真实余额 ${formatCNY(site.balance_cny)}（站内 ${formatUSD(site.site_balance_usd)} × ${site.cny_per_site_unit}），24h 消耗 ${formatCNY(site.spend_24h_cny)}${runway}`;
+								const rechargeHint = site.recharge_url ? " · 点击新标签页去充值" : "";
+								const tooltip = `${site.name}：真实余额 ${formatCNY(site.balance_cny)}（站内 ${formatUSD(site.site_balance_usd)} × ${site.cny_per_site_unit}），24h 消耗 ${formatCNY(site.spend_24h_cny)}${runway}${rechargeHint}`;
+								const content = (
+									<>
+										<span className={cn("h-1.5 w-1.5 rounded-full", meta.dotClass)} />
+										<span>{site.name.replace("（云雾）", "")}</span>
+										<span className="font-mono font-semibold">
+											{site.balance_cny !== null && site.balance_cny !== undefined
+												? formatCNY(site.balance_cny)
+												: meta.shortLabel}
+										</span>
+										{site.recharge_url ? <ExternalLink className="h-2.5 w-2.5 opacity-60" /> : null}
+									</>
+								);
+								if (site.recharge_url) {
+									return (
+										<a
+											key={site.id}
+											href={site.recharge_url}
+											target="_blank"
+											rel="noopener noreferrer"
+											title={tooltip}
+											data-testid={`relay-balance-compact-recharge-${site.id}`}
+											className={cn(
+												"inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[11px] font-medium tabular-nums transition-opacity hover:opacity-80",
+												meta.pillClass,
+											)}
+										>
+											{content}
+										</a>
+									);
+								}
 								return (
 									<span
 										key={site.id}
@@ -583,13 +628,7 @@ export function RelayBalanceBar({ mode }: RelayBalanceBarProps) {
 											meta.pillClass,
 										)}
 									>
-										<span className={cn("h-1.5 w-1.5 rounded-full", meta.dotClass)} />
-										<span>{site.name.replace("（云雾）", "")}</span>
-										<span className="font-mono font-semibold">
-											{site.balance_cny !== null && site.balance_cny !== undefined
-												? formatCNY(site.balance_cny)
-												: meta.shortLabel}
-										</span>
+										{content}
 									</span>
 								);
 							})}
@@ -753,15 +792,37 @@ export function RelayBalanceBar({ mode }: RelayBalanceBarProps) {
 								</div>
 
 								<div>
-									<div className="flex items-baseline gap-2">
-										<span className="font-mono text-2xl font-bold tracking-tight tabular-nums text-foreground">
-											{formatCNY(site.balance_cny)}
-										</span>
-										{site.site_balance_usd !== null && site.site_balance_usd !== undefined && (
-											<span className="text-muted-foreground font-mono text-xs tabular-nums">
-												站内 {formatUSD(site.site_balance_usd)}
+									<div className="flex items-center justify-between gap-2">
+										<div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
+											<span className="font-mono text-2xl font-bold tracking-tight tabular-nums text-foreground">
+												{formatCNY(site.balance_cny)}
 											</span>
-										)}
+											{site.site_balance_usd !== null && site.site_balance_usd !== undefined && (
+												<span className="text-muted-foreground font-mono text-xs tabular-nums">
+													站内 {formatUSD(site.site_balance_usd)}
+												</span>
+											)}
+										</div>
+										{site.recharge_url ? (
+											<a
+												href={site.recharge_url}
+												target="_blank"
+												rel="noopener noreferrer"
+												title={`新标签页打开 ${site.name} 充值页面`}
+												data-testid={`relay-balance-recharge-${site.id}`}
+												className={cn(
+													"inline-flex shrink-0 items-center gap-1 rounded-md border px-2 py-1 text-[11px] font-medium transition-colors",
+													site.status === "urgent"
+														? "border-rose-600 bg-rose-600 text-white hover:bg-rose-700"
+														: site.status === "low"
+															? "border-amber-500/50 bg-amber-500/15 text-amber-800 hover:bg-amber-500/25 dark:text-amber-200"
+															: "border-border bg-background/80 text-muted-foreground hover:border-foreground/30 hover:text-foreground",
+												)}
+											>
+												<span>去充值</span>
+												<ExternalLink className="h-3 w-3" />
+											</a>
+										) : null}
 									</div>
 									<div className="text-muted-foreground mt-1 text-xs tabular-nums">
 										近 24h 消耗 {formatCNY(site.spend_24h_cny)}

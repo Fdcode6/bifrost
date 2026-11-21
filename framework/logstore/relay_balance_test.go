@@ -26,14 +26,36 @@ func TestRelayBalanceConfig_DefaultsAndRoundTrip(t *testing.T) {
 		"polo":     1.0,
 		"bai":      6.8,
 	}
+	wantRechargeURLs := map[string]string{
+		"storeapi": "https://www.storeapi.one/wallet",
+		"openlux":  "https://www.openlux.ai/console/topup",
+		"polo":     "https://poloai.top/wallet",
+		"bai":      "https://chat.b.ai/purchase",
+	}
 	for _, s := range cfg.Sites {
 		if want, ok := wantRatios[s.ID]; !ok || !almostEqualFloat(s.CNYPerSiteUnit, want) {
 			t.Fatalf("unexpected ratio for site %q: got %.4f want %.4f", s.ID, s.CNYPerSiteUnit, want)
+		}
+		if want := wantRechargeURLs[s.ID]; s.RechargeURL != want {
+			t.Fatalf("unexpected default recharge_url for site %q: got %q want %q", s.ID, s.RechargeURL, want)
 		}
 		if !almostEqualFloat(s.ThresholdCNY, 50) || !almostEqualFloat(s.UrgentThresholdCNY, 15) {
 			t.Fatalf("unexpected thresholds for %q: got %.2f / %.2f", s.ID, s.ThresholdCNY, s.UrgentThresholdCNY)
 		}
 	}
+
+	// Unsafe non-http(s) recharge_url must be rejected.
+	badURL := *cfg
+	badSites := append([]RelayBalanceSiteConfig(nil), cfg.Sites...)
+	badSites[0].RechargeURL = "javascript:alert(1)"
+	badURL.Sites = badSites
+	if _, err := store.SaveRelayBalanceConfig(ctx, &badURL); err == nil {
+		t.Fatalf("expected error for unsafe recharge_url, got nil")
+	}
+
+	// Empty recharge_url on a known default site must auto-backfill from defaults.
+	cfg.Sites[0].RechargeURL = ""
+	cfg.Sites[1].RechargeURL = "https://custom.openlux.example/topup"
 
 	// Invalid timezone must be rejected explicitly.
 	badTZ := *cfg
@@ -82,6 +104,12 @@ func TestRelayBalanceConfig_DefaultsAndRoundTrip(t *testing.T) {
 	}
 	if reloaded.Sites[0].UserID != "10001" || reloaded.Sites[0].AccessToken != "secret-token-123" {
 		t.Fatalf("expected site credentials persisted, got uid=%q tok=%q", reloaded.Sites[0].UserID, reloaded.Sites[0].AccessToken)
+	}
+	if reloaded.Sites[0].RechargeURL != "https://www.storeapi.one/wallet" {
+		t.Fatalf("expected empty recharge_url backfilled to default, got %q", reloaded.Sites[0].RechargeURL)
+	}
+	if reloaded.Sites[1].RechargeURL != "https://custom.openlux.example/topup" {
+		t.Fatalf("expected custom recharge_url preserved, got %q", reloaded.Sites[1].RechargeURL)
 	}
 }
 

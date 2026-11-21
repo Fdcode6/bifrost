@@ -149,3 +149,4 @@ V2.2 已于 2026-11-19 上线启用（`adaptive_v22_enabled = true`），并于 
      - 默认低于 **`¥50`** 触发常规告警（冷却 `6h`）、低于 **`¥15`** 立即破冷却升级为 `timeSensitive` 告急推送（冷却 `2h`）；短时再腰斩（`≤ 上次告警余额 50%`）按 `30m/1h` 下限允许加推；
      - 夜间免打扰 **`23:00–08:00`（`Asia/Shanghai`）**：仅对实际到点的告警延后至次晨 `08:00` 释放，未到冷却期不误置延后；充值回升至 **`≥ 阈值 × 110%`**（`¥55`）自动解除告警并重置冷却，防止阈值抖动刷屏。
    - **API 与前端入口**：新增 `GET /api/relay-balances`、`POST /api/relay-balances/refresh`、`GET/PUT /api/relay-balances/settings`（敏感地址/令牌严格脱敏）、`POST /api/relay-balances/test-bark`；`/workspace/adaptive-routing` 顶部展示完整 4 站卡片 + 刷新/发测试推送/告警设置弹窗，`/workspace/profit` 顶部对账条下方展示单行轻量余额条。
+   - **快捷充值直达升级（`bifrost:v22-relay-recharge-20261121`，2026-11-21）**：每站配置新增可编辑 `recharge_url`（默认预置 StoreAPI / OpenLux / PoloAPI / B.AI 4 站充值页，旧配置自动补齐并校验 `http(s)://`）；智能分流页 4 站卡片新增按状态自动高亮的「去充值 ↗」新标签按钮，利润页单行余额胶囊支持直接点击跳转充值，Bark 低余额/告急通知同步注入 `url` 字段实现手机点击通知直达对应充值页。

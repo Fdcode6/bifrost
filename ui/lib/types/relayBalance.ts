@@ -7,6 +7,7 @@ export interface RelayBalanceSiteSnapshot {
 	name: string;
 	kind: RelayBalanceSiteKind;
 	base_url: string;
+	recharge_url?: string;
 	provider_prefix: string;
 	cny_per_site_unit: number;
 	threshold_cny: number;
@@ -51,6 +52,7 @@ export interface RelayBalanceSiteSettingsView {
 	name: string;
 	kind: RelayBalanceSiteKind;
 	base_url: string;
+	recharge_url?: string;
 	provider_prefix: string;
 	quota_per_unit: number;
 	cny_per_site_unit: number;
@@ -85,6 +87,7 @@ export interface UpdateRelayBalanceSiteInput {
 	name: string;
 	kind: RelayBalanceSiteKind;
 	base_url: string;
+	recharge_url?: string;
 	provider_prefix: string;
 	quota_per_unit: number;
 	cny_per_site_unit: number;

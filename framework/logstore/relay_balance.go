@@ -43,6 +43,7 @@ type RelayBalanceSiteConfig struct {
 	Name               string  `json:"name"`
 	Kind               string  `json:"kind"`
 	BaseURL            string  `json:"base_url"`
+	RechargeURL        string  `json:"recharge_url,omitempty"`
 	ProviderPrefix     string  `json:"provider_prefix"`
 	QuotaPerUnit       float64 `json:"quota_per_unit"`
 	CNYPerSiteUnit     float64 `json:"cny_per_site_unit"`
@@ -115,6 +116,7 @@ func DefaultRelayBalanceConfig() *RelayBalanceConfig {
 				Name:               "StoreAPI",
 				Kind:               RelayBalanceKindNewAPIUserSelf,
 				BaseURL:            "https://www.storeapi.one",
+				RechargeURL:        "https://www.storeapi.one/wallet",
 				ProviderPrefix:     "storeapi-",
 				QuotaPerUnit:       500000,
 				CNYPerSiteUnit:     1.0,
@@ -127,6 +129,7 @@ func DefaultRelayBalanceConfig() *RelayBalanceConfig {
 				Name:               "OpenLux（云雾）",
 				Kind:               RelayBalanceKindNewAPIUserSelf,
 				BaseURL:            "https://api.openlux.ai",
+				RechargeURL:        "https://www.openlux.ai/console/topup",
 				ProviderPrefix:     "openlux-",
 				QuotaPerUnit:       500000,
 				CNYPerSiteUnit:     6.664,
@@ -139,6 +142,7 @@ func DefaultRelayBalanceConfig() *RelayBalanceConfig {
 				Name:               "PoloAPI",
 				Kind:               RelayBalanceKindPoloUsageToken,
 				BaseURL:            "https://polo.zdfan.com",
+				RechargeURL:        "https://poloai.top/wallet",
 				ProviderPrefix:     "polo-",
 				QuotaPerUnit:       500000,
 				CNYPerSiteUnit:     1.0,
@@ -151,6 +155,7 @@ func DefaultRelayBalanceConfig() *RelayBalanceConfig {
 				Name:               "B.AI",
 				Kind:               RelayBalanceKindBAIV1Balance,
 				BaseURL:            "https://bai.zdfan.com",
+				RechargeURL:        "https://chat.b.ai/purchase",
 				ProviderPrefix:     "bai-",
 				QuotaPerUnit:       1000000,
 				CNYPerSiteUnit:     6.8,
@@ -249,6 +254,15 @@ func NormalizeRelayBalanceConfig(cfg *RelayBalanceConfig) (*RelayBalanceConfig, 
 			}
 			if site.BaseURL == "" {
 				return nil, fmt.Errorf("sites[%d].base_url is required", i)
+			}
+			site.RechargeURL = strings.TrimSpace(site.RechargeURL)
+			if site.RechargeURL == "" {
+				site.RechargeURL = def.RechargeURL
+			}
+			if site.RechargeURL != "" &&
+				!strings.HasPrefix(site.RechargeURL, "https://") &&
+				!strings.HasPrefix(site.RechargeURL, "http://") {
+				return nil, fmt.Errorf("sites[%d].recharge_url must start with http:// or https://", i)
 			}
 			site.ProviderPrefix = strings.TrimSpace(site.ProviderPrefix)
 			if site.ProviderPrefix == "" {

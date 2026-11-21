@@ -132,6 +132,7 @@ type relayBalanceSiteSnapshot struct {
 	Name               string     `json:"name"`
 	Kind               string     `json:"kind"`
 	BaseURL            string     `json:"base_url"`
+	RechargeURL        string     `json:"recharge_url,omitempty"`
 	ProviderPrefix     string     `json:"provider_prefix"`
 	CNYPerSiteUnit     float64    `json:"cny_per_site_unit"`
 	ThresholdCNY       float64    `json:"threshold_cny"`
@@ -176,6 +177,7 @@ type relayBalanceSiteSettingsView struct {
 	Name               string  `json:"name"`
 	Kind               string  `json:"kind"`
 	BaseURL            string  `json:"base_url"`
+	RechargeURL        string  `json:"recharge_url,omitempty"`
 	ProviderPrefix     string  `json:"provider_prefix"`
 	QuotaPerUnit       float64 `json:"quota_per_unit"`
 	CNYPerSiteUnit     float64 `json:"cny_per_site_unit"`
@@ -210,6 +212,7 @@ type updateRelayBalanceSiteInput struct {
 	Name               string  `json:"name"`
 	Kind               string  `json:"kind"`
 	BaseURL            string  `json:"base_url"`
+	RechargeURL        string  `json:"recharge_url,omitempty"`
 	ProviderPrefix     string  `json:"provider_prefix"`
 	QuotaPerUnit       float64 `json:"quota_per_unit"`
 	CNYPerSiteUnit     float64 `json:"cny_per_site_unit"`
@@ -342,6 +345,7 @@ func (h *RelayBalanceHandler) buildBalancesResponse(ctx context.Context) (*relay
 			Name:               site.Name,
 			Kind:               site.Kind,
 			BaseURL:            site.BaseURL,
+			RechargeURL:        site.RechargeURL,
 			ProviderPrefix:     site.ProviderPrefix,
 			CNYPerSiteUnit:     site.CNYPerSiteUnit,
 			ThresholdCNY:       site.ThresholdCNY,
@@ -456,6 +460,7 @@ func (h *RelayBalanceHandler) buildSettingsView(cfg *logstore.RelayBalanceConfig
 			Name:               s.Name,
 			Kind:               s.Kind,
 			BaseURL:            s.BaseURL,
+			RechargeURL:        s.RechargeURL,
 			ProviderPrefix:     s.ProviderPrefix,
 			QuotaPerUnit:       s.QuotaPerUnit,
 			CNYPerSiteUnit:     s.CNYPerSiteUnit,
@@ -538,6 +543,7 @@ func (h *RelayBalanceHandler) updateRelayBalanceSettings(ctx *fasthttp.RequestCt
 				Name:               in.Name,
 				Kind:               in.Kind,
 				BaseURL:            in.BaseURL,
+				RechargeURL:        in.RechargeURL,
 				ProviderPrefix:     in.ProviderPrefix,
 				QuotaPerUnit:       in.QuotaPerUnit,
 				CNYPerSiteUnit:     in.CNYPerSiteUnit,
@@ -597,6 +603,7 @@ func (h *RelayBalanceHandler) testBarkNotification(ctx *fasthttp.RequestCtx) {
 	}
 
 	lines := make([]string, 0, len(balances.Sites)+1)
+	clickURL := ""
 	for _, s := range balances.Sites {
 		if !s.Enabled {
 			continue
@@ -605,8 +612,14 @@ func (h *RelayBalanceHandler) testBarkNotification(ctx *fasthttp.RequestCtx) {
 			tag := "正常"
 			if s.Status == logstore.RelayBalanceStatusUrgent {
 				tag = "告急"
+				if clickURL == "" && s.RechargeURL != "" {
+					clickURL = s.RechargeURL
+				}
 			} else if s.Status == logstore.RelayBalanceStatusLow {
 				tag = "偏低"
+				if clickURL == "" && s.RechargeURL != "" {
+					clickURL = s.RechargeURL
+				}
 			}
 			lines = append(lines, fmt.Sprintf("%s：¥%.2f（站内 $%.2f · %s）", s.Name, *s.BalanceCNY, ptrFloat(s.SiteBalanceUSD), tag))
 		} else {
@@ -619,7 +632,7 @@ func (h *RelayBalanceHandler) testBarkNotification(ctx *fasthttp.RequestCtx) {
 
 	title := "Bifrost 余额监控测试通知"
 	body := strings.Join(lines, "\n")
-	if err := h.sendBark(reqCtx, barkURL, cfg.BarkGroup, title, body, "active"); err != nil {
+	if err := h.sendBark(reqCtx, barkURL, cfg.BarkGroup, title, body, "active", clickURL); err != nil {
 		SendError(ctx, fasthttp.StatusBadGateway, fmt.Sprintf("Bark 推送失败: %v", err))
 		return
 	}
@@ -628,6 +641,7 @@ func (h *RelayBalanceHandler) testBarkNotification(ctx *fasthttp.RequestCtx) {
 		"message": "测试通知已发送至 Bark",
 		"title":   title,
 		"body":    body,
+		"url":     clickURL,
 	})
 }
 
@@ -823,7 +837,7 @@ func (h *RelayBalanceHandler) PollAll(ctx context.Context, evaluateAlerts bool) 
 				state.PendingAfterQuiet = true
 			} else if decision.shouldSend {
 				title, body, level := formatBarkBalanceAlert(site, &state, decision.tier)
-				if err := h.sendBark(ctx, barkURL, cfg.BarkGroup, title, body, level); err != nil {
+				if err := h.sendBark(ctx, barkURL, cfg.BarkGroup, title, body, level, site.RechargeURL); err != nil {
 					logger.Warn("relay-balance: failed to send Bark alert for %s: %v", site.ID, err)
 				} else {
 					sentAt := now
@@ -1177,7 +1191,7 @@ func formatBarkBalanceAlert(site logstore.RelayBalanceSiteConfig, state *logstor
 	return title, strings.Join(lines, "\n"), level
 }
 
-func (h *RelayBalanceHandler) sendBark(ctx context.Context, barkURL, group, title, body, level string) error {
+func (h *RelayBalanceHandler) sendBark(ctx context.Context, barkURL, group, title, body, level, clickURL string) error {
 	endpoint := strings.TrimSpace(barkURL)
 	if qIdx := strings.Index(endpoint, "?"); qIdx >= 0 {
 		endpoint = endpoint[:qIdx]
@@ -1189,6 +1203,9 @@ func (h *RelayBalanceHandler) sendBark(ctx context.Context, barkURL, group, titl
 		"group": group,
 		"level": level,
 		"ttl":   600,
+	}
+	if u := strings.TrimSpace(clickURL); strings.HasPrefix(u, "https://") || strings.HasPrefix(u, "http://") {
+		payload["url"] = u
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {

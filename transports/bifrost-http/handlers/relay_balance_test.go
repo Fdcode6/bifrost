@@ -280,6 +280,12 @@ func TestRelayBalanceHandler_PollAll_ParsesAllKindsAndAlertsOnce(t *testing.T) {
 	if barkPayloads[0]["level"] != "timeSensitive" || barkPayloads[0]["group"] != "bifrost-balance" {
 		t.Fatalf("unexpected Bark payload: %+v", barkPayloads[0])
 	}
+	if barkPayloads[0]["url"] != "https://www.storeapi.one/wallet" {
+		t.Fatalf("expected StoreAPI recharge url in Bark payload, got %v", barkPayloads[0]["url"])
+	}
+	if byID["storeapi"].RechargeURL != "https://www.storeapi.one/wallet" || byID["polo"].RechargeURL != "https://poloai.top/wallet" {
+		t.Fatalf("expected recharge_url in balance snapshots, got storeapi=%q polo=%q", byID["storeapi"].RechargeURL, byID["polo"].RechargeURL)
+	}
 	if !strings.Contains(barkPayloads[0]["title"].(string), "StoreAPI") {
 		t.Fatalf("expected StoreAPI in Bark title, got %q", barkPayloads[0]["title"])
 	}
